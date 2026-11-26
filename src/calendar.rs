@@ -747,6 +747,40 @@ fn parse_duration_parts(value: &str) -> Option<ical_parser::IcalDurationParts> {
     ical_parser::parse_ical_duration_parts(value).ok()
 }
 
+/// Whether an iCalendar content-line key names `name`: the property name before
+/// any parameters, compared case-insensitively (RFC 5545 §3.1 makes property
+/// names case-insensitive, and `DURATION;X=Y` carries parameters after the
+/// name).
+fn key_names(key: &str, name: &str) -> bool {
+    let prop = match key.split_once(';') {
+        Some((prop, _params)) => prop,
+        None => key,
+    };
+    prop.eq_ignore_ascii_case(name)
+}
+
+/// The zone a VEVENT `DURATION`'s NOMINAL days/weeks are applied in
+/// (RFC 5545 §3.3.6): the zone `DTSTART` itself is expressed in. A UTC
+/// `DTSTART` (`…Z`) means UTC arithmetic — using the item's DISPLAY zone
+/// (`X-EAS-TIMEZONE`, or a `DTEND`/`RECURRENCE-ID` `TZID`) would shift the end
+/// by the zone offset across a DST boundary (`20250308T140000Z` + `P1D` must end
+/// at `20250309T140000Z`, not `13:00Z`). A `TZID`-qualified `DTSTART` uses its
+/// own zone (a New York `P1D` across the spring transition is 23 hours), and a
+/// floating `DTSTART` falls back to the item's zone.
+fn duration_arithmetic_zone(
+    fields: &CalendarEventFields,
+    resolve: &mut dyn FnMut(&str) -> Option<String>,
+) -> Option<Tz> {
+    if fields.dtstart_is_utc {
+        return None;
+    }
+    let raw = fields
+        .dtstart_tzid
+        .as_deref()
+        .or(fields.timezone.as_deref())?;
+    resolve(raw).and_then(|iana| iana.parse::<Tz>().ok())
+}
+
 /// Add a parsed `DURATION` to a start instant per RFC 5545 §3.3.6: whole
 /// days/weeks are NOMINAL — applied to the wall clock in the start's zone, so
 /// `P1D` across a DST transition keeps the local time — while hours/minutes/
@@ -769,7 +803,10 @@ fn add_nominal_duration(
         let day_span = chrono::Duration::try_days(days)?;
         match zone {
             Some(tz) => {
-                let shifted = start.with_timezone(&tz).naive_local().checked_add_signed(day_span)?;
+                let shifted = start
+                    .with_timezone(&tz)
+                    .naive_local()
+                    .checked_add_signed(day_span)?;
                 localize_gap_tolerant(shifted, tz)?
             }
             None => start.checked_add_signed(day_span)?,
@@ -844,6 +881,11 @@ fn parse_event_lines(
                 let supplied = tzid.is_some();
                 let zone = resolve_property_zone(tzid.clone(), tz_resolver);
                 fields.start = parse_datetime_with_tzid_failing_unresolved(value, supplied, zone);
+                // `DURATION` arithmetic uses DTSTART's OWN zone, never the
+                // item's display zone (see `duration_arithmetic_zone`).
+                fields.dtstart_tzid = tzid.clone();
+                fields.dtstart_is_utc = value.len() > 10
+                    && value.as_bytes()[value.len() - 1].eq_ignore_ascii_case(&b'Z');
                 if fields.timezone.is_none() {
                     fields.timezone = tzid;
                 }
@@ -851,13 +893,22 @@ fn parse_event_lines(
                     fields.all_day = Some(true);
                 }
             }
-            k if k.starts_with("DURATION") => match parse_duration_parts(value) {
-                Some(parts) => {
-                    fields.duration = Some(parts);
-                    fields.duration_text = Some(value.trim().to_string());
+            // RFC 5545 §3.8.5.3: a VEVENT `DURATION` MUST be a positive
+            // duration. A negative or zero value would put the end at or before
+            // the start (and `render_ics` would then omit the end, collapsing
+            // the event to zero length on the next read), so it is treated as
+            // unreadable — the same fail-closed path as a malformed value.
+            k if key_names(k, "DURATION") => {
+                match parse_duration_parts(value)
+                    .filter(|parts| parts.total_seconds().is_some_and(|s| s > 0))
+                {
+                    Some(parts) => {
+                        fields.duration = Some(parts);
+                        fields.duration_text = Some(value.trim().to_string());
+                    }
+                    None => fields.duration_invalid = true,
                 }
-                None => fields.duration_invalid = true,
-            },
+            }
             k if k.starts_with("DTEND") => {
                 fields.dtend_present = true;
                 let tzid = parse_tzid_from_key(k);
@@ -972,6 +1023,12 @@ struct CalendarEventFields {
     /// write-back can re-emit the NOMINAL form (RFC 5545 §3.8.5.3) instead of
     /// pinning every recurrence instance to one exact `DTEND` span.
     duration_text: Option<String>,
+    /// `DTSTART`'s OWN `TZID` parameter (never a `DTEND`/`RECURRENCE-ID` one or
+    /// `X-EAS-TIMEZONE`), used for `DURATION` nominal arithmetic.
+    dtstart_tzid: Option<String>,
+    /// `DTSTART` carried a UTC (`…Z`) value, so a `DURATION`'s nominal
+    /// days/weeks are applied in UTC rather than in the item's display zone.
+    dtstart_is_utc: bool,
     /// An explicit `DURATION` was present but unreadable. Tracked separately
     /// from an OMITTED duration: when it would have supplied the end (no
     /// `DTEND`), the event is rejected rather than silently shortened to
@@ -1046,13 +1103,7 @@ pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
     for block in split_ical_blocks(ics) {
         let mut fields = parse_event_lines(&block, &mut resolve);
         if let Some(recurrence_id) = fields.recurrence_id {
-            // The start's zone, resolved for the NOMINAL day/week part of a
-            // DURATION (RFC 5545 §3.3.6).
-            let exception_zone = fields
-                .timezone
-                .as_deref()
-                .and_then(&mut resolve)
-                .and_then(|iana| iana.parse::<Tz>().ok());
+            let exception_zone = duration_arithmetic_zone(&fields, &mut resolve);
             let exception = CalendarException {
                 deleted: fields.deleted,
                 exception_start: recurrence_id,
@@ -1061,6 +1112,12 @@ pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
                 location: fields.location,
                 start: fields.start,
                 end: match (fields.start, fields.end) {
+                    // An explicit but UNREADABLE DTEND (a naive value under an
+                    // unresolvable TZID) must not publish a ZERO-LENGTH
+                    // override: leaving the end unset lets the master's
+                    // duration supply it, so a genuinely moved instance keeps
+                    // both its new start and its length.
+                    (Some(_), None) if fields.dtend_present => None,
                     // An unreadable DURATION that would have supplied this
                     // instance's end leaves the override unusable: skipping it
                     // keeps the master's instance (with its own duration)
@@ -1092,6 +1149,9 @@ pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
             continue;
         }
 
+        // The zone a `DURATION`'s NOMINAL days are applied in: DTSTART's own
+        // zone (computed before any field is moved out below).
+        let start_zone = duration_arithmetic_zone(&fields, &mut resolve);
         let uid = fields.uid.unwrap_or_else(|| Uuid::new_v4().to_string());
         // Store the RESOLVED IANA id, not the raw TZID spelling, so every
         // downstream consumer (render_ics DTSTART;TZID, EAS `Calendar:Timezone`
@@ -1104,7 +1164,6 @@ pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
         {
             fields.timezone = Some(resolved);
         }
-        let start_zone = fields.timezone.as_deref().and_then(|iana| iana.parse::<Tz>().ok());
         // An explicit but UNREADABLE DURATION that would have supplied the end
         // (no DTEND) is a malformed event: fail closed rather than deliver a
         // zero-length interval and advance the provider token as if it parsed.
@@ -3281,6 +3340,90 @@ mod scheduling_tests {
         assert!(
             parse_ics_event(ics).is_none(),
             "an explicit unreadable DURATION must be rejected"
+        );
+    }
+
+    #[test]
+    fn non_positive_vevent_duration_is_rejected() {
+        // RFC 5545 §3.8.5.3: a VEVENT DURATION MUST be positive. A negative (or
+        // zero) value would put the end at/before the start and collapse the
+        // event to zero length on write-back.
+        for bad in ["-PT1H", "PT0S", "P0D"] {
+            let ics = format!(
+                "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n\
+                 UID:non-positive@example.com\r\nDTSTART:20260115T090000Z\r\n\
+                 DURATION:{bad}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+            );
+            assert!(
+                parse_ics_event(&ics).is_none(),
+                "a non-positive VEVENT DURATION ({bad}) must be rejected"
+            );
+        }
+        // A signed ALARM trigger keeps its signed semantics (the VEVENT
+        // restriction does not apply to VALARM).
+        let alarm = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n\
+             UID:alarm@example.com\r\nDTSTART:20260115T090000Z\r\n\
+             DTEND:20260115T100000Z\r\nBEGIN:VALARM\r\nACTION:DISPLAY\r\n\
+             TRIGGER:-PT15M\r\nEND:VALARM\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        assert_eq!(parse_ics_event(alarm).expect("parses").reminder, Some(-15));
+    }
+
+    #[test]
+    fn duration_property_name_is_case_insensitive() {
+        // RFC 5545 §3.1: property names are case-insensitive, and parameters
+        // may follow the name.
+        let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n\
+             UID:lower-duration@example.com\r\nDTSTART:20260115T090000Z\r\n\
+             Duration:PT30M\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let ev = parse_ics_event(ics).expect("a lowercase DURATION parses");
+        assert_eq!(ev.end.timestamp() - ev.start.timestamp(), 30 * 60);
+    }
+
+    #[test]
+    fn duration_arithmetic_uses_dtstart_zone_not_display_zone() {
+        // RFC 5545 §3.3.6: nominal days are applied in DTSTART's OWN zone. A UTC
+        // DTSTART must stay UTC even when the item carries a display zone.
+        let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n\
+             UID:utc-nominal@example.com\r\nDTSTART:20250308T140000Z\r\n\
+             DURATION:P1D\r\nX-EAS-TIMEZONE:America/New_York\r\n\
+             END:VEVENT\r\nEND:VCALENDAR\r\n";
+        let ev = parse_ics_event(ics).expect("parses");
+        assert_eq!(
+            ev.end.timestamp() - ev.start.timestamp(),
+            24 * 3600,
+            "a UTC DTSTART keeps 24 elapsed hours for P1D"
+        );
+        assert_eq!(
+            ev.end.format("%Y%m%dT%H%M%SZ").to_string(),
+            "20250309T140000Z"
+        );
+    }
+
+    #[test]
+    fn exception_with_unreadable_dtend_inherits_master_duration() {
+        // An explicit but unreadable exception DTEND must not publish a
+        // ZERO-LENGTH override: the moved instance keeps its new start and
+        // inherits the master's one-hour span.
+        let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n\
+             UID:moved-instance@example.com\r\nDTSTART:20260115T090000Z\r\n\
+             DTEND:20260115T100000Z\r\nRRULE:FREQ=DAILY;COUNT=3\r\n\
+             END:VEVENT\r\nBEGIN:VEVENT\r\nUID:moved-instance@example.com\r\n\
+             RECURRENCE-ID:20260116T090000Z\r\nDTSTART:20260116T140000Z\r\n\
+             DTEND;TZID=Not/AZone:20260116T150000\r\nEND:VEVENT\r\n\
+             END:VCALENDAR\r\n";
+        let ev = parse_ics_event(ics).expect("the master still parses");
+        assert_eq!(ev.exceptions.len(), 1);
+        let exception = &ev.exceptions[0];
+        assert_eq!(
+            exception.end, None,
+            "no zero-length override may be published"
+        );
+        assert!(exception.start.is_some(), "the moved start is preserved");
+        let rendered = render_ics(&ev);
+        // The instance inherits the master's one-hour duration, not a zero span.
+        assert!(
+            rendered.matches("DTEND").count() >= 1,
+            "the rendered instance must carry an end: {rendered}"
         );
     }
 

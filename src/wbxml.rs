@@ -1796,7 +1796,18 @@ impl Wbxml {
                     byte_array_stack.pop();
                     buf.push(END);
                 }
-                Ok(quick_xml::events::Event::Eof) => break,
+                Ok(quick_xml::events::Event::Eof) => {
+                    // Fail closed symmetrically with `decode`: a document whose
+                    // element stack is still open is TRUNCATED, and encoding it
+                    // would emit unbalanced END tokens that no decoder accepts.
+                    if !ns_stack.is_empty() {
+                        return Err(anyhow!(
+                            "XML encode error: truncated XML with {} unclosed element(s)",
+                            ns_stack.len()
+                        ));
+                    }
+                    break;
+                }
                 Err(e) => return Err(anyhow!("XML encode error: {e:?}")),
                 _ => {}
             }

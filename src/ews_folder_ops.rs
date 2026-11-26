@@ -495,12 +495,28 @@ pub(crate) async fn handle_update_folder(
     }
     let new_name = new_name.unwrap().trim();
 
-    // Resolve the folder's EAS mapping up front. An EAS-visible folder (a JMAP
-    // mailbox carrying a `folder_map` row) is constrained by the SAME name
-    // rules EAS `FolderUpdate` enforces ([MS-ASCMD] §2.2.1.6); a mailbox EAS
-    // never advertised is renamed freely. Validating BEFORE the backend rename
-    // keeps the two hierarchies from diverging: a name EAS itself would reject
-    // must never be applied to a folder EAS advertises.
+    // Serialize this rename's validate-mutate-mirror sequence:
+    //  - the per-OWNER TREE lock FIRST, because the EAS-visible name rules span
+    //    BOTH hierarchies (a concurrent EAS FolderCreate can add a CalDAV
+    //    collection that JMAP cannot see, so validating a JMAP rename against a
+    //    snapshot taken outside the tree lock could admit a duplicate EAS
+    //    display name);
+    //  - then the per-(owner, folder) mutation lock, held across the
+    //    `Mailbox/set` call and the mirror below so a mirror derived from a
+    //    stale snapshot cannot interleave.
+    // Lock order is always tree → per-folder (see `Storage::lock_folder_tree`).
+    let _tree_guard = state.storage.lock_folder_tree(&owner).await;
+    let _folder_guard = state
+        .storage
+        .lock_folder_mutation(&owner, &mailbox_id)
+        .await;
+
+    // Resolve the folder's EAS mapping under the locks. An EAS-visible folder
+    // (a JMAP mailbox carrying a `folder_map` row) is constrained by the SAME
+    // name rules EAS `FolderUpdate` enforces ([MS-ASCMD] §2.2.1.6); a mailbox
+    // EAS never advertised is renamed freely. Validating BEFORE the backend
+    // rename keeps the two hierarchies from diverging: a name EAS itself would
+    // reject must never be applied to a folder EAS advertises.
     let mapped = match state.storage.get_folder(&owner, &mailbox_id).await {
         Ok(row) => row.filter(|r| r.backend_kind == "jmap"),
         Err(e) => return internal_error(action, "folder_map lookup failed", &e),
@@ -510,15 +526,6 @@ pub(crate) async fn handle_update_folder(
     {
         return resp;
     }
-
-    // Serialize this folder's backend rename with its `folder_map` mirror so a
-    // concurrent rename/move of the SAME folder cannot interleave a mirror
-    // derived from a stale snapshot (see `Storage::lock_folder_mutation`). Held
-    // across BOTH the `Mailbox/set` call and the mirror below.
-    let _folder_guard = state
-        .storage
-        .lock_folder_mutation(&owner, &mailbox_id)
-        .await;
 
     match jmap
         .update_mailbox(
@@ -1326,7 +1333,13 @@ pub(crate) async fn handle_delete_folder(
 
         if !hard {
             // Soft delete (SoftDelete / MoveToDeletedItems): reparent the
-            // mailbox under Trash. A failed move must surface as an error —
+            // mailbox under Trash. A reparent is a hierarchy-SHAPE change, so
+            // the per-OWNER tree lock orders it against every other reparent and
+            // against a recursive delete's revalidate-then-destroy walk (which
+            // the per-folder lock cannot observe). Lock order is always
+            // tree → per-folder.
+            let _tree_guard = state.storage.lock_folder_tree(&owner).await;
+            // A failed move must surface as an error —
             // EWS clients distinguish recoverable deletes from permanent
             // hard deletes, so we never fall back to destroying data the
             // client expected to be recoverable.
@@ -1435,6 +1448,13 @@ pub(crate) async fn handle_delete_folder(
         // clamp `limit`, RFC 8620 §5.5) does not omit descendants — a missed
         // child would leave the parent undeletable after the child was already
         // destroyed.
+        //
+        // The per-OWNER tree lock is held for the whole snapshot-then-destroy
+        // walk (the same ordering the EAS FolderDelete walk uses): a concurrent
+        // reparent changes an ANCESTOR's parentId, which the per-folder lock
+        // cannot observe, and could otherwise move a folder out of (or into) the
+        // subtree between the snapshot and its destroy.
+        let _tree_guard = state.storage.lock_folder_tree(&owner).await;
         let hierarchy = match jmap
             .query_all_mailboxes(&auth.username, &auth.password)
             .await

@@ -1230,13 +1230,15 @@ async fn resolve_open_folder_target(
     if folder_id == store::folder_id_from_backend("ROOT") {
         return Some("ROOT".to_string());
     }
-    // Calendar and Contacts are gateway-owned leaves whose parent is Root —
-    // they are never parented under a Mail mailbox and cannot be deleted via
-    // RopDeleteFolder (a Mail-parent handle must resolve a Mail child). Exclude
-    // them so a stale Calendar/Contacts handle cannot match a Mail folder.
+    // Calendar and Contacts are gateway-owned leaves whose parent is Root. The
+    // folder-hierarchy table ADVERTISES their synthetic FIDs, so `RopOpenFolder`
+    // on either MUST resolve to its synthetic backend id — the contents/hierarchy
+    // ROPs already serve a `FolderKind::Calendar`/`Contacts` handle
+    // (`folder_kind_for_backend` re-derives the kind), and answering NotFound
+    // would make the client's Calendar/Contacts folder unopenable.
     for backend in [store::CALENDAR_BACKEND_ID, store::CONTACTS_BACKEND_ID] {
         if store::folder_id_from_backend(backend) == folder_id {
-            return None;
+            return Some(backend.to_string());
         }
     }
     if let (Some(jc), Some(pw)) = (jmap, password)
@@ -6109,14 +6111,11 @@ async fn execute_one_rop(
                             );
                             outcome = RopErrorCode::DiskError;
                         }
-                        // The ROP succeeded for only some (or none) of the
-                        // targets — a non-empty folder with DEL_MESSAGES unset,
-                        // or a child refused mid-walk — so report
-                        // PartialCompletion rather than a hard failure
-                        // ([MS-OXCFOLD] §2.2.1.3.2).
-                        if outcome == RopErrorCode::Success && destroyed_count < subtree.len() {
-                            partial = 1;
-                        }
+                        partial = delete_folder_partial_completion(
+                            destroyed_count,
+                            subtree.len(),
+                            outcome,
+                        );
                     }
                 }
             }
@@ -9499,6 +9498,18 @@ async fn handle_disconnect(req: MapiRequest, state: &MapiState) -> MapiResponse 
     MapiResponse::success(req.request_id, "Disconnect", None, Vec::new())
 }
 
+/// [MS-OXCFOLD] §2.2.1.3.2 `PartialCompletion` for `RopDeleteFolder`.
+///
+/// Set when the walk covered only PART of the subtree: a non-empty folder with
+/// `DEL_MESSAGES` unset, a child the store refused mid-walk, or a LATER destroy
+/// that failed after earlier ones committed (the caller must see the confirmed
+/// progress, not a bare error that reads as "nothing was deleted"). Clear when
+/// the whole subtree was destroyed, and when the walk errored before destroying
+/// anything at all.
+fn delete_folder_partial_completion(destroyed: usize, total: usize, outcome: RopErrorCode) -> u8 {
+    u8::from(destroyed < total && (outcome == RopErrorCode::Success || destroyed > 0))
+}
+
 /// `RopCopyFolder` ([MS-OXCFOLD] §2.2.1.5): create the destination mailbox and
 /// copy the source folder's messages into it; with `WantRecursive` the whole
 /// descendant subtree is replicated too.
@@ -9522,7 +9533,13 @@ async fn rop_copy_folder(
     /// Hard bound on the inventory walk: a server that ignores `position` would
     /// otherwise loop forever. Reaching it reports partial completion.
     const MAX_PAGES: usize = 10_000;
-    let listing = match jc.query_mailboxes(username, password).await {
+    // The COMPLETE hierarchy (paged `Mailbox/query`, see
+    // `JmapClient::query_all_mailboxes`): the unpaged `query_mailboxes` issues a
+    // single query, so a server that clamps `limit` (RFC 8620 §5.5) can omit a
+    // descendant beyond the first page — `has_children` would then read false
+    // and a RECURSIVE copy would report FULL success while silently dropping the
+    // children.
+    let listing = match jc.query_all_mailboxes(username, password).await {
         Ok(listing) => listing,
         Err(e) => {
             tracing::warn!(error = %e, "RopCopyFolder: source folder list failed");
@@ -13232,6 +13249,21 @@ mod tests {
         let (rv, partial) = run_delete_folder_rop_full(&base, "mb-1", DELETE_HARD_DELETE).await;
         assert_eq!(rv, RopErrorCode::Success);
         assert_eq!(partial, 1, "a refused destroy is a partial completion");
+    }
+
+    /// [MS-OXCFOLD] §2.2.1.3.2 `PartialCompletion`: a LATER failure after
+    /// earlier destroys committed still reports the confirmed partial progress,
+    /// while a failure that destroyed nothing and a fully-destroyed subtree do
+    /// not.
+    #[test]
+    fn delete_folder_partial_completion_matrix() {
+        use RopErrorCode::{DiskError, Success};
+        assert_eq!(delete_folder_partial_completion(3, 3, Success), 0);
+        assert_eq!(delete_folder_partial_completion(2, 3, Success), 1);
+        assert_eq!(delete_folder_partial_completion(0, 3, Success), 1);
+        assert_eq!(delete_folder_partial_completion(2, 3, DiskError), 1);
+        assert_eq!(delete_folder_partial_completion(0, 3, DiskError), 0);
+        assert_eq!(delete_folder_partial_completion(0, 0, DiskError), 0);
     }
 
     /// A refused child must not abort the rest of the subtree walk: siblings and

@@ -29,9 +29,17 @@ fn body_has_multistatus_root(body: &str) -> bool {
     let mut buf = Vec::new();
     let mut depth = 0usize;
     let mut root_seen = false;
+    // The root has been opened AND closed. Only whitespace may follow it: a
+    // body whose document element closed before EOF is TRUNCATED (or carries a
+    // second document), so treating it as a complete snapshot would let a
+    // cut-off inventory drive a caller's deletion sweep.
+    let mut root_closed = false;
     loop {
         match reader.read_resolved_event_into(&mut buf) {
             Ok((ns, quick_xml::events::Event::Start(ref e))) => {
+                if root_closed {
+                    return false;
+                }
                 if !root_seen {
                     if e.local_name().as_ref() != "multistatus" || ns != DAV {
                         return false;
@@ -42,23 +50,46 @@ fn body_has_multistatus_root(body: &str) -> bool {
             }
             // `<multistatus/>` is a CLOSED, empty root.
             Ok((ns, quick_xml::events::Event::Empty(ref e))) => {
+                if root_closed {
+                    return false;
+                }
                 if !root_seen {
-                    return e.local_name().as_ref() == "multistatus" && ns == DAV;
+                    if e.local_name().as_ref() != "multistatus" || ns != DAV {
+                        return false;
+                    }
+                    root_seen = true;
+                    root_closed = true;
                 }
             }
             Ok((_, quick_xml::events::Event::End(_))) => {
+                if root_closed {
+                    return false;
+                }
                 if root_seen {
                     depth = depth.saturating_sub(1);
                     // Only a CLOSED root is a complete snapshot: a truncated
                     // body would otherwise parse as a partial one and the
                     // caller's deletion sweep would tombstone the cut-off
-                    // events.
+                    // events. Reading continues to EOF to prove completeness.
                     if depth == 0 {
-                        return true;
+                        root_closed = true;
                     }
                 }
             }
-            Ok((_, quick_xml::events::Event::Eof)) => return false,
+            Ok((_, quick_xml::events::Event::Text(ref t))) => {
+                if root_closed && !t.as_ref().trim().is_empty() {
+                    return false;
+                }
+            }
+            // Character data (or an entity reference) outside the document
+            // element is not a well-formed XML document.
+            Ok((_, quick_xml::events::Event::CData(_)))
+            | Ok((_, quick_xml::events::Event::GeneralRef(_))) => {
+                if root_closed || !root_seen {
+                    return false;
+                }
+            }
+            Ok((_, quick_xml::events::Event::Eof)) => return root_closed,
             Ok(_) => {}
             Err(_) => return false,
         }
@@ -2296,6 +2327,26 @@ END:VCALENDAR
         // caller's deletion sweep must not treat the cut-off events as gone.
         assert!(!body_has_multistatus_root(
             r#"<D:multistatus xmlns:D="DAV:"><D:response><D:href>/a.ics</D:href>"#
+        ));
+        // A root that CLOSES before EOF is not a complete document either: a
+        // truncated body can leave an empty root followed by the cut-off
+        // remainder, which must never be read as an authoritative empty
+        // snapshot.
+        assert!(!body_has_multistatus_root(
+            r#"<D:multistatus xmlns:D="DAV:"/><D:response><D:href>/a.ics"#
+        ));
+        assert!(!body_has_multistatus_root(
+            r#"<D:multistatus xmlns:D="DAV:"></D:multistatus><D:response"#
+        ));
+        assert!(!body_has_multistatus_root(
+            r#"<D:multistatus xmlns:D="DAV:"></D:multistatus><html></html>"#
+        ));
+        assert!(!body_has_multistatus_root(
+            r#"<D:multistatus xmlns:D="DAV:"></D:multistatus>trailing"#
+        ));
+        // Trailing whitespace and comments after a closed root stay accepted.
+        assert!(body_has_multistatus_root(
+            "<D:multistatus xmlns:D=\"DAV:\"></D:multistatus>\n  <!-- tail -->\n"
         ));
         assert!(!body_has_multistatus_root(
             "<html><body>proxy error</body></html>"

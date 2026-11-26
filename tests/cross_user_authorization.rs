@@ -624,7 +624,26 @@ async fn auth_and_backend_failure_logs_never_emit_credentials() {
             .mount(&server)
             .await;
         let verifier = AuthVerifier::new(&config_for(&server));
-        let _ = verifier.verify_outcome(ALICE, SENTINEL_PW).await;
+        // The OUTCOME is asserted, not discarded: a transport error standing in
+        // for the HTTP fault would take a different branch and prove nothing
+        // about the 401/503 logging paths.
+        let expected = if status == 401 {
+            AuthOutcome::InvalidCredentials
+        } else {
+            AuthOutcome::BackendUnavailable
+        };
+        assert_eq!(
+            verifier.verify_outcome(ALICE, SENTINEL_PW).await,
+            expected,
+            "the {status} fixture must exercise its own HTTP fault path"
+        );
+        assert!(
+            server
+                .received_requests()
+                .await
+                .is_some_and(|reqs| reqs.iter().any(|r| r.url.path() == "/session")),
+            "the {status} mock must actually receive the session probe"
+        );
         assert!(!base.is_empty());
     }
     // An unreachable backend (transport failure). A TCP fixture ACCEPTS the

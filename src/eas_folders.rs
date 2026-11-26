@@ -1333,40 +1333,41 @@ pub(crate) async fn reconcile_deferred_folder_prunes(
 
     // Reconcile JMAP intents against the live JMAP mailbox set. An id the
     // backend still holds keeps its intent; an id the backend no longer holds
-    // is pruned and journaled as `folder-delete`.
+    // is pruned and journaled as `folder-delete`. A missing JMAP client leaves
+    // only the JMAP intents unresolved — the CalDAV branch below must still
+    // run, or a CalDAV-only deployment would never journal its deletions.
     if !jmap_pending.is_empty() {
-        let Some(jmap) = state.jmap_client.clone() else {
-            tracing::warn!(
-                owner = %owner,
-                "folder prune reconcile: no JMAP client; leaving JMAP intents unresolved"
-            );
-            return;
-        };
-        match jmap.query_all_mailboxes(owner, password).await {
-            Ok(result) => {
-                let live: std::collections::HashSet<String> = result
-                    .mailboxes
-                    .iter()
-                    .filter_map(|m| m.id.clone())
-                    .collect();
-                if let Err(e) = state
-                    .storage
-                    .reconcile_pending_folder_prunes(owner, &jmap_pending, &live)
-                    .await
-                {
+        match state.jmap_client.clone() {
+            Some(jmap) => match jmap.query_all_mailboxes(owner, password).await {
+                Ok(result) => {
+                    let live: std::collections::HashSet<String> = result
+                        .mailboxes
+                        .iter()
+                        .filter_map(|m| m.id.clone())
+                        .collect();
+                    if let Err(e) = state
+                        .storage
+                        .reconcile_pending_folder_prunes(owner, &jmap_pending, &live)
+                        .await
+                    {
+                        tracing::warn!(
+                            error = %e,
+                            "folder prune reconcile: failed to reconcile JMAP intents"
+                        );
+                    }
+                }
+                Err(e) => {
                     tracing::warn!(
                         error = %e,
-                        "folder prune reconcile: failed to reconcile JMAP intents"
+                        owner = %owner,
+                        "folder prune reconcile: Mailbox/query failed; leaving JMAP intents unresolved"
                     );
                 }
-            }
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    owner = %owner,
-                    "folder prune reconcile: Mailbox/query failed; leaving JMAP intents unresolved"
-                );
-            }
+            },
+            None => tracing::warn!(
+                owner = %owner,
+                "folder prune reconcile: no JMAP client; leaving JMAP intents unresolved"
+            ),
         }
     }
 
@@ -1588,6 +1589,33 @@ async fn collect_delete_subtree(
     entries.retain(|e| {
         !inventory.contains(e.backend_id.as_str()) || depth_of.contains_key(e.backend_id.as_str())
     });
+    // A mailbox that carries a JMAP ROLE is a distinguished folder (Inbox, Sent,
+    // Drafts, Trash, Junk, Archive, …) and must never be destroyed as a side
+    // effect of deleting a user folder — including through a `folder_map` row
+    // that a stale mirror still points at it. Check the MAPPED walk (after the
+    // moved-out entries are dropped, so a role-bearing folder the user moved
+    // elsewhere cannot block the delete) BEFORE anything is destroyed: a subtree
+    // that contains a protected mailbox is rejected with NOTHING removed.
+    if let Some(protected) = entries
+        .iter()
+        .find(|e| {
+            roles
+                .get(e.backend_id.as_str())
+                .copied()
+                .flatten()
+                .is_some_and(|r| !r.is_empty())
+        })
+        .map(|e| e.backend_id.clone())
+    {
+        tracing::warn!(
+            backend_id = %protected,
+            "FolderDelete: the delete subtree contains a system mailbox; not destroying"
+        );
+        return Err(crate::error::GatewayError::Protocol {
+            context: format!("subtree contains the system mailbox {protected}"),
+            source: None,
+        });
+    }
     // Mapped entries take the backend depth when the backend still knows them,
     // so a mailbox reparented under a backend-only parent is destroyed first.
     for entry in &mut entries {
@@ -1716,6 +1744,14 @@ pub async fn update_folder(
     // classify a requested rename back to the original as "unchanged" (no-op),
     // reporting success while the backend kept the other rename. The lock is
     // held across the backend call AND the mirror below.
+    //
+    // The per-OWNER TREE lock is taken FIRST (see `Storage::lock_folder_tree`):
+    // a FolderUpdate can REPARENT the folder, which is a hierarchy-SHAPE change
+    // that a concurrent recursive FolderDelete's revalidate-then-destroy walk
+    // cannot observe through the per-folder lock. Lock order is always
+    // tree → per-folder (the delete holds the tree lock while taking a
+    // per-folder lock per node, so the reverse order would deadlock).
+    let _tree_guard = state.storage.lock_folder_tree(owner).await;
     let _folder_guard = state
         .storage
         .lock_folder_mutation(owner, &row.backend_id)

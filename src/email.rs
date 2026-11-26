@@ -4470,8 +4470,7 @@ Body\r\n";
         let client = std::sync::Arc::new(crate::jmap::JmapClient::new(&base).unwrap());
         let pw = secrecy::SecretString::from("pw");
         let xml = r#"<Commands><Delete><ServerId>em-7</ServerId></Delete></Commands>"#;
-        let results =
-            apply_eas_email_mutations(&client, "a", "u", &pw, Some("inbox1"), xml, true)
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, Some("inbox1"), xml, true)
             .await
             .expect("apply mutations");
         assert!(matches!(
@@ -4515,8 +4514,7 @@ Body\r\n";
         let client = std::sync::Arc::new(crate::jmap::JmapClient::new(&base).unwrap());
         let pw = secrecy::SecretString::from("pw");
         let xml = r#"<Commands><Delete><ServerId>em-7</ServerId></Delete></Commands>"#;
-        let results =
-            apply_eas_email_mutations(&client, "a", "u", &pw, Some("inbox1"), xml, false)
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, Some("inbox1"), xml, false)
             .await
             .expect("apply mutations");
         assert!(matches!(

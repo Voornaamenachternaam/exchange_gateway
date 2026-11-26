@@ -31,14 +31,20 @@ const PW_ALICE: &str = "alice-pw";
 /// Actions the scripted backend performs after accepting a connection.
 enum ScriptAction {
     Sleep(Duration),
-    Send(Vec<u8>),
     SendThenEof(Vec<u8>),
+    /// Consume the client's request, then write a complete response. Closing a
+    /// socket that still holds UNREAD request bytes makes the kernel answer
+    /// with RST, which can reach the client before it consumes the response it
+    /// has already buffered — a load-dependent flake. A scenario that expects
+    /// the response to be DELIVERED uses this action.
+    SendAfterRead(Vec<u8>),
     Reset,
     HangAfterHeaders,
 }
 
-/// Spawn a thread that accepts one connection on `listener`, reads the client
-/// request, runs the script, and closes.
+/// Spawn a thread that accepts one connection on `listener`, runs the script,
+/// and closes. The request is NOT read unless the script asks for it (see
+/// `ScriptAction::SendAfterRead`), so the fault scenarios can abort mid-request.
 fn spawn_scripted(listener: TcpListener, actions: Vec<ScriptAction>) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
@@ -48,12 +54,14 @@ fn spawn_scripted(listener: TcpListener, actions: Vec<ScriptAction>) -> thread::
         for action in actions {
             match action {
                 ScriptAction::Sleep(d) => thread::sleep(d),
-                ScriptAction::Send(bytes) => {
-                    let _ = stream.as_mut().unwrap().write_all(&bytes);
-                }
                 ScriptAction::SendThenEof(bytes) => {
                     let _ = stream.as_mut().unwrap().write_all(&bytes);
                     let _ = stream.as_mut().unwrap().shutdown(Shutdown::Write);
+                }
+                ScriptAction::SendAfterRead(bytes) => {
+                    let stream = stream.as_mut().unwrap();
+                    let _ = read_request(stream, 64 * 1024);
+                    let _ = stream.write_all(&bytes);
                 }
                 ScriptAction::Reset => {
                     drop(stream.take().unwrap());
@@ -255,7 +263,7 @@ async fn auth_outage_not_cached_recovery_reprobes() {
 
     let session = session_json(&base2);
     let session_str = session.to_string();
-    let actions = vec![ScriptAction::Send(
+    let actions = vec![ScriptAction::SendAfterRead(
         format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
             session_str.len(),

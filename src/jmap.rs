@@ -2244,6 +2244,30 @@ impl JmapClient {
         username: &str,
         password: &SecretString,
     ) -> Result<JmapResponse> {
+        self.api_call_impl(api_url, using, method_calls, username, password, false)
+            .await
+    }
+
+    /// [`Self::api_call`] with an explicit transport-failure classification.
+    ///
+    /// When `unconfirmed_on_transport` is set (a batch that CREATES an
+    /// `EmailSubmission`), any failure that may have happened AFTER the request
+    /// reached the server — a mid-flight transport error, a 5xx, or an
+    /// undecodable 2xx body — is reported as [`SubmissionUnconfirmed`] rather
+    /// than a plain error. The submission may have been accepted, and a caller
+    /// that treats it as a definite failure would re-deliver the message over
+    /// SMTP (a duplicate). A CONNECT failure (the request never left the
+    /// gateway) and a 4xx (the server rejected it outright) stay plain errors so
+    /// a safe fallback still works.
+    async fn api_call_impl(
+        &self,
+        api_url: &str,
+        using: &[&str],
+        method_calls: Vec<(&str, Value, &str)>,
+        username: &str,
+        password: &SecretString,
+        unconfirmed_on_transport: bool,
+    ) -> Result<JmapResponse> {
         let auth = Self::basic_auth_header(username, password);
 
         let calls: Vec<JmapMethodCall> = method_calls
@@ -2273,17 +2297,36 @@ impl JmapClient {
             .body(body)
             .send()
             .await
-            .map_err(|e| anyhow!("JMAP API call failed: {}", e))?;
+            .map_err(|e| {
+                if unconfirmed_on_transport && !e.is_connect() {
+                    anyhow::Error::new(SubmissionUnconfirmed(format!(
+                        "JMAP submission request failed in flight (the batch may have been applied): {e}"
+                    )))
+                } else {
+                    anyhow!("JMAP API call failed: {}", e)
+                }
+            })?;
 
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
+            if unconfirmed_on_transport && status.is_server_error() {
+                return Err(anyhow::Error::new(SubmissionUnconfirmed(format!(
+                    "JMAP submission returned {status} (the batch may have been applied): {body}"
+                ))));
+            }
             return Err(anyhow!("JMAP API call returned {}: {}", status, body));
         }
 
-        resp.json::<JmapResponse>()
-            .await
-            .map_err(|e| anyhow!("Failed to parse JMAP response: {}", e))
+        resp.json::<JmapResponse>().await.map_err(|e| {
+            if unconfirmed_on_transport {
+                anyhow::Error::new(SubmissionUnconfirmed(format!(
+                    "JMAP submission response could not be decoded (the batch may have been applied): {e}"
+                )))
+            } else {
+                anyhow!("Failed to parse JMAP response: {}", e)
+            }
+        })
     }
 
     /// Query emails in a mailbox.
@@ -2434,7 +2477,10 @@ impl JmapClient {
                 saw_get = data.get("list").is_some_and(|v| v.is_array());
                 if let Some(missing) = data.get("notFound").and_then(|v| v.as_array()) {
                     get_not_found.extend(
-                        missing.iter().filter_map(|v| v.as_str()).map(str::to_string),
+                        missing
+                            .iter()
+                            .filter_map(|v| v.as_str())
+                            .map(str::to_string),
                     );
                 }
                 emails = data
@@ -2633,9 +2679,17 @@ impl JmapClient {
                     .unwrap_or_default();
                 return Ok(ids);
             }
+            // RFC 8620 §3.6.2: a failed invocation comes back as a method-level
+            // `error` entry with no `Email/query` result. Returning an empty
+            // page for it would let a caller (the MAPI folder-copy inventory
+            // walks) treat a backend error as the END of the inventory and
+            // report a successful empty copy for a non-empty source.
+            if method == "error" {
+                return Err(anyhow!("Email/query failed: {data}"));
+            }
         }
 
-        Ok(Vec::new())
+        Err(anyhow!("Email/query returned no method response"))
     }
 
     /// Fetch one `Thread` (RFC 8621 §4.2) and return its member email ids.
@@ -4376,7 +4430,12 @@ impl JmapClient {
                 }
             }
             if let Some(missing) = data.get("notFound").and_then(|v| v.as_array()) {
-                not_found.extend(missing.iter().filter_map(|v| v.as_str()).map(str::to_string));
+                not_found.extend(
+                    missing
+                        .iter()
+                        .filter_map(|v| v.as_str())
+                        .map(str::to_string),
+                );
             }
         }
         // RFC 8620 §3.6.2: an invocation always answers. A batch with no
@@ -5213,7 +5272,7 @@ impl JmapClient {
         ];
 
         let response = self
-            .api_call(
+            .api_call_impl(
                 api_url,
                 &[
                     "urn:ietf:params:jmap:core",
@@ -5223,6 +5282,10 @@ impl JmapClient {
                 method_calls,
                 params.username,
                 params.password,
+                // A lost transport/response here does NOT prove the submission
+                // failed: reporting a plain error would make `send_email` fall
+                // back to SMTP and deliver the message twice.
+                true,
             )
             .await?;
 
@@ -6893,9 +6956,7 @@ impl JmapClient {
             }
             if method == "CalendarEvent/get" {
                 let Some(list) = data.get("list").and_then(|v| v.as_array()) else {
-                    return Err(anyhow!(
-                        "CalendarEvent/get returned no usable list: {data}"
-                    ));
+                    return Err(anyhow!("CalendarEvent/get returned no usable list: {data}"));
                 };
                 saw_get = true;
                 state = data

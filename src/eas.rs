@@ -2520,6 +2520,13 @@ async fn handle_ping(
         generation: ping_generation,
     };
 
+    // The hold deadline starts HERE, before any backend work: the startup probe
+    // and the account lookup below are network calls, and letting them run
+    // outside the deadline would hold the response past the negotiated
+    // heartbeat (Cloudflare then answers 524) and would keep a superseded Ping
+    // alive while its replacement waits.
+    let deadline = Instant::now() + StdDuration::from_secs(effective_heartbeat);
+
     // ---- Live push wiring (audit gap #13) ---------------------------------
     // Email change detection previously relied solely on the ≤15s
     // change-journal poll below, so new mail could lag a full tick after
@@ -2557,28 +2564,49 @@ async fn handle_ping(
             }
         })
     };
-    // Resolve the JMAP account once per Ping; reused by every probe below.
-    let jmap_account: Option<(Arc<JmapClient>, String)> = if push_guard.is_some() {
-        match state.jmap_client.as_ref() {
-            Some(jmap) => match jmap.get_account_id(owner, password).await {
-                Ok(id) if !id.is_empty() => Some((jmap.clone(), id)),
-                _ => None,
-            },
-            None => None,
+    // Resolve the JMAP account once per Ping; reused by every probe below. The
+    // startup probe runs under the SAME bound as the wait loop's probes
+    // (remaining heartbeat + supersession): a slow backend must neither consume
+    // the heartbeat before the loop starts nor block a replacement Ping. When
+    // the budget is exhausted the loop below exits at the deadline and answers a
+    // clean Status 1 (the client simply re-issues), and a fast probe still
+    // reports a pending change immediately with Status 2.
+    let (jmap_account, probe_changed) = tokio::select! {
+        biased;
+        _ = supersede_token.cancelled() => {
+            return ping_superseded_response(wbxml, as_wbxml, request_id);
         }
-    } else {
-        None
-    };
-    let probe_changed = probe_email_folder_changes(
-        state,
-        owner,
-        password,
-        device_id,
-        &email_folder_ids,
-        &jmap_account,
-        request_id,
-    )
-    .await;
+        r = timeout(
+            deadline.saturating_duration_since(Instant::now()),
+            async {
+                let jmap_account: Option<(Arc<JmapClient>, String)> = if push_guard.is_some() {
+                    match state.jmap_client.as_ref() {
+                        Some(jmap) => match jmap.get_account_id(owner, password).await {
+                            Ok(id) if !id.is_empty() => Some((jmap.clone(), id)),
+                            _ => None,
+                        },
+                        None => None,
+                    }
+                } else {
+                    None
+                };
+                let changed = probe_email_folder_changes(
+                    state,
+                    owner,
+                    password,
+                    device_id,
+                    &email_folder_ids,
+                    &jmap_account,
+                    request_id,
+                )
+                .await;
+                (jmap_account, changed)
+            },
+        ) => r,
+    }
+    // Budget exhausted (or the join was cancelled): no change found yet; the
+    // wait loop below answers a clean Status 1 at the deadline.
+    .unwrap_or_default();
     if !probe_changed.is_empty() {
         return ping_changed_response(wbxml, as_wbxml, &probe_changed, request_id);
     }
@@ -2631,7 +2659,6 @@ async fn handle_ping(
     let mut tasks_probe_disabled = false;
     let mut notes_probe_disabled = false;
 
-    let deadline = Instant::now() + StdDuration::from_secs(effective_heartbeat);
     while Instant::now() < deadline {
         if supersede_token.is_cancelled() {
             // This Ping was superseded by a newer one for the same device.
@@ -5667,7 +5694,8 @@ async fn handle_folder_create(ctx: &FolderCmdCtx<'_>) -> Response {
     // key can never create a folder or rotate the device's current key. An
     // unreadable stored key is a retryable Status 6, never a mismatch.
     let supplied_key = extract_first_tag_text(xml, b"SyncKey").unwrap_or_default();
-    match crate::eas_folders::folder_sync_key_matches(state, owner, device_id, &supplied_key).await {
+    match crate::eas_folders::folder_sync_key_matches(state, owner, device_id, &supplied_key).await
+    {
         crate::eas_folders::FolderSyncKeyVerdict::Match => {}
         crate::eas_folders::FolderSyncKeyVerdict::Mismatch => {
             let body = crate::eas_folders::invalid_folder_sync_key_response("FolderCreate");
@@ -5738,7 +5766,8 @@ async fn handle_folder_delete(ctx: &FolderCmdCtx<'_>) -> Response {
     // key must never delete a folder. An unreadable stored key is a retryable
     // Status 6, never a mismatch.
     let supplied_key = extract_first_tag_text(xml, b"SyncKey").unwrap_or_default();
-    match crate::eas_folders::folder_sync_key_matches(state, owner, device_id, &supplied_key).await {
+    match crate::eas_folders::folder_sync_key_matches(state, owner, device_id, &supplied_key).await
+    {
         crate::eas_folders::FolderSyncKeyVerdict::Match => {}
         crate::eas_folders::FolderSyncKeyVerdict::Mismatch => {
             let body = crate::eas_folders::invalid_folder_sync_key_response("FolderDelete");
@@ -5780,7 +5809,8 @@ async fn handle_folder_update(ctx: &FolderCmdCtx<'_>) -> Response {
     // key must never rename/move a folder. An unreadable stored key is a
     // retryable Status 6, never a mismatch.
     let supplied_key = extract_first_tag_text(xml, b"SyncKey").unwrap_or_default();
-    match crate::eas_folders::folder_sync_key_matches(state, owner, device_id, &supplied_key).await {
+    match crate::eas_folders::folder_sync_key_matches(state, owner, device_id, &supplied_key).await
+    {
         crate::eas_folders::FolderSyncKeyVerdict::Match => {}
         crate::eas_folders::FolderSyncKeyVerdict::Mismatch => {
             let body = crate::eas_folders::invalid_folder_sync_key_response("FolderUpdate");

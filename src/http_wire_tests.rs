@@ -205,9 +205,7 @@ async fn post_eas(
     let xml = if bytes.is_empty() {
         String::new()
     } else {
-        codec
-            .decode(&bytes)
-            .expect("WBXML response must decode at the HTTP boundary")
+        decode_wbxml_response(&codec, &bytes)
     };
     EasWireResponse {
         status,
@@ -215,6 +213,22 @@ async fn post_eas(
         nosniff,
         xml,
     }
+}
+
+/// A WBXML body must be BINARY. `Wbxml::decode` also passes raw UTF-8 straight
+/// through, so a response served as raw XML under the WBXML Content-Type would
+/// satisfy every decoded-XML assertion (and pass the WBXML header check). The
+/// version byte ([MS-ASWBXML] §2.1.1: `0x03` = 1.3) is asserted before decoding.
+fn decode_wbxml_response(codec: &Wbxml, bytes: &[u8]) -> String {
+    assert_eq!(
+        bytes.first().copied(),
+        Some(0x03),
+        "a WBXML response must start with the version-1.3 byte, got {:02x?}",
+        &bytes[..bytes.len().min(8)]
+    );
+    codec
+        .decode(bytes)
+        .expect("WBXML response must decode at the HTTP boundary")
 }
 
 fn tag_text(xml: &str, name: &str) -> Option<String> {
@@ -256,6 +270,12 @@ async fn eas_wbxml_sync_runs_prime_delta_invalid_key_and_clean_reprime_over_http
     assert_eq!(tag_text(&delta.xml, "Status").as_deref(), Some("1"));
     let delta_key = tag_text(&delta.xml, "SyncKey").expect("delta key");
     assert_ne!(delta_key, prime_key, "successful deltas rotate the key");
+    // A rotated key the client could not resume from (empty, or the literal
+    // "0" that means "prime from scratch") is a failed delta, not a success.
+    assert!(
+        !delta_key.is_empty() && delta_key != "0",
+        "the rotated delta key must be usable, got {delta_key:?}"
+    );
 
     let rejected = gateway.eas("Sync", &tasks_sync("never-issued")).await;
     assert_eq!(rejected.status, StatusCode::OK);
@@ -290,6 +310,10 @@ async fn eas_ping_times_out_cleanly_and_wakes_for_a_real_journaled_change() {
     let client = gateway.client.clone();
     let base = gateway.base.clone();
     let device_id = gateway.device_id.clone();
+    // Measure from BEFORE the Ping is sent: the server's heartbeat clock starts
+    // no earlier than the send, so a Status 2 observed well inside that window
+    // cannot have come from the heartbeat expiring.
+    let started = std::time::Instant::now();
     let waiting = tokio::spawn(async move {
         post_eas(&client, &base, &device_id, "Ping", mixed_ping_request()).await
     });
@@ -332,15 +356,19 @@ async fn eas_ping_times_out_cleanly_and_wakes_for_a_real_journaled_change() {
             item_id: "task-wire-wake".to_string(),
             change_key: "1".to_string(),
         });
-    // The deadline is strictly BELOW the 5s heartbeat (with ample slack after
-    // the 100 ms mutation), so a Status 2 can only have come from the
-    // subscription wake, never from the heartbeat expiring.
     let woken = tokio::time::timeout(Duration::from_secs(3), waiting)
         .await
         .expect("Ping must wake before its heartbeat")
         .unwrap();
     assert_eq!(woken.status, StatusCode::OK);
     assert_eq!(tag_text(&woken.xml, "Status").as_deref(), Some("2"));
+    // `mixed_ping_request` asks for a 60 s heartbeat, so a Status 2 measured
+    // from BEFORE the send can only be the subscription wake — a heartbeat
+    // expiry would take a minute.
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "the Status 2 wake must arrive long before the sixty-second heartbeat"
+    );
     assert_eq!(tag_text(&woken.xml, "Folder").as_deref(), Some("7"));
 }
 

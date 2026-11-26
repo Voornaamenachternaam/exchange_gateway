@@ -10596,8 +10596,8 @@ async fn handle_get_user_oof_settings(
       <t:StartTime>{}</t:StartTime>
       <t:EndTime>{}</t:EndTime>
     </t:Duration>
-    <t:InternalReply>{}</t:InternalReply>
-    <t:ExternalReply>{}</t:ExternalReply>
+    <t:InternalReply><t:Message>{}</t:Message></t:InternalReply>
+    <t:ExternalReply><t:Message>{}</t:Message></t:ExternalReply>
   </m:OofSettings>
   <m:AllowExternalOof>true</m:AllowExternalOof>
 </m:GetUserOofSettingsResponse>"#,
@@ -10611,6 +10611,17 @@ async fn handle_get_user_oof_settings(
         xml_escape(external_reply)
     );
     soap_ok(inner)
+}
+
+/// The reply text of an OOF `InternalReply`/`ExternalReply` element.
+///
+/// [MS-OXWOOF] §2.2.3.2 models both as `ReplyBody`, whose string lives in a
+/// `Message` child; a client may also put the text directly inside the element,
+/// so both shapes are accepted.
+fn oof_reply_text(xml: &str, tag: &[u8]) -> Option<String> {
+    extract_first_tag_block(xml, tag)
+        .and_then(|block| extract_first_tag_text(&block, b"Message"))
+        .or_else(|| extract_first_tag_text(xml, tag))
 }
 
 async fn handle_set_user_oof_settings(
@@ -10645,7 +10656,10 @@ async fn handle_set_user_oof_settings(
 
     let external_audience_text = extract_first_tag_text(body, b"ExternalAudience")
         .map(|v| v.trim().to_lowercase())
-        .unwrap_or_else(|| "all".to_string());
+        // An OMITTED `ExternalAudience` defaults to `None`, never `All`: sending
+        // auto-replies to external senders is a privacy decision the user must
+        // make explicitly.
+        .unwrap_or_else(|| "none".to_string());
     // `t:ExternalAudience` is `None | Known | All` ([MS-OXWOOF] §2.2.5.1) — an
     // unrecognised token is a client error, never a silent "All" (which sends
     // external auto-replies the user never asked for). The `External`/
@@ -10690,9 +10704,11 @@ async fn handle_set_user_oof_settings(
         (None, None)
     };
 
-    // Replies
-    let internal_reply = extract_first_tag_text(body, b"InternalReply");
-    let external_reply = extract_first_tag_text(body, b"ExternalReply");
+    // Replies. [MS-OXWOOF] §2.2.3.2 types both as `ReplyBody`, whose text lives
+    // in a `Message` child — read that child first, falling back to the direct
+    // text a client may still send.
+    let internal_reply = oof_reply_text(body, b"InternalReply");
+    let external_reply = oof_reply_text(body, b"ExternalReply");
 
     // Prevent timestamps containing only zeros if OOF disabled? We'll just store as-is.
     let settings = crate::oof::OofSettings {
