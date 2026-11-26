@@ -2500,6 +2500,18 @@ fn resolve_explicit_folder_id(id: &str, owner: &str) -> DistinguishedFolder {
 
 async fn handle_get_folder(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
     let owner = owner_from_username(&auth.username);
+    // An explicit FolderId that is not a distinguished folder is a user-created
+    // (JMAP) mailbox id — the same id `SyncFolderHierarchy` and `FindFolder`
+    // hand the client. Resolving it before validation is what makes `GetFolder`
+    // work for a folder the client itself created; an id that matches neither is
+    // rejected by `validate_requested_folder` below.
+    if let Some(id) = extract_first_attr(body, b"FolderId", b"Id")
+        && extract_first_attr(body, b"DistinguishedFolderId", b"Id").is_none()
+        && resolve_folder_id(&id, owner).is_none()
+        && id != "root"
+    {
+        return get_folder_custom(state, auth, &id).await;
+    }
     if let Err(resp) = validate_requested_folder(&EwsAction::GetFolder, owner, body) {
         return *resp;
     }
@@ -2687,6 +2699,79 @@ async fn find_folder_custom_children(
         EWS_MSG_NS, EWS_TYPE_NS, total, xml
     );
     soap_ok(response)
+}
+
+/// GetFolder for one user-created (JMAP) mail folder, addressed by its mailbox
+/// id. A folder the authenticated owner does not own is `ErrorFolderNotFound`
+/// (the same answer validation would give), and a backend failure is a
+/// retryable server error — never "not found", which the client would treat as
+/// a vanished folder.
+async fn get_folder_custom(state: &Arc<AppState>, auth: &AuthContext, folder_id: &str) -> Response {
+    let Some(jmap) = state.jmap_client.as_ref() else {
+        return operation_error_response(
+            &EwsAction::GetFolder,
+            "ErrorInternalServerError",
+            "JMAP backend not configured",
+            StatusCode::INTERNAL_SERVER_ERROR,
+        );
+    };
+    let mailboxes = match jmap.query_mailboxes(&auth.username, &auth.password).await {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::error!(error = %e, "Mailbox/query failed in GetFolder");
+            return operation_error_response(
+                &EwsAction::GetFolder,
+                "ErrorServerBusy",
+                "Could not read the folder",
+                StatusCode::SERVICE_UNAVAILABLE,
+            );
+        }
+    };
+    let Some(m) = mailboxes
+        .mailboxes
+        .iter()
+        .find(|m| m.id.as_deref() == Some(folder_id))
+    else {
+        return operation_error_response(
+            &EwsAction::GetFolder,
+            "ErrorFolderNotFound",
+            "Requested folder was not found for this mailbox",
+            StatusCode::OK,
+        );
+    };
+    let parent = m
+        .parent_id
+        .clone()
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(|| {
+            folder_id_for(
+                owner_from_username(&auth.username),
+                DistinguishedFolder::MsgFolderRoot,
+            )
+        });
+    let child_count = mailboxes
+        .mailboxes
+        .iter()
+        .filter(|c| c.parent_id.as_deref() == Some(folder_id))
+        .count();
+    let name = m.name.clone().unwrap_or_else(|| "Folder".to_string());
+    let folders_xml = format!(
+        "<t:Folder><t:FolderId Id=\"{}\" ChangeKey=\"1\"/>\
+         <t:ParentFolderId Id=\"{}\" ChangeKey=\"1\"/>\
+         <t:DisplayName>{}</t:DisplayName>\
+         <t:TotalCount>0</t:TotalCount>\
+         <t:ChildFolderCount>{}</t:ChildFolderCount>\
+         <t:UnreadCount>{}</t:UnreadCount></t:Folder>",
+        xml_escape(folder_id),
+        xml_escape(&parent),
+        xml_escape(&name),
+        child_count,
+        m.unread_emails.unwrap_or(0),
+    );
+    soap_ok(format!(
+        r#"<m:GetFolderResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:GetFolderResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Folders>{}</m:Folders></m:GetFolderResponseMessage></m:ResponseMessages></m:GetFolderResponse>"#,
+        EWS_MSG_NS, EWS_TYPE_NS, folders_xml
+    ))
 }
 
 /// Handle EWS FindItem for email folders by routing to JMAP.
@@ -6918,15 +7003,29 @@ async fn handle_sync_folder_hierarchy(
         .map(|s| s.is_empty())
         .unwrap_or(true);
     // Resume position: the folder-journal watermark carried in the client's
-    // opaque SyncState. An unreadable token falls back to 0 — a full re-send of
-    // the live hierarchy plus the journal — which is safe because EWS keys
-    // folders by FolderId (a repeated Create updates in place).
+    // opaque SyncState. A token this gateway cannot decode is answered with
+    // `ErrorInvalidSyncStateData` ([MS-OXWSSYNC] §2.2.4.1: the server MUST
+    // reject a sync state it did not issue), which the client recovers from by
+    // sending an empty SyncState — the exact full re-send a silent fallback to
+    // 0 would have performed, but without pretending the cursor was understood.
     let since = if is_initial {
         0
     } else {
-        parse_sync_state_marker(requested_state.clone())
-            .map(|(seq, _)| seq)
-            .unwrap_or(0)
+        match parse_sync_state_marker(requested_state.clone()) {
+            Ok((seq, _)) => seq,
+            Err(()) => {
+                tracing::info!(
+                    owner = %owner,
+                    "Unreadable EWS folder-hierarchy SyncState; requesting a full resync"
+                );
+                return operation_error_response(
+                    &EwsAction::SyncFolderHierarchy,
+                    "ErrorInvalidSyncStateData",
+                    "The supplied SyncState could not be decoded; re-synchronize from an empty SyncState",
+                    StatusCode::OK,
+                );
+            }
+        }
     };
     // ONE consistent read: the head is captured BEFORE the hierarchy is
     // rendered and becomes the acknowledged watermark, so a mutation journaled
@@ -7033,7 +7132,11 @@ async fn handle_sync_folder_hierarchy(
             {
                 // A folder that is gone again by the end of the window is
                 // covered by its `<Delete>` row above (when the client knew it).
-                let tag = if row.op == "folder-add" {
+                //
+                // A folder ADDED in this window was never on the client, so its
+                // first change must be a `Create` — reporting an `Update` for a
+                // FolderId the client has never received would be dropped.
+                let tag = if added_in_window.contains(server_id) || row.op == "folder-add" {
                     "Create"
                 } else {
                     "Update"
@@ -10077,6 +10180,7 @@ async fn handle_copy_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
             if !persist_new_calendar_mapping(
                 state,
                 &auth.username,
+                "",
                 &resource_href,
                 &server_id,
                 &copied_item.uid,
@@ -10191,13 +10295,40 @@ async fn handle_copy_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
             copied_item.dtstamp = Some(Utc::now());
             let new_ics = render_ics(&copied_item);
 
-            // Destination collection: use source's caldav_href if available, else resource_href
-            let dest_collection = lookup.caldav_href.as_ref().unwrap_or(&lookup.resource_href);
+            // Destination collection: the request names the DEFAULT calendar
+            // (validated above), so the copy must land there — never in the
+            // SOURCE event's collection, which would silently copy the event
+            // within its own calendar.
+            let dest_collection = match caldav
+                .find_user_calendars(&auth.username, auth.password.expose_secret())
+                .await
+            {
+                Ok(calendars) => match calendars.into_iter().next() {
+                    Some(href) => href,
+                    None => {
+                        return operation_error_response(
+                            &EwsAction::CopyItem,
+                            "ErrorServerBusy",
+                            "No calendar collection is available to copy into",
+                            StatusCode::SERVICE_UNAVAILABLE,
+                        );
+                    }
+                },
+                Err(e) => {
+                    tracing::error!(error = %e, "CopyItem: calendar discovery failed");
+                    return operation_error_response(
+                        &EwsAction::CopyItem,
+                        "ErrorServerBusy",
+                        "Could not resolve the destination calendar",
+                        StatusCode::SERVICE_UNAVAILABLE,
+                    );
+                }
+            };
 
             // Create new event via PUT (no If-Match)
             let (new_href, new_etag) = match caldav
                 .put_event(
-                    dest_collection,
+                    &dest_collection,
                     None,
                     &new_ics,
                     &auth.username,
@@ -10229,6 +10360,7 @@ async fn handle_copy_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
             if !persist_new_calendar_mapping(
                 state,
                 &auth.username,
+                &dest_collection,
                 &new_href,
                 &server_id,
                 &copied_item.uid,
@@ -13345,9 +13477,18 @@ async fn fetch_jmap_calendar_item(
     Ok((item, etag))
 }
 
+/// Persist a created calendar item's mapping (retried, because the backend copy
+/// is already committed and the id must resolve afterwards).
+///
+/// `collection_href` is the item's CalDAV COLLECTION (`item_map.caldav_href`),
+/// which a later copy/delete resolves the destination from. A JMAP-backed item
+/// passes `""` (its `resource_href` is the `jmap://` pseudo-href and its
+/// collection is not a CalDAV href); a CalDAV-backed item passes the collection
+/// its resource was PUT into.
 async fn persist_new_calendar_mapping(
     state: &Arc<AppState>,
     owner: &str,
+    collection_href: &str,
     resource_href: &str,
     server_id: &str,
     uid: &str,
@@ -13356,7 +13497,7 @@ async fn persist_new_calendar_mapping(
     for attempt in 0..3u32 {
         match state
             .storage
-            .upsert_item_map(owner, "", resource_href, server_id, uid, etag)
+            .upsert_item_map(owner, collection_href, resource_href, server_id, uid, etag)
             .await
         {
             Ok(()) => return true,
@@ -13491,8 +13632,16 @@ async fn try_jmap_create_calendar(
     // Persist mapping. The event is already committed, so a failure here must
     // NOT fall back to the CalDAV create path: either the mapping is made
     // durable, or the event is removed again, or the request fails.
-    if !persist_new_calendar_mapping(state, owner, &resource_href, &server_id, &item.uid, &etag)
-        .await
+    if !persist_new_calendar_mapping(
+        state,
+        owner,
+        "",
+        &resource_href,
+        &server_id,
+        &item.uid,
+        &etag,
+    )
+    .await
     {
         let removed =
             rollback_unmapped_calendar_event(state, owner, password, &account_id, &event_id).await;
@@ -18718,6 +18867,157 @@ mod tests {
         assert!(
             text.contains("m0") && text.contains("m1") && !text.contains("m2"),
             "the restart must deliver the head, not the recorded position: {text}"
+        );
+    }
+
+    /// A SyncState this gateway cannot decode is answered with
+    /// `ErrorInvalidSyncStateData` ([MS-OXWSSYNC] §2.2.4.1: the server must
+    /// reject a sync state it did not issue) instead of silently re-sending the
+    /// whole hierarchy, which would look like a successful delta.
+    #[tokio::test]
+    async fn sync_folder_hierarchy_rejects_an_undecodable_sync_state() {
+        let state = meeting_test_state().await;
+        let body = response_body(
+            handle_sync_folder_hierarchy(
+                &state,
+                &meeting_auth(),
+                r#"<SyncFolderHierarchy><FolderShape/><SyncState>not-a-gateway-token</SyncState></SyncFolderHierarchy>"#,
+            )
+            .await,
+        )
+        .await;
+        assert!(
+            body.contains("ErrorInvalidSyncStateData"),
+            "an undecodable SyncState must be rejected: {body}"
+        );
+        // An EMPTY SyncState is the documented prime and still succeeds.
+        let prime = response_body(
+            handle_sync_folder_hierarchy(
+                &state,
+                &meeting_auth(),
+                r#"<SyncFolderHierarchy><FolderShape/><SyncState/></SyncFolderHierarchy>"#,
+            )
+            .await,
+        )
+        .await;
+        assert!(
+            prime.contains("NoError") && prime.contains("<m:Changes>") && prime.contains("Inbox"),
+            "an empty SyncState still primes: {prime}"
+        );
+    }
+
+    /// `GetFolder` on a user-created (JMAP) mail folder must resolve it instead
+    /// of failing validation: the FolderId the hierarchy hands the client is the
+    /// mailbox id, so a client that reads the folder it just created otherwise
+    /// gets `ErrorFolderNotFound`. An id that matches no mailbox stays rejected.
+    #[tokio::test]
+    async fn get_folder_resolves_a_custom_mailbox_and_rejects_unknown_ids() {
+        use axum::routing::{get, post};
+        use serde_json::{Value, json};
+
+        async fn session(axum::Extension(base): axum::Extension<String>) -> axum::Json<Value> {
+            axum::Json(json!({
+                "apiUrl": base,
+                "downloadUrl": format!("{}/download/{{accountId}}/{{blobId}}", base),
+                "uploadUrl": format!("{}/upload/{{accountId}}", base),
+                "eventSourceUrl": format!("{}/eventsource", base),
+                "state": "s",
+                "username": "u",
+                "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                "capabilities": {"urn:ietf:params:jmap:core": {"maxObjectsInGet": 500}}
+            }))
+        }
+
+        async fn api(body: String) -> axum::Json<Value> {
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let mut responses = Vec::new();
+            for call in req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                match name {
+                    "Mailbox/query" => responses.push(json!([
+                        "Mailbox/query",
+                        {"accountId":"a","ids":["mbx-inbox","mbx-proj"],"total":2},
+                        cid
+                    ])),
+                    "Mailbox/get" => responses.push(json!([
+                        "Mailbox/get",
+                        {"accountId":"a","state":"ms","list":[
+                            {"id":"mbx-inbox","name":"Inbox","role":"inbox","totalEmails":4,"unreadEmails":2},
+                            {"id":"mbx-proj","name":"Projects","parentId":"mbx-inbox","totalEmails":7,"unreadEmails":1}
+                        ],"notFound":[]},
+                        cid
+                    ])),
+                    _ => {}
+                }
+            }
+            axum::Json(json!({"methodResponses": responses}))
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(base.clone()));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .expect("in-memory storage");
+        storage.init_schema().await.expect("schema init");
+        let cfg = crate::config::Config {
+            jmap_base: base,
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = Arc::new(crate::models::AppState::new(cfg, Arc::new(storage)));
+
+        let body = response_body(
+            handle_get_folder(
+                &state,
+                &meeting_auth(),
+                r#"<GetFolder><FolderShape/><FolderIds><t:FolderId Id="mbx-proj"/></FolderIds></GetFolder>"#,
+            )
+            .await,
+        )
+        .await;
+        assert!(
+            body.contains(r#"Id="mbx-proj""#) && body.contains("Projects"),
+            "the custom folder must be rendered: {body}"
+        );
+        assert!(
+            body.contains(r#"Id="mbx-inbox""#),
+            "the parent is the real mailbox parent: {body}"
+        );
+        assert!(
+            body.contains("<t:DisplayName>Projects</t:DisplayName>"),
+            "{body}"
+        );
+
+        let unknown = response_body(
+            handle_get_folder(
+                &state,
+                &meeting_auth(),
+                r#"<GetFolder><FolderShape/><FolderIds><t:FolderId Id="mbx-gone"/></FolderIds></GetFolder>"#,
+            )
+            .await,
+        )
+        .await;
+        assert!(
+            unknown.contains("ErrorFolderNotFound"),
+            "an unknown folder id stays rejected: {unknown}"
         );
     }
 

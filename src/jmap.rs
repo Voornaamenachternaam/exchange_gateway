@@ -161,6 +161,42 @@ where
     }
 }
 
+/// Deserialize a JMAP `messageId` (RFC 8621 §4.1.3: `"String[]|null"`) into the
+/// single value the gateway's consumers use.
+///
+/// The RFC type is an ARRAY, so a server that follows the contract (Stalwart
+/// does) sends `["<id@host>"]`; a scalar `String` is still accepted because the
+/// stubs and some older servers emit one. Anything that is neither (and any
+/// non-string element) is an error: silently dropping the whole `Email/get`
+/// page would make the collection look empty.
+fn message_id_from_wire<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    match value {
+        Value::Null => Ok(None),
+        Value::String(s) => Ok(Some(s)),
+        Value::Array(items) => {
+            for item in items {
+                match item {
+                    Value::String(s) => return Ok(Some(s)),
+                    Value::Null => {}
+                    other => {
+                        return Err(serde::de::Error::custom(format!(
+                            "messageId element is not a string: {other}"
+                        )));
+                    }
+                }
+            }
+            Ok(None)
+        }
+        other => Err(serde::de::Error::custom(format!(
+            "messageId is neither a string nor an array: {other}"
+        ))),
+    }
+}
+
 /// JMAP session object (RFC 8621 §2.1)
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -437,7 +473,8 @@ pub struct JmapEmail {
     #[serde(default, deserialize_with = "one_or_array")]
     pub sender: Option<Vec<JmapEmailAddress>>,
     /// Message-ID header value, sans angle brackets (RFC 8621 §4.1.3 `messageId`).
-    #[serde(default)]
+    /// The wire type is `String[]|null`; the gateway keeps the first value.
+    #[serde(default, deserialize_with = "message_id_from_wire")]
     pub message_id: Option<String>,
     /// In-Reply-To header value(s) (RFC 8621 §4.1.3 `inReplyTo`).
     #[serde(default)]
@@ -3900,6 +3937,12 @@ impl JmapClient {
         const PAGE: u64 = 500;
         let mut out: Vec<(String, Vec<String>)> = Vec::new();
         let mut position: u64 = 0;
+        // The query state of the FIRST page pins the paged walk. `position` is a
+        // sliding index into a LIVE result set: if the mailbox changes mid-walk,
+        // the tail shifts and an id can be skipped or returned twice. The
+        // inventory would then be wrong (a MAPI delete/move would silently miss
+        // a message), so a changed state fails the walk for a retry instead.
+        let mut pinned_state: Option<String> = None;
         loop {
             let params = QueryEmailsParams {
                 account_id,
@@ -3913,6 +3956,16 @@ impl JmapClient {
                 password,
             };
             let list = self.query_emails(params).await?;
+            match pinned_state.as_deref() {
+                None => pinned_state = Some(list.query_state.clone()),
+                Some(pinned) if pinned != list.query_state => {
+                    return Err(anyhow!(
+                        "mailbox {mailbox_id} changed while it was being enumerated (query state {pinned} -> {}); retry the walk",
+                        list.query_state
+                    ));
+                }
+                Some(_) => {}
+            }
             let fetched = list.emails.len() as u64;
             for e in list.emails {
                 let Some(jid) = e.id.clone() else {
@@ -6009,9 +6062,10 @@ impl JmapClient {
             // JMAP session for an account whose credentials are valid. This
             // deliberately differs from `CaldavClient::check_credentials`
             // (where 403 is a backend error) because a CalDAV-only deployment
-            // would otherwise lock a valid user out with a 503; a deployment
-            // with NO CalDAV configured answers 401 for a 403, which the client
-            // resolves by re-entering the password.
+            // would otherwise lock a valid user out with a 503. With no CalDAV
+            // configured the outcome is a 401 to the client — Stalwart's own
+            // answer for rejected credentials — and the short-lived negative
+            // cache entry expires on its own.
             CredentialCheck::Invalid
         } else {
             let body = resp.text().await.unwrap_or_default();
@@ -12037,5 +12091,62 @@ mod tests {
             .expect("minimal source imports");
         assert!(bare.get("keywords").is_none());
         assert!(bare.get("receivedAt").is_none());
+    }
+
+    /// RFC 8621 §4.1.3 types `messageId` as `String[]|null`. A server that
+    /// follows the contract (Stalwart does) must not make the whole `Email/get`
+    /// page unparseable — which the previous `Option<String>` did, silently
+    /// yielding an empty email list.
+    #[test]
+    fn email_message_id_accepts_the_rfc_array_form_and_a_scalar() {
+        let arr: JmapEmail = serde_json::from_value(json!({
+            "id": "m1",
+            "messageId": ["<abc@example.com>"],
+        }))
+        .expect("an RFC 8621 messageId array parses");
+        assert_eq!(arr.message_id.as_deref(), Some("<abc@example.com>"));
+
+        let scalar: JmapEmail = serde_json::from_value(json!({
+            "id": "m1",
+            "messageId": "<abc@example.com>",
+        }))
+        .expect("a scalar messageId still parses");
+        assert_eq!(scalar.message_id.as_deref(), Some("<abc@example.com>"));
+
+        let empty: JmapEmail = serde_json::from_value(json!({
+            "id": "m1",
+            "messageId": [],
+        }))
+        .expect("an empty array parses");
+        assert_eq!(empty.message_id, None);
+
+        let null: JmapEmail = serde_json::from_value(json!({
+            "id": "m1",
+            "messageId": null,
+        }))
+        .expect("null parses");
+        assert_eq!(null.message_id, None);
+
+        let absent: JmapEmail =
+            serde_json::from_value(json!({"id": "m1"})).expect("an absent messageId parses");
+        assert_eq!(absent.message_id, None);
+
+        // A page mixing both wire forms must decode as a whole: one message
+        // with an array messageId may not empty the batch.
+        let page: Vec<JmapEmail> = serde_json::from_value(json!([
+            {"id": "m1", "messageId": ["<a@example.com>"]},
+            {"id": "m2", "messageId": "<b@example.com>"},
+            {"id": "m3"}
+        ]))
+        .expect("a mixed page parses");
+        assert_eq!(page.len(), 3);
+        assert_eq!(page[0].message_id.as_deref(), Some("<a@example.com>"));
+        assert_eq!(page[1].message_id.as_deref(), Some("<b@example.com>"));
+
+        // A structurally wrong value is an ERROR, never a silently emptied page.
+        assert!(
+            serde_json::from_value::<JmapEmail>(json!({"id": "m1", "messageId": 7})).is_err(),
+            "a non-string messageId must fail loudly"
+        );
     }
 }

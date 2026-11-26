@@ -723,14 +723,9 @@ async fn eas_parent_id_for_mailbox(
         .iter()
         .find(|m| m.id.as_deref() == Some(mailbox_id))
         .and_then(|m| m.role.as_deref());
-    Ok(match role {
-        Some("inbox") => Some("2".to_string()),
-        Some("drafts") => Some("3".to_string()),
-        Some("trash") => Some("4".to_string()),
-        Some("sent") => Some("5".to_string()),
-        Some("junk") => Some("12".to_string()),
-        _ => None,
-    })
+    Ok(role
+        .and_then(crate::eas_folders::eas_folder_id_for_role)
+        .map(str::to_string))
 }
 
 // ---------------------------------------------------------------------------
@@ -1025,6 +1020,56 @@ struct FolderCopyCtx<'a> {
     account_id: &'a str,
 }
 
+/// Best-effort removal of a copied folder subtree after a failed copy.
+///
+/// Destroys deepest-first (a parent cannot be removed while it still holds
+/// children) with `onDestroyRemoveEmails`, so the copies made before the failure
+/// do not survive as a half-populated duplicate of the source. Failures are only
+/// logged: the caller is already returning an error, and the operator can remove
+/// what is left.
+async fn rollback_copied_subtree(ctx: &FolderCopyCtx<'_>, root_id: &str) {
+    let Ok(all) = ctx
+        .jmap
+        .query_all_mailboxes(ctx.username, ctx.password)
+        .await
+    else {
+        tracing::warn!(
+            folder_id = %root_id,
+            "CopyFolder: copied subtree could not be enumerated for rollback"
+        );
+        return;
+    };
+    // Depth-first post-order: every descendant before its parent.
+    let mut order: Vec<String> = Vec::new();
+    let mut stack: Vec<(String, bool)> = vec![(root_id.to_string(), false)];
+    while let Some((id, expanded)) = stack.pop() {
+        if expanded {
+            order.push(id);
+            continue;
+        }
+        stack.push((id.clone(), true));
+        stack.extend(
+            all.mailboxes
+                .iter()
+                .filter(|m| m.parent_id.as_deref() == Some(id.as_str()))
+                .filter_map(|m| m.id.clone().map(|child| (child, false))),
+        );
+    }
+    for id in order {
+        if let Err(e) = ctx
+            .jmap
+            .destroy_mailbox(ctx.account_id, &id, true, ctx.username, ctx.password)
+            .await
+        {
+            tracing::warn!(
+                folder_id = %id,
+                error = %e,
+                "CopyFolder: rollback of the copied subtree failed"
+            );
+        }
+    }
+}
+
 fn copy_folder_recursive<'a>(
     ctx: FolderCopyCtx<'a>,
     src_mailbox_id: &'a str,
@@ -1058,46 +1103,73 @@ fn copy_folder_recursive<'a>(
             )
             .await?;
 
-        // Copy all messages currently in the source folder.
-        let ids: Vec<String> = ctx
-            .jmap
-            .list_email_ids_in_mailbox(ctx.account_id, src_mailbox_id, ctx.username, ctx.password)
-            .await?
-            .into_iter()
-            .map(|(jid, _)| jid)
-            .collect();
-        if !ids.is_empty()
-            && let Err(e) = ctx
+        // Fill the new folder. A failure at ANY point discards the whole copied
+        // subtree again: leaving a partially populated folder behind would make
+        // the client's retry create a DUPLICATE of the folders and messages that
+        // did copy. The request then fails, so the copy is never reported as
+        // complete when it is not.
+        let fill: Result<(), anyhow::Error> = async {
+            // Copy all messages currently in the source folder.
+            let ids: Vec<String> = ctx
                 .jmap
-                .copy_emails(ctx.account_id, &ids, &new_id, ctx.username, ctx.password)
-                .await
-        {
-            // Surface how much of the folder was copied before the failure: the
-            // destination folder already exists and holds those copies.
-            if let Some(partial) = e.downcast_ref::<crate::jmap::CopyPartialFailure>() {
-                tracing::warn!(
-                    error = %e,
-                    copied = partial.created,
-                    total = ids.len(),
-                    "CopyFolder: message copy stopped partway"
-                );
+                .list_email_ids_in_mailbox(
+                    ctx.account_id,
+                    src_mailbox_id,
+                    ctx.username,
+                    ctx.password,
+                )
+                .await?
+                .into_iter()
+                .map(|(jid, _)| jid)
+                .collect();
+            if !ids.is_empty() {
+                // Per-item failures are PARTIAL completion: `copy_emails`
+                // returns the confirmed count, and a count below the requested
+                // one means some messages were not copied. Reporting success
+                // would silently drop mail from the copied folder.
+                let copied = ctx
+                    .jmap
+                    .copy_emails(ctx.account_id, &ids, &new_id, ctx.username, ctx.password)
+                    .await
+                    .map_err(|e| {
+                        if let Some(partial) = e.downcast_ref::<crate::jmap::CopyPartialFailure>() {
+                            tracing::warn!(
+                                error = %e,
+                                copied = partial.created,
+                                total = ids.len(),
+                                "CopyFolder: message copy stopped partway"
+                            );
+                        }
+                        e
+                    })?;
+                if copied < ids.len() {
+                    anyhow::bail!(
+                        "only {copied} of {} messages could be copied into the new folder",
+                        ids.len()
+                    );
+                }
             }
-            return Err(e);
-        }
 
-        // Recurse: children of the source become children of the copy.
-        for child in all
-            .mailboxes
-            .iter()
-            .filter(|m| m.parent_id.as_deref() == Some(src_mailbox_id))
-        {
-            copy_folder_recursive(
-                ctx,
-                child.id.as_deref().unwrap_or(""),
-                Some(&new_id),
-                depth + 1,
-            )
-            .await?;
+            // Recurse: children of the source become children of the copy.
+            for child in all
+                .mailboxes
+                .iter()
+                .filter(|m| m.parent_id.as_deref() == Some(src_mailbox_id))
+            {
+                copy_folder_recursive(
+                    ctx,
+                    child.id.as_deref().unwrap_or(""),
+                    Some(&new_id),
+                    depth + 1,
+                )
+                .await?;
+            }
+            Ok(())
+        }
+        .await;
+        if let Err(e) = fill {
+            rollback_copied_subtree(&ctx, &new_id).await;
+            return Err(e);
         }
 
         Ok(new_id)

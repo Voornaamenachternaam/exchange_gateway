@@ -2050,9 +2050,16 @@ impl Storage {
 
     /// Record the current journal head as the collection's watermark — the
     /// sync just delivered everything journaled so far.
+    ///
+    /// A journal pruned EMPTY reports head 0, which would be recorded BELOW the
+    /// owner's prune floor: the next delta would then be rejected as stale
+    /// (§16), re-prime to 0 again, and loop forever. The watermark is therefore
+    /// clamped to the floor the rows were removed up to.
     pub async fn record_journal_watermark(&self, owner: &str, collection_id: &str) -> Result<()> {
         let head = self.get_latest_change_seq().await?;
-        self.set_journal_watermark(owner, collection_id, head).await
+        let floor = self.pruned_through(owner).await.unwrap_or(0);
+        self.set_journal_watermark(owner, collection_id, head.max(floor))
+            .await
     }
 
     /// The highest change-journal id whose rows have been pruned for `owner`.
@@ -5334,15 +5341,14 @@ impl Storage {
             .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
         let mut removed = 0u64;
         for server_id in server_ids {
-            removed += sqlx::query(
-                "DELETE FROM pending_folder_prune WHERE owner = ?1 AND server_id = ?2",
-            )
-            .bind(owner)
-            .bind(server_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?
-            .rows_affected();
+            removed +=
+                sqlx::query("DELETE FROM pending_folder_prune WHERE owner = ?1 AND server_id = ?2")
+                    .bind(owner)
+                    .bind(server_id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?
+                    .rows_affected();
         }
         tx.commit()
             .await

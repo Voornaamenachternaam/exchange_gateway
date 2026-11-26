@@ -875,8 +875,8 @@ fn parse_event_lines(
             }
             k if k.starts_with("LOCATION") => fields.location = Some(unescape_ical_text(value)),
             k if k.starts_with("UID") => fields.uid = Some(value.to_string()),
-            k if k.starts_with("DTSTAMP") => fields.dtstamp = parse_datetime(value),
-            k if k.starts_with("DTSTART") => {
+            k if key_names(k, "DTSTAMP") => fields.dtstamp = parse_datetime(value),
+            k if key_names(k, "DTSTART") => {
                 let tzid = parse_tzid_from_key(k);
                 let supplied = tzid.is_some();
                 let zone = resolve_property_zone(tzid.clone(), tz_resolver);
@@ -909,7 +909,7 @@ fn parse_event_lines(
                     None => fields.duration_invalid = true,
                 }
             }
-            k if k.starts_with("DTEND") => {
+            k if key_names(k, "DTEND") => {
                 fields.dtend_present = true;
                 let tzid = parse_tzid_from_key(k);
                 let supplied = tzid.is_some();
@@ -919,7 +919,7 @@ fn parse_event_lines(
                     fields.timezone = tzid;
                 }
             }
-            k if k.starts_with("RECURRENCE-ID") => {
+            k if key_names(k, "RECURRENCE-ID") => {
                 let tzid = parse_tzid_from_key(k);
                 let supplied = tzid.is_some();
                 let zone = resolve_property_zone(tzid.clone(), tz_resolver);
@@ -933,7 +933,7 @@ fn parse_event_lines(
                 }
             }
             k if k.starts_with("RRULE") => fields.rrule = Some(value.to_string()),
-            k if k.starts_with("EXDATE") => {
+            k if key_names(k, "EXDATE") => {
                 let tzid = parse_tzid_from_key(k);
                 let supplied = tzid.is_some();
                 let zone = resolve_property_zone(tzid, tz_resolver);
@@ -996,6 +996,24 @@ fn parse_event_lines(
             "X-EAS-TIMEZONE" => fields.timezone = Some(value.to_string()),
             _ => {}
         }
+    }
+
+    // RFC 5545 §3.3.6: when `DTSTART` is a DATE (no time part), a `DURATION`
+    // MUST be a whole number of days or weeks. A sub-day value is therefore
+    // malformed — and `add_nominal_duration` would silently reinterpret it —
+    // so it takes the same fail-closed path as an unreadable DURATION.
+    // Validated here because `DURATION` may precede `DTSTART` in the component.
+    // The malformed duration is DROPPED rather than flagged: for a DATE-valued
+    // start the RFC's own default (one day, §3.6.1) defines the span, so the
+    // event stays visible with a deterministic length instead of being
+    // rejected — and the date-only writer can round-trip it.
+    if fields.all_day == Some(true)
+        && fields
+            .duration
+            .is_some_and(|parts| parts.total_seconds().is_some_and(|s| s % 86_400 != 0))
+    {
+        fields.duration = None;
+        fields.duration_text = None;
     }
 
     fields
@@ -1123,6 +1141,17 @@ pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
                     // keeps the master's instance (with its own duration)
                     // instead of publishing a zero-length override.
                     (Some(_), None) if fields.duration_invalid => continue,
+                    // An override that carries ONLY a moved start — no DTEND
+                    // and no DURATION — inherits the series' length the same
+                    // way: the override is the master component plus the
+                    // changed fields, so the duration comes from the master
+                    // (RFC 5545 §3.8.5.3's `DURATION` or §3.8.2.2's DTEND).
+                    // A DATE-valued start keeps the §3.6.1 one-day default.
+                    (Some(_), None)
+                        if fields.duration.is_none() && !fields.all_day.unwrap_or(false) =>
+                    {
+                        None
+                    }
                     _ => derive_component_end(
                         fields.start,
                         fields.end,
@@ -2371,10 +2400,14 @@ fn extract_ews_item_field_lenient(xml: &str, tag: &[u8]) -> Option<String> {
                     depth += 1;
                 }
             }
-            Ok(Event::Text(t)) => {
-                if depth == 1 {
-                    out.get_or_insert_with(String::new).push_str(t.as_ref());
-                }
+            // CDATA carries its body verbatim (never entity-resolved), so it
+            // is appended exactly like text; dropping it silently loses the
+            // value when a client wraps a field in `<![CDATA[…]]>`.
+            Ok(Event::Text(t)) if depth == 1 => {
+                out.get_or_insert_with(String::new).push_str(t.as_ref());
+            }
+            Ok(Event::CData(t)) if depth == 1 => {
+                out.get_or_insert_with(String::new).push_str(t.as_ref());
             }
             Ok(Event::GeneralRef(r)) => {
                 if depth == 1 {
@@ -2602,10 +2635,14 @@ fn extract_ews_field_lenient(xml: &str, tag: &[u8]) -> Option<String> {
                     depth += 1;
                 }
             }
-            Ok(Event::Text(t)) => {
-                if depth == 1 {
-                    out.get_or_insert_with(String::new).push_str(t.as_ref());
-                }
+            // CDATA carries its body verbatim (never entity-resolved), so it
+            // is appended exactly like text; dropping it silently loses the
+            // value when a client wraps a field in `<![CDATA[…]]>`.
+            Ok(Event::Text(t)) if depth == 1 => {
+                out.get_or_insert_with(String::new).push_str(t.as_ref());
+            }
+            Ok(Event::CData(t)) if depth == 1 => {
+                out.get_or_insert_with(String::new).push_str(t.as_ref());
             }
             Ok(Event::GeneralRef(r)) => {
                 if depth == 1 {
@@ -2652,10 +2689,13 @@ fn extract_ews_fields_lenient(xml: &str, tag: &[u8]) -> Vec<String> {
                     depth += 1;
                 }
             }
-            Ok(Event::Text(t)) => {
-                if depth == 1
-                    && let Some(i) = current
-                {
+            Ok(Event::CData(t)) if depth == 1 => {
+                if let Some(i) = current {
+                    out[i].push_str(t.as_ref());
+                }
+            }
+            Ok(Event::Text(t)) if depth == 1 => {
+                if let Some(i) = current {
                     out[i].push_str(t.as_ref());
                 }
             }
@@ -3377,6 +3417,67 @@ mod scheduling_tests {
              Duration:PT30M\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
         let ev = parse_ics_event(ics).expect("a lowercase DURATION parses");
         assert_eq!(ev.end.timestamp() - ev.start.timestamp(), 30 * 60);
+    }
+
+    #[test]
+    fn dtend_property_name_is_case_insensitive() {
+        // RFC 5545 §3.1: property names are case-insensitive. A `dtend:` that
+        // was not recognised would leave `dtend_present` false and turn a
+        // supplied one-hour event into a zero-length one.
+        let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n\
+             UID:lower-dtend@example.com\r\nDTSTART:20260115T090000Z\r\n\
+             dtend:20260115T100000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let ev = parse_ics_event(ics).expect("a lowercase DTEND parses");
+        assert_eq!(ev.end.timestamp() - ev.start.timestamp(), 3_600);
+    }
+
+    #[test]
+    fn all_day_event_with_sub_day_duration_fails_closed() {
+        // RFC 5545 §3.3.6: a DATE-valued DTSTART may only carry a whole-day
+        // (or week) DURATION. `PT12H` is malformed; reinterpreting it would
+        // produce an all-day item with a noon end, which the date-only writer
+        // then silently widens back to a full day.
+        let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n\
+             UID:allday-subday@example.com\r\nDTSTART;VALUE=DATE:20260115\r\n\
+             DURATION:PT12H\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let ev = parse_ics_event(ics).expect("the event itself still parses");
+        assert_eq!(
+            ev.end.signed_duration_since(ev.start),
+            chrono::Duration::days(1),
+            "a malformed sub-day DURATION falls back to the one-day default"
+        );
+        // A whole-day DURATION for the same start stays authoritative.
+        let ok = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n\
+             UID:allday-days@example.com\r\nDTSTART;VALUE=DATE:20260115\r\n\
+             DURATION:P3D\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let ev = parse_ics_event(ok).expect("parses");
+        assert_eq!(
+            ev.end.signed_duration_since(ev.start),
+            chrono::Duration::days(3)
+        );
+    }
+
+    #[test]
+    fn moved_exception_without_end_keeps_the_master_length() {
+        // An override that carries only a moved start (no DTEND, no DURATION)
+        // is the master component with changed fields, so its length comes from
+        // the series. It must not be turned into a zero-length instance.
+        let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n\
+             UID:moved-no-end@example.com\r\nDTSTART:20260115T090000Z\r\n\
+             DTEND:20260115T100000Z\r\nRRULE:FREQ=DAILY;COUNT=3\r\n\
+             END:VEVENT\r\nBEGIN:VEVENT\r\nUID:moved-no-end@example.com\r\n\
+             RECURRENCE-ID:20260116T090000Z\r\nDTSTART:20260116T140000Z\r\n\
+             END:VEVENT\r\nEND:VCALENDAR\r\n";
+        let ev = parse_ics_event(ics).expect("the master parses");
+        assert_eq!(ev.exceptions.len(), 1);
+        assert_eq!(
+            ev.exceptions[0].end, None,
+            "an unset exception end must stay unset so render inherits"
+        );
+        assert_eq!(
+            ev.exceptions[0].start,
+            Some(parse_datetime("20260116T140000Z").unwrap())
+        );
     }
 
     #[test]

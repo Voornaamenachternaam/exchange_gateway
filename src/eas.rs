@@ -742,7 +742,11 @@ fn extract_all_tag_blocks(xml: &str, tag: &[u8]) -> Vec<String> {
 
 fn extract_first_tag_text(xml: &str, tag: &[u8]) -> Option<String> {
     let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
+    // Text is NOT trimmed per event: quick-xml emits a separate `Text` event
+    // around every character reference, so per-event trimming would delete the
+    // spaces that surround an entity (`R &amp; D` -> `R&D`). Only the finished
+    // value's boundaries are trimmed.
+    reader.config_mut().trim_text(false);
     let mut buf = Vec::new();
     let mut inside = false;
     let mut value = String::new();
@@ -758,13 +762,25 @@ fn extract_first_tag_text(xml: &str, tag: &[u8]) -> Option<String> {
                 value.push_str(&resolve_xml_reference(r.as_ref()))
             }
             Ok(Event::End(e)) if e.name().local_name().as_ref().as_bytes() == tag => {
-                return Some(value);
+                return Some(trim_owned(value));
             }
             Ok(Event::Eof) | Err(_) => return None,
             _ => {}
         }
         buf.clear();
     }
+}
+
+/// Trim a `String` in place, without the extra allocation `trim().to_string()`
+/// makes on every extracted field.
+fn trim_owned(mut value: String) -> String {
+    let end = value.trim_end().len();
+    value.truncate(end);
+    let start = value.len() - value.trim_start().len();
+    if start > 0 {
+        value.drain(..start);
+    }
+    value
 }
 
 fn extract_all_tag_text(xml: &str, tag: &[u8]) -> Vec<String> {
@@ -2268,22 +2284,24 @@ async fn probe_email_folder_changes_bounded(
     request_id: &str,
 ) -> Option<Vec<String>> {
     let budget = deadline.saturating_duration_since(Instant::now());
+    let ctx = EmailProbeCtx {
+        state,
+        owner,
+        password,
+        device_id,
+        request_id,
+    };
     let outcome = tokio::select! {
         biased;
         _ = supersede_token.cancelled() => return None,
         r = tokio::time::timeout(
             budget,
-            probe_email_folder_changes(
-                state,
-                owner,
-                password,
-                device_id,
-                email_folder_ids,
-                jmap_account,
-                request_id,
-            ),
+            probe_email_folder_changes(&ctx, email_folder_ids, jmap_account, deadline),
         ) => r,
     };
+    // A probe that ran out of budget returns whatever it CONFIRMED before the
+    // deadline (see `probe_email_folder_changes`); only a superseded Ping
+    // discards that evidence.
     Some(outcome.unwrap_or_default())
 }
 
@@ -2295,90 +2313,148 @@ async fn probe_email_folder_changes_bounded(
 /// recover from dropped push events, since the monitor does not write to the
 /// journal).
 async fn probe_email_folder_changes(
-    state: &Arc<AppState>,
-    owner: &str,
-    password: &SecretString,
-    device_id: &str,
+    ctx: &EmailProbeCtx<'_>,
     email_folder_ids: &[String],
     jmap_account: &Option<(Arc<JmapClient>, String)>,
-    request_id: &str,
+    deadline: Instant,
 ) -> Vec<String> {
     let Some((jmap, account_id)) = jmap_account.as_ref() else {
         return Vec::new();
     };
+    let request_id = ctx.request_id;
     let mut changed = Vec::new();
     for folder_id in email_folder_ids {
-        let collection_id = scoped_collection_id(folder_id, device_id);
-        let jmap_state = state
-            .storage
-            .get_sync_key(owner, &collection_id)
-            .await
-            .ok()
-            .flatten()
-            .and_then(|(_, token)| token)
-            .filter(|t| !t.starts_with("seq:"));
-        let Some(since) = jmap_state else {
-            continue;
-        };
-        // Probe the SAME mailbox-scoped feed the delta uses; the account-wide
-        // `Email/changes` would report every other folder's mail and wake this
-        // folder spuriously.
-        let mailbox_id =
-            match resolve_email_mailbox_id(state, jmap, account_id, owner, password, folder_id)
-                .await
-            {
-                Ok(Some(m)) => m,
-                Ok(None) => continue,
-                Err(e) => {
-                    tracing::warn!(
-                        request_id = %request_id,
-                        error = %e,
-                        "Failed to resolve source mailbox id; skipping Ping folder probe"
-                    );
-                    continue;
-                }
-            };
-        match jmap
-            .query_email_changes(account_id, &mailbox_id, &since, owner, password, Some(1))
-            .await
+        // Budget the folders INDIVIDUALLY. A single slow folder must not throw
+        // away the folders already examined (their evidence is what lets this
+        // Ping answer Status 2 now instead of sleeping until the next push
+        // event), so the walk stops at the deadline and RETURNS what it
+        // confirmed.
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            tracing::debug!(
+                request_id = %request_id,
+                "EAS Ping email probe ran out of its heartbeat budget; answering with the folders confirmed so far"
+            );
+            break;
+        }
+        match tokio::time::timeout(
+            remaining,
+            probe_one_email_folder(ctx, jmap, account_id, folder_id),
+        )
+        .await
         {
-            Ok(changes) => {
-                // `updated` (flag/read edits that don't change membership) must
-                // wake the Ping folder just like membership changes; the
-                // keyword-baseline scan surfaces them as `<t:Update>`/`<Change>`
-                // ops, and the next delta won't emit them if this probe stays
-                // silent until an unrelated membership event arrives.
-                if !changes.created.is_empty()
-                    || !changes.destroyed.is_empty()
-                    || !changes.updated.is_empty()
-                    || changes.new_state != since
-                {
-                    changed.push(folder_id.clone());
-                }
+            // Return on the FIRST confirmed change: the client re-syncs that
+            // folder now, and the remaining folders are reported by the next
+            // Ping (the lowest-latency answer for mail arrival).
+            Ok(true) => {
+                changed.push(folder_id.clone());
+                return changed;
             }
-            Err(e) => {
-                // A state the backend can no longer compute means the delta
-                // will re-prime; wake the folder so the client Syncs now.
-                // `Email/queryChanges` maps `tooManyChanges` (the probe requests
-                // only ONE change, so any backlog overflows it) to the same
-                // typed error, so a pending backlog also wakes the folder. Any
-                // other error is transient and deferred to the push/journal
-                // checks.
-                if e.downcast_ref::<crate::jmap::CannotCalculateChanges>()
-                    .is_some()
-                {
-                    changed.push(folder_id.clone());
-                } else {
-                    tracing::debug!(
-                        request_id = %request_id,
-                        error = %e,
-                        "EAS Ping Email/queryChanges probe failed; deferring to push/journal checks"
-                    );
-                }
+            Ok(false) => {}
+            Err(_) => {
+                tracing::debug!(
+                    request_id = %request_id,
+                    folder_id = %folder_id,
+                    "EAS Ping email probe hit its heartbeat budget; answering with the folders confirmed so far"
+                );
+                break;
             }
         }
     }
     changed
+}
+
+/// Request-scoped inputs for [`probe_one_email_folder`] (kept in a struct so
+/// the per-folder probe stays under clippy's argument-count threshold).
+struct EmailProbeCtx<'a> {
+    state: &'a Arc<AppState>,
+    owner: &'a str,
+    password: &'a SecretString,
+    device_id: &'a str,
+    request_id: &'a str,
+}
+
+/// Probe ONE pinged email folder: `true` when its stored JMAP query state no
+/// longer matches the server's (a membership change, an in-place flag edit, or a
+/// state the backend can no longer calculate).
+async fn probe_one_email_folder(
+    ctx: &EmailProbeCtx<'_>,
+    jmap: &Arc<JmapClient>,
+    account_id: &str,
+    folder_id: &str,
+) -> bool {
+    let EmailProbeCtx {
+        state,
+        owner,
+        password,
+        device_id,
+        request_id,
+    } = *ctx;
+    let collection_id = scoped_collection_id(folder_id, device_id);
+    let jmap_state = state
+        .storage
+        .get_sync_key(owner, &collection_id)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|(_, token)| token)
+        .filter(|t| !t.starts_with("seq:"));
+    let Some(since) = jmap_state else {
+        return false;
+    };
+    // Probe the SAME mailbox-scoped feed the delta uses; the account-wide
+    // `Email/changes` would report every other folder's mail and wake this
+    // folder spuriously.
+    let mailbox_id =
+        match resolve_email_mailbox_id(state, jmap, account_id, owner, password, folder_id).await {
+            Ok(Some(m)) => m,
+            Ok(None) => return false,
+            Err(e) => {
+                tracing::warn!(
+                    request_id = %request_id,
+                    error = %e,
+                    "Failed to resolve source mailbox id; skipping Ping folder probe"
+                );
+                return false;
+            }
+        };
+    match jmap
+        .query_email_changes(account_id, &mailbox_id, &since, owner, password, Some(1))
+        .await
+    {
+        Ok(changes) => {
+            // `updated` (flag/read edits that don't change membership) must
+            // wake the Ping folder just like membership changes; the
+            // keyword-baseline scan surfaces them as `<t:Update>`/`<Change>`
+            // ops, and the next delta won't emit them if this probe stays
+            // silent until an unrelated membership event arrives.
+            !changes.created.is_empty()
+                || !changes.destroyed.is_empty()
+                || !changes.updated.is_empty()
+                || changes.new_state != since
+        }
+        Err(e) => {
+            // A state the backend can no longer compute means the delta
+            // will re-prime; wake the folder so the client Syncs now.
+            // `Email/queryChanges` maps `tooManyChanges` (the probe requests
+            // only ONE change, so any backlog overflows it) to the same
+            // typed error, so a pending backlog also wakes the folder. Any
+            // other error is transient and deferred to the push/journal
+            // checks.
+            if e.downcast_ref::<crate::jmap::CannotCalculateChanges>()
+                .is_some()
+            {
+                true
+            } else {
+                tracing::debug!(
+                    request_id = %request_id,
+                    error = %e,
+                    "EAS Ping Email/queryChanges probe failed; deferring to push/journal checks"
+                );
+                false
+            }
+        }
+    }
 }
 
 /// Effective Ping hold time after the Cloudflare edge guard: an explicit
@@ -2591,13 +2667,16 @@ async fn handle_ping(
                     None
                 };
                 let changed = probe_email_folder_changes(
-                    state,
-                    owner,
-                    password,
-                    device_id,
+                    &EmailProbeCtx {
+                        state,
+                        owner,
+                        password,
+                        device_id,
+                        request_id,
+                    },
                     &email_folder_ids,
                     &jmap_account,
-                    request_id,
+                    deadline,
                 )
                 .await;
                 (jmap_account, changed)
@@ -5824,12 +5903,24 @@ async fn handle_folder_update(ctx: &FolderCmdCtx<'_>) -> Response {
     let server_id = extract_first_tag_text(xml, b"ServerId")
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
+    // [MS-ASCMD] §6.16 (FolderUpdateRequest.xsd) requires BOTH `ParentId` and
+    // `DisplayName` (minLength 1). A request missing either carries no update
+    // intent, so it is answered with Status 10 ("Incorrectly formatted request")
+    // rather than being silently turned into a no-op that reports success.
     let parent_id = extract_first_tag_text(xml, b"ParentId")
         .map(|s| s.trim().to_string())
-        .unwrap_or_default();
+        .filter(|s| !s.is_empty());
     let display_name = extract_first_tag_text(xml, b"DisplayName")
         .map(|s| s.trim().to_string())
-        .unwrap_or_default();
+        .filter(|s| !s.is_empty());
+    let (Some(parent_id), Some(display_name)) = (parent_id, display_name) else {
+        let body = crate::eas_folders::render_status_response(
+            "FolderUpdate",
+            &crate::eas_folders::FolderMutationResult::status(10),
+            &crate::eas_folders::current_hierarchy_sync_key(state, owner, device_id).await,
+        );
+        return wbxml_response(&body, as_wbxml, wbxml, request_id);
+    };
     let result = crate::eas_folders::update_folder(
         state,
         owner,
@@ -6432,16 +6523,22 @@ async fn handle_send_mail(
         .map(str::trim)
         .filter(|id| !id.is_empty());
     if let Some(client_id) = client_id {
-        // A pending ClientId whose cool-down expired is NOT released on elapsed
-        // time alone: the earlier attempt's outcome is unknown, so reconcile it
-        // against the backend first. A Sent copy carrying this message's
-        // `Message-ID` proves the send happened → 118. No copy → resend.
-        if let Ok(Some((state_name, age))) = state
+        // A pending ClientId is NOT released on elapsed time alone: the earlier
+        // attempt's outcome is unknown, so reconcile it against the backend
+        // first. A Sent copy carrying this message's `Message-ID` proves the
+        // send happened → 118. No copy → the claim below decides (resend only
+        // once the cool-down has expired).
+        //
+        // The reconciliation runs on EVERY retry, not only after the cool-down:
+        // `claim_email_submission` releases an expired row on its own clock, so
+        // a retry that OBSERVED a row still inside its cool-down and then lost
+        // the race with the clock would otherwise resubmit without ever having
+        // looked for the earlier attempt's Sent copy.
+        if let Ok(Some((state_name, _age))) = state
             .storage
             .get_email_submission_state(username, client_id)
             .await
             && state_name == "pending"
-            && age as u64 >= SENDMAIL_UNKNOWN_RETRY_AFTER_SECS
         {
             // No Message-ID to reconcile by means the claim's cool-down expiry
             // below is the only release path; the ledger still prevents a
@@ -7972,6 +8069,14 @@ async fn handle_local_content_sync(ctx: &LocalContentSyncCtx<'_>) -> String {
     // Persist the new key with the consumed journal position. On a clip this
     // token is the exact resume point (MS-ASCMD §2.2.3.199: "the client MUST
     // synchronize again to continue getting items from the server").
+    //
+    // §16: a journal pruned EMPTY reports head 0, so a prime would acknowledge
+    // `seq:0` — below the owner's prune floor — and every following delta would
+    // be rejected as stale, an endless re-prime loop for this class. The
+    // acknowledged position is therefore clamped to the floor the rows were
+    // removed up to (rows above it are still present, so the resume is exact).
+    let floor = state.storage.pruned_through(username).await.unwrap_or(0);
+    let consumed_seq = consumed_seq.max(floor);
     if let Err(e) = state
         .storage
         .set_sync_key(
@@ -9188,7 +9293,15 @@ async fn handle_email_sync(ctx: &EmailSyncRequestCtx<'_>) -> anyhow::Result<Stri
     // client (the next GetChanges=1 Sync would start from the advanced state).
     // The key still rotates (the client requires a fresh one) while carrying the
     // previous token forward unchanged.
-    if !get_changes {
+    //
+    // A `SyncKey` of 0 is EXEMPT: §2.2.3.181.4 states that key 0 "initializes
+    // the synchronization state on the server and causes a full synchronization
+    // of the collection", so there is no window to acknowledge and nothing to
+    // carry forward. Taking the ack-only path there would hand the client a key
+    // with no cursor and no query state, and its first GetChanges=1 request
+    // would then have to be answered Status 3 + SyncKey 0 (a wasted round trip
+    // that re-primes anyway).
+    if !get_changes && incoming_sync_key != "0" {
         let carried_token = match state
             .storage
             .get_sync_key(username, state_collection_id)
@@ -10692,6 +10805,24 @@ mod tests {
         assert!(
             has_bearer,
             "WWW-Authenticate must include Bearer scheme for AutoDetect compatibility"
+        );
+    }
+
+    /// quick-xml emits a separate text event around every character reference,
+    /// so trimming PER EVENT would delete the spaces that surround an entity.
+    /// Only the finished value's boundaries may be trimmed.
+    #[test]
+    fn extract_first_tag_text_keeps_spaces_around_entities() {
+        let xml = "<SyncKey>  abc &amp; def  </SyncKey>";
+        assert_eq!(
+            extract_first_tag_text(xml, b"SyncKey").as_deref(),
+            Some("abc & def")
+        );
+        // Interior whitespace and line breaks survive; the edges are trimmed.
+        let multiline = "<Body>\n  line one\n  line two\n</Body>";
+        assert_eq!(
+            extract_first_tag_text(multiline, b"Body").as_deref(),
+            Some("line one\n  line two")
         );
     }
 

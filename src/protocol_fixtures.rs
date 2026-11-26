@@ -82,10 +82,15 @@ pub fn ews_soap_response(inner: &str) -> String {
     )
 }
 
-/// A SOAP 1.1 fault fragment, exactly as the production `soap_fault` emits it
-/// (`<faultcode>`/`<faultstring>` + `<detail><m:ResponseCode>`, per
-/// [MS-OXWCONFIG] §3.1.4.1.2.1) — NOT the SOAP 1.2 `<Code>`/`<Reason>`
-/// structure, which no Exchange client parses.
+/// A SOAP 1.1 CLIENT fault fragment with the same SHAPE the production
+/// `soap_fault` emits (`<faultcode>`/`<faultstring xml:lang>` +
+/// `<detail><m:ResponseCode>`, per [MS-OXWCONFIG] §3.1.4.1.2.1) — NOT the SOAP
+/// 1.2 `<Code>`/`<Reason>` structure, which no Exchange client parses.
+///
+/// This is a fixture for the client-fault shape, not a copy of the renderer:
+/// production picks `s:Client`/`s:Server` from the HTTP status (5xx faults are
+/// server faults), and the fixture always emits `s:Client`. A test that needs
+/// the server-fault shape must assert against `soap_fault` itself.
 pub fn ews_error_response(code: &str, message: &str) -> String {
     let escaped_code = xml_escape(code);
     let escaped_message = xml_escape(message);

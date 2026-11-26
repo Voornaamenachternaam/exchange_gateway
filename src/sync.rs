@@ -1569,6 +1569,32 @@ fn canonical_resource_path(href: &str) -> String {
     path.trim_end_matches('/').to_string()
 }
 
+/// Whether a CalDAV-fallback deletion candidate is CONFIRMED absent.
+///
+/// The fallback snapshot answers a `calendar-query` REPORT bounded by the
+/// sync's time filter, so an event outside that window is merely omitted from
+/// it. Only the collection's UNBOUNDED href inventory can prove a deletion:
+///
+/// * an inventory read that FAILED proves nothing (`false` — the tombstone is
+///   suppressed and the next fallback re-evaluates it);
+/// * a stored href still present in the inventory is a live event (`false`);
+/// * an href absent from the inventory is a confirmed deletion (`true`);
+/// * a candidate with no stored href (`item_map` row already removed by another
+///   scope's confirmed deletion) is authoritative here (`true`).
+fn fallback_absence_confirmed(
+    inventory_failed: bool,
+    live: Option<&HashSet<String>>,
+    item_href: Option<&str>,
+) -> bool {
+    if inventory_failed {
+        return false;
+    }
+    match (live, item_href) {
+        (Some(live), Some(href)) => !live.contains(&canonical_resource_path(href)),
+        _ => true,
+    }
+}
+
 /// Whether a stored event's `resource_href` names a resource INSIDE
 /// `collection_path` (a path from [`canonical_resource_path`]). A JMAP
 /// pseudo-href (`jmap://calendar/…`) never matches, which is intended: a CalDAV
@@ -1902,6 +1928,15 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     // calendar (or a JMAP-backed `jmap://calendar/…` event) is outside its
     // scope, so its absence from the REPORT proves nothing.
     let mut fallback_collection_path: Option<String> = None;
+    // The UNBOUNDED live inventory (hrefs only) of the collection a CalDAV
+    // fallback REPORT covered. The fallback REPORT is itself bounded by the
+    // sync's time filter, so an event outside that window is absent from it
+    // without being deleted; only this complete set can prove deletion.
+    let mut fallback_live_paths: Option<HashSet<String>> = None;
+    // The unbounded inventory could not be read: absence from the time-filtered
+    // snapshot then proves nothing, so NO fallback deletion is queued (fail
+    // closed — a real deletion is re-evaluated by the next fallback).
+    let mut fallback_inventory_failed = false;
     let mut item_hrefs: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
     // Server IDs the delta explicitly reported as destroyed.
@@ -2302,6 +2337,11 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         calendar_delta_partial = false;
         caldav_single_collection = true;
         jmap_destroyed_server_ids.clear();
+        // The abandoned JMAP read may already have classified some events as
+        // "scoped out" of this calendar. That evidence belongs to the JMAP
+        // delta; keeping it would let the CalDAV snapshot's sweep tombstone an
+        // event this collection still holds.
+        scoped_out_server_ids.clear();
         let caldav = CaldavClient::new(&params.state.cfg)?;
         // Prefer the folder's own collection (resolved from its stored href)
         // over the first calendar returned: a custom calendar folder must sync
@@ -2417,27 +2457,35 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                     "response" => {
                         // Skip the calendar collection itself (which has no calendar-data)
                         // Only process individual events that have ICS data
-                        if !current.href.is_empty()
-                            && !current.ics.is_empty()
+                        if current.href.is_empty() {
+                            // RFC 4918 §14.24 requires `DAV:href` in every
+                            // `response`: without it this resource cannot be
+                            // identified, so it may be an event the snapshot is
+                            // silently omitting. Treating the snapshot as
+                            // complete would let the deletion sweep tombstone a
+                            // live event the client still holds.
+                            report_incomplete = true;
+                            tracing::warn!(
+                                "sync: CalDAV REPORT returned a response with no href; snapshot treated as incomplete"
+                            );
+                        } else if !current.ics.is_empty()
                             && let Some(item) = parse_ics_event(&current.ics)
                         {
                             current.item = item;
                             events.push(current.clone());
-                        } else if !current.href.is_empty() {
-                            if canonical_resource_path(&current.href) == collection_path {
-                                tracing::debug!(
-                                    "sync: skipping href {} (calendar collection root)",
-                                    current.href
-                                );
-                            } else {
-                                // An EVENT resource without usable data: the
-                                // snapshot cannot prove it is gone.
-                                report_incomplete = true;
-                                tracing::warn!(
-                                    href = %current.href,
-                                    "sync: CalDAV REPORT returned an event resource without usable calendar-data; snapshot treated as incomplete"
-                                );
-                            }
+                        } else if canonical_resource_path(&current.href) == collection_path {
+                            tracing::debug!(
+                                "sync: skipping href {} (calendar collection root)",
+                                current.href
+                            );
+                        } else {
+                            // An EVENT resource without usable data: the
+                            // snapshot cannot prove it is gone.
+                            report_incomplete = true;
+                            tracing::warn!(
+                                href = %current.href,
+                                "sync: CalDAV REPORT returned an event resource without usable calendar-data; snapshot treated as incomplete"
+                            );
                         }
                         current = EventItem {
                             href: String::new(),
@@ -2465,6 +2513,32 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         // or a JMAP pseudo-href) could not have been returned by this query, so
         // its absence is not evidence of deletion — keep it and let a later
         // broader read decide.
+        // The REPORT above carries a time-range filter, so an event outside the
+        // window (an old event, a series that ended long ago) is omitted from a
+        // COMPLETE collection. Reading the collection's whole href inventory with
+        // one etag-only REPORT (no `calendar-data`, no time range) is what makes
+        // absence authoritative; a failed inventory suppresses every fallback
+        // deletion instead of inferring one.
+        match caldav
+            .query_calendar_etags(&collection_href, "VEVENT", params.username, params.password)
+            .await
+        {
+            Ok(items) => {
+                fallback_live_paths = Some(
+                    items
+                        .into_iter()
+                        .map(|i| canonical_resource_path(&i.href))
+                        .collect(),
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "CalDAV fallback: the unbounded event inventory failed; suppressing deletions for this sync"
+                );
+                fallback_inventory_failed = true;
+            }
+        }
         fallback_collection_path = Some(collection_path);
         item_hrefs = storage
             .list_item_map_identities(params.owner)
@@ -2651,31 +2725,38 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
             }
             None => true,
         };
-        let deleted = if folder_scoped {
-            // A scoped folder's deletion sweep must NOT tombstone unchanged
-            // events that merely didn't appear in this partial delta, nor
-            // events this scope never delivered. Deletion requires the item
-            // to be in this scope's ledger AND either be confirmed out of
-            // scope or explicitly destroyed. Bounding to the ledger is what
-            // prevents an empty single-calendar CalDAV snapshot from
-            // tombstoning every other calendar's events.
-            fallback_covers
-                && delivered_map.contains_key(server_id)
-                && (is_scoped_out
-                    || calendar_event_deleted(
-                        calendar_delta_partial,
-                        &jmap_destroyed_server_ids,
-                        server_id,
-                    ))
-        } else {
-            fallback_covers
-                && (!existing_map.contains(server_id)
-                    || calendar_event_deleted(
-                        calendar_delta_partial,
-                        &jmap_destroyed_server_ids,
-                        server_id,
-                    ))
-        };
+        let fallback_delete_ok = !caldav_single_collection
+            || fallback_absence_confirmed(
+                fallback_inventory_failed,
+                fallback_live_paths.as_ref(),
+                item_hrefs.get(server_id).map(String::as_str),
+            );
+        let deleted = fallback_delete_ok
+            && if folder_scoped {
+                // A scoped folder's deletion sweep must NOT tombstone unchanged
+                // events that merely didn't appear in this partial delta, nor
+                // events this scope never delivered. Deletion requires the item
+                // to be in this scope's ledger AND either be confirmed out of
+                // scope or explicitly destroyed. Bounding to the ledger is what
+                // prevents an empty single-calendar CalDAV snapshot from
+                // tombstoning every other calendar's events.
+                fallback_covers
+                    && delivered_map.contains_key(server_id)
+                    && (is_scoped_out
+                        || calendar_event_deleted(
+                            calendar_delta_partial,
+                            &jmap_destroyed_server_ids,
+                            server_id,
+                        ))
+            } else {
+                fallback_covers
+                    && (!existing_map.contains(server_id)
+                        || calendar_event_deleted(
+                            calendar_delta_partial,
+                            &jmap_destroyed_server_ids,
+                            server_id,
+                        ))
+            };
         if deleted {
             // Queue the tombstone now (it carries the journal seq and
             // must survive a clipped window) but RETAIN the item_map row:
@@ -2926,6 +3007,50 @@ mod tests {
         destroyed.insert("sid-2".to_string());
         assert!(calendar_event_deleted(true, &destroyed, "sid-2"));
         assert!(!calendar_event_deleted(true, &destroyed, "sid-3"));
+    }
+
+    /// The CalDAV fallback's snapshot REPORT is time-filtered, so an event
+    /// outside the window is omitted without being deleted. Only the
+    /// collection's unbounded href inventory may authorize the tombstone.
+    #[test]
+    fn fallback_deletion_requires_absence_from_the_unbounded_inventory() {
+        let mut live: HashSet<String> = HashSet::new();
+        live.insert("/dav/cal/u/Default/old.ics".to_string());
+
+        // Live in the inventory (an event older than the filter window): the
+        // omission from the snapshot must NOT delete it.
+        assert!(!fallback_absence_confirmed(
+            false,
+            Some(&live),
+            Some("/dav/cal/u/Default/old.ics")
+        ));
+        // The inventory (same host, absolute URL form) still resolves to the
+        // same canonical path.
+        assert!(!fallback_absence_confirmed(
+            false,
+            Some(&live),
+            Some("http://h/dav/cal/u/Default/old.ics")
+        ));
+        // Absent from the inventory: a confirmed deletion.
+        assert!(fallback_absence_confirmed(
+            false,
+            Some(&live),
+            Some("/dav/cal/u/Default/gone.ics")
+        ));
+        // A candidate whose `item_map` row is already gone (another scope's
+        // confirmed deletion) stays authoritative.
+        assert!(fallback_absence_confirmed(false, Some(&live), None));
+        // A failed inventory read proves nothing.
+        assert!(!fallback_absence_confirmed(
+            true,
+            Some(&live),
+            Some("/dav/cal/u/Default/gone.ics")
+        ));
+        assert!(!fallback_absence_confirmed(true, None, None));
+        // A JMAP-path caller never reaches here, but the default without a
+        // stored href/inventory must stay permissive for the no-inventory case
+        // the JMAP path never populates.
+        assert!(fallback_absence_confirmed(false, None, None));
     }
 
     fn eastern_item() -> CalendarItem {
@@ -3267,6 +3392,16 @@ mod tests {
         calendars: std::sync::Arc<Mutex<Vec<Value>>>,
         /// CalDAV surface calls (method, path) recorded by the fallback route.
         dav_calls: std::sync::Arc<Mutex<Vec<(String, String)>>>,
+        /// Scripted `REPORT` answers `(status, body)` served in order; the last
+        /// one repeats. Empty means "207 with an empty multistatus" (the default
+        /// for tests whose CalDAV collection holds nothing). The SNAPSHOT script
+        /// answers a `calendar-query` asking for `calendar-data`; the INVENTORY
+        /// script answers the etag-only query, so the two are scripted
+        /// independently of call order.
+        dav_reports: std::sync::Arc<Mutex<Vec<(u16, String)>>>,
+        dav_report_idx: std::sync::Arc<AtomicUsize>,
+        dav_inventory: std::sync::Arc<Mutex<Vec<(u16, String)>>>,
+        dav_inventory_idx: std::sync::Arc<AtomicUsize>,
     }
 
     impl CalStub {
@@ -3274,6 +3409,22 @@ mod tests {
             // Mutate the shared `Calendar/get` list in place: the router holds a
             // clone of this stub, so replacing the `Arc` would not reach it.
             *self.calendars.lock().unwrap() = calendars;
+            self
+        }
+
+        /// Script the CalDAV SNAPSHOT `REPORT` answers in call order.
+        fn with_report_script(self, reports: Vec<(u16, String)>) -> Self {
+            *self.dav_reports.lock().unwrap() = reports;
+            self.dav_report_idx
+                .store(0, std::sync::atomic::Ordering::SeqCst);
+            self
+        }
+
+        /// Script the CalDAV etag-only INVENTORY `REPORT` answers in call order.
+        fn with_inventory_script(self, reports: Vec<(u16, String)>) -> Self {
+            *self.dav_inventory.lock().unwrap() = reports;
+            self.dav_inventory_idx
+                .store(0, std::sync::atomic::Ordering::SeqCst);
             self
         }
 
@@ -3522,15 +3673,43 @@ mod tests {
             }
             if method.as_str() == "REPORT" {
                 // RFC 4791 §7.8: a `calendar-query` REPORT answers 207 with a
-                // DAV multistatus. This stub's calendar-query snapshot is empty
-                // (events are delivered over JMAP by the other tests).
-                return Response::builder()
-                    .status(207)
-                    .header("content-type", "application/xml; charset=utf-8")
-                    .body(axum::body::Body::from(
+                // DAV multistatus. The default snapshot is empty (events are
+                // delivered over JMAP by the other tests); a test that needs a
+                // specific snapshot or inventory scripts it. The two queries are
+                // told apart by the requested props: the inventory asks for
+                // `getetag` alone, the snapshot also asks for `calendar-data`.
+                let scripted = {
+                    let (script, cursor) = if body.contains("calendar-data") {
+                        (&s.dav_reports, &s.dav_report_idx)
+                    } else {
+                        (&s.dav_inventory, &s.dav_inventory_idx)
+                    };
+                    let reports = script.lock().unwrap();
+                    if reports.is_empty() {
+                        None
+                    } else {
+                        let idx = cursor.fetch_add(1, Ordering::SeqCst);
+                        Some(
+                            reports
+                                .get(idx)
+                                .or_else(|| reports.last())
+                                .cloned()
+                                .unwrap(),
+                        )
+                    }
+                };
+                let (status, body) = scripted.unwrap_or_else(|| {
+                    (
+                        207,
                         "<?xml version=\"1.0\" encoding=\"utf-8\"?>\
-<D:multistatus xmlns:D=\"DAV:\" />",
-                    ))
+<D:multistatus xmlns:D=\"DAV:\" />"
+                            .to_string(),
+                    )
+                });
+                return Response::builder()
+                    .status(status)
+                    .header("content-type", "application/xml; charset=utf-8")
+                    .body(axum::body::Body::from(body))
                     .unwrap();
             }
             if method.as_str() == "PUT" {
@@ -3563,6 +3742,10 @@ mod tests {
             query_state_drift: std::sync::Arc::new(AtomicBool::new(false)),
             calendars: std::sync::Arc::new(Mutex::new(Vec::new())),
             dav_calls: std::sync::Arc::new(Mutex::new(Vec::new())),
+            dav_reports: std::sync::Arc::new(Mutex::new(Vec::new())),
+            dav_report_idx: std::sync::Arc::new(AtomicUsize::new(0)),
+            dav_inventory: std::sync::Arc::new(Mutex::new(Vec::new())),
+            dav_inventory_idx: std::sync::Arc::new(AtomicUsize::new(0)),
         };
         let app = axum::Router::new()
             .route("/session", get(session))
@@ -5201,6 +5384,113 @@ mod tests {
                 .unwrap()
                 .is_empty(),
             "no tombstone may be recorded for a foreign calendar's event"
+        );
+    }
+
+    /// The fallback snapshot REPORT is time-filtered, so an event older than the
+    /// window is merely omitted from it. Only the collection's UNBOUNDED etag
+    /// inventory proves a deletion: an old event the inventory still lists must
+    /// survive, the same event must be deleted once the inventory omits it, and
+    /// a failed inventory must delete nothing.
+    #[tokio::test]
+    async fn caldav_fallback_deletion_uses_the_unbounded_inventory() {
+        const HREF: &str = "/cal/user@example.com/cal-default/old.ics";
+        fn multistatus(calendar_data: Option<&str>, hrefs: &[&str]) -> String {
+            let mut body = String::from(
+                "<?xml version=\"1.0\" encoding=\"utf-8\"?><D:multistatus xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\">",
+            );
+            if let Some(data) = calendar_data {
+                body.push_str(&format!(
+                    "<D:response><D:href>{HREF}</D:href><D:propstat><D:prop><D:getetag>\"e1\"</D:getetag><C:calendar-data>{data}</C:calendar-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>"
+                ));
+            }
+            for href in hrefs {
+                body.push_str(&format!(
+                    "<D:response><D:href>{href}</D:href><D:propstat><D:prop><D:getetag>\"e1\"</D:getetag></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>"
+                ));
+            }
+            body.push_str("</D:multistatus>");
+            body
+        }
+        const ICS: &str = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//t//EN\r\nBEGIN:VEVENT\r\nUID:uid-old\r\nDTSTART:20200101T090000Z\r\nDTEND:20200101T100000Z\r\nSUMMARY:Old\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+
+        // REPORT #1 primes with the event; #2 is a LATER time-filtered snapshot
+        // that no longer covers it; #3 is the unbounded inventory still listing
+        // it; #4 (failure) is unreadable; #5 lists it again; #6/#7 omit it.
+        let stub = spawn_calendar_stub(vec![], vec![], "query-s", "get-s", None)
+            .await
+            .with_calendars(vec![
+                json!({"id": "cal-default", "name": "Default", "href": "/dav/cal/user@example.com/Default/"}),
+            ])
+            .with_report_script(vec![
+                (207, multistatus(Some(ICS), &[])),
+                (207, multistatus(None, &[])),
+            ])
+            .with_inventory_script(vec![
+                // The prime reads the inventory too (it has no candidates, so
+                // the answer is unused).
+                (207, multistatus(None, &[HREF])),
+                (207, multistatus(None, &[HREF])),
+                (500, String::from("boom")),
+                (207, multistatus(None, &[HREF])),
+                (207, multistatus(None, &[])),
+            ]);
+        let state = caldav_only_calendar_state(&stub.base).await;
+        let owner = "user@example.com";
+        let server_id = generate_server_id(state.cfg.hmac_secret(), HREF);
+
+        let prime = run_calendar_sync(&state, "0").await;
+        assert!(
+            prime.contains("<Add>") && prime.contains(&server_id),
+            "the prime must deliver the event:\n{prime}"
+        );
+
+        // Still in the unbounded inventory: the omission from the filtered
+        // snapshot is NOT a deletion.
+        let alive = run_calendar_sync(&state, &sync_key_of(&prime)).await;
+        assert!(
+            !alive.contains("<Delete>"),
+            "an event the inventory still lists must survive:\n{alive}"
+        );
+        assert!(
+            state
+                .storage
+                .get_ews_item_by_server_id(owner, &server_id)
+                .await
+                .unwrap()
+                .is_some(),
+            "the row must survive"
+        );
+
+        // A failed inventory proves nothing.
+        let failed = run_calendar_sync(&state, &sync_key_of(&alive)).await;
+        assert!(
+            !failed.contains("<Delete>"),
+            "a failed inventory must suppress the deletion:\n{failed}"
+        );
+
+        // Inventory still lists it after the failure: still alive.
+        let alive2 = run_calendar_sync(&state, &sync_key_of(&failed)).await;
+        assert!(
+            !alive2.contains("<Delete>"),
+            "the event is still alive:\n{alive2}"
+        );
+
+        // Absent from BOTH the snapshot and the inventory: deleted.
+        let gone = run_calendar_sync(&state, &sync_key_of(&alive2)).await;
+        assert!(
+            gone.contains("<Delete>") && gone.contains(&server_id),
+            "an event absent from the unbounded inventory is deleted:\n{gone}"
+        );
+        assert!(
+            state
+                .storage
+                .list_deleted_since(owner, 0)
+                .await
+                .unwrap()
+                .iter()
+                .any(|sid| sid == &server_id),
+            "the tombstone must be durable"
         );
     }
 

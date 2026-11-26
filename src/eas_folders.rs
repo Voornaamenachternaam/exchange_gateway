@@ -209,6 +209,23 @@ pub fn is_system_folder_id(server_id: &str) -> bool {
     )
 }
 
+/// The EAS `FolderId` of the system folder a backend mailbox ROLE maps to
+/// ([MS-ASCMD] §2.2.3.81), or `None` for a role the EAS hierarchy does not
+/// expose as a fixed folder.
+///
+/// Shared by the EAS parent resolution (a folder re-anchored under a system
+/// mailbox) and the EWS folder mirrors so both name the same id.
+pub(crate) fn eas_folder_id_for_role(role: &str) -> Option<&'static str> {
+    match role {
+        "inbox" => Some("2"),
+        "drafts" => Some("3"),
+        "trash" => Some("4"),
+        "sent" => Some("5"),
+        "junk" => Some("12"),
+        _ => None,
+    }
+}
+
 /// The DisplayNames of the gateway's fixed system folders, shared by the
 /// reserved-name check and the reserved *collection*-name guard.
 const SYSTEM_FOLDER_NAMES: [&str; 10] = [
@@ -1578,16 +1595,28 @@ async fn collect_delete_subtree(
             frontier.push(id);
         }
     }
+    // Every owner mapping, consulted by the moved-out reparent below and by the
+    // backend-only descendant resolution at the end.
+    let owner_rows = state.storage.list_folders(owner).await?;
+    let by_backend: std::collections::HashMap<&str, &FolderRow> = owner_rows
+        .iter()
+        .map(|r| (r.backend_id.as_str(), r))
+        .collect();
     // The inventory above is COMPLETE (the walk paged to `total`), so a mapped
     // folder the inventory knows but the walk cannot reach is no longer inside
     // the subtree: another client moved it elsewhere. Destroying it would delete
-    // a live folder the user still owns, so it is dropped from the walk (and its
-    // mapping, which the mirror still places here, is left for the next
-    // reconcile). A mapping the inventory does NOT know is kept: it is either
-    // already gone (the destroy reports `notFound`, the desired end state) or
-    // invisible to this read — never evidence of being outside.
+    // a live folder the user still owns, so it is dropped from the walk. A
+    // mapping the inventory does NOT know is kept: it is either already gone
+    // (the destroy reports `notFound`, the desired end state) or invisible to
+    // this read — never evidence of being outside.
+    let mut moved_out: Vec<FolderRow> = Vec::new();
     entries.retain(|e| {
-        !inventory.contains(e.backend_id.as_str()) || depth_of.contains_key(e.backend_id.as_str())
+        let keep = !inventory.contains(e.backend_id.as_str())
+            || depth_of.contains_key(e.backend_id.as_str());
+        if !keep && let Some(row) = e.row.clone() {
+            moved_out.push(row);
+        }
+        keep
     });
     // A mailbox that carries a JMAP ROLE is a distinguished folder (Inbox, Sent,
     // Drafts, Trash, Junk, Archive, …) and must never be destroyed as a side
@@ -1616,6 +1645,53 @@ async fn collect_delete_subtree(
             source: None,
         });
     }
+    // A moved-out mapped folder keeps its mapping, but its stored ParentId still
+    // names a folder that is about to be destroyed — the client would be left
+    // holding a folder under a parent it no longer has. Re-anchor it to its REAL
+    // backend parent (a mapped folder's EAS id, a system folder's distinguished
+    // id, else the hierarchy root) BEFORE anything is destroyed.
+    if !moved_out.is_empty() {
+        let mut parent_of: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+        for mb in &mailboxes {
+            if let (Some(id), Some(parent)) = (mb.id.as_deref(), mb.parent_id.as_deref()) {
+                parent_of.insert(id, parent);
+            }
+        }
+        for row in &moved_out {
+            let eas_parent = match parent_of.get(row.backend_id.as_str()).copied() {
+                Some(actual) => by_backend
+                    .get(actual)
+                    .map(|r| r.server_id.clone())
+                    .or_else(|| {
+                        roles
+                            .get(actual)
+                            .copied()
+                            .flatten()
+                            .and_then(eas_folder_id_for_role)
+                            .map(str::to_string)
+                    })
+                    .unwrap_or_else(|| "0".to_string()),
+                // Top-level in the backend: the EAS hierarchy root.
+                None => "0".to_string(),
+            };
+            if eas_parent != row.parent_id
+                && let Err(e) = state
+                    .storage
+                    .update_folder_journaled(owner, &row.server_id, Some(&eas_parent), None)
+                    .await
+            {
+                // The mapping would name a destroyed parent: fail closed
+                // BEFORE any destroy so nothing is removed yet.
+                return Err(crate::error::GatewayError::Protocol {
+                    context: format!(
+                        "failed to re-anchor the folder {} moved out of the delete subtree: {e}",
+                        row.server_id
+                    ),
+                    source: None,
+                });
+            }
+        }
+    }
     // Mapped entries take the backend depth when the backend still knows them,
     // so a mailbox reparented under a backend-only parent is destroyed first.
     for entry in &mut entries {
@@ -1630,11 +1706,6 @@ async fn collect_delete_subtree(
     // after a backend-side move). Resolve every discovered id against ALL owner
     // mappings so the destroy journals its `folder-delete` and prunes the stale
     // row instead of leaving a mapping that points at a destroyed mailbox.
-    let owner_rows = state.storage.list_folders(owner).await?;
-    let by_backend: std::collections::HashMap<&str, &FolderRow> = owner_rows
-        .iter()
-        .map(|r| (r.backend_id.as_str(), r))
-        .collect();
     let discovered: Vec<(&str, usize)> = depth_of
         .iter()
         .map(|(id, depth)| (*id, *depth))
@@ -1647,11 +1718,18 @@ async fn collect_delete_subtree(
             .flatten()
             .is_some_and(|r| !r.is_empty())
         {
-            tracing::info!(
+            // Same rule as the mapped walk: a system mailbox under the delete
+            // root blocks the whole command. Skipping it would destroy its
+            // parent (and mail the user never asked to lose) and then fail
+            // halfway through the subtree.
+            tracing::warn!(
                 backend_id = id,
-                "FolderDelete: skipping a system mailbox found under the delete root"
+                "FolderDelete: the delete subtree contains a system mailbox; not destroying"
             );
-            continue;
+            return Err(crate::error::GatewayError::Protocol {
+                context: format!("subtree contains the system mailbox {id}"),
+                source: None,
+            });
         }
         entries.push(DeleteSubtreeEntry {
             row: None,
