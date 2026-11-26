@@ -646,7 +646,9 @@ fn extract_first_tag_block(xml: &str, tag: &[u8]) -> Option<String> {
 
 /// Raw XML of EVERY element with local name `tag`, in document order
 /// (nesting-aware per occurrence, like [`extract_first_tag_block`]).
-fn extract_all_tag_blocks(xml: &str, tag: &[u8]) -> Vec<String> {
+/// Every balanced `<tag>…</tag>` (and self-closing `<tag/>`) block, in document
+/// order, as the raw source slice of the document.
+fn extract_all_tag_blocks_checked(xml: &str, tag: &[u8]) -> Result<Vec<String>, quick_xml::Error> {
     let mut reader = Reader::from_str(xml);
     let mut buf = Vec::new();
     let mut depth = 0i64;
@@ -679,11 +681,19 @@ fn extract_all_tag_blocks(xml: &str, tag: &[u8]) -> Vec<String> {
                     blocks.push(s.to_string());
                 }
             }
-            Ok(Event::Eof) | Err(_) => return blocks,
+            Ok(Event::Eof) => return Ok(blocks),
+            Err(e) => return Err(e),
             _ => {}
         }
         buf.clear();
     }
+}
+
+/// Lenient form: a malformed document yields the blocks parsed before the
+/// failure. Only for callers whose result is advisory; a caller that ACTS on
+/// the blocks must use [`extract_all_tag_blocks_checked`].
+fn extract_all_tag_blocks(xml: &str, tag: &[u8]) -> Vec<String> {
+    extract_all_tag_blocks_checked(xml, tag).unwrap_or_default()
 }
 
 fn extract_tag_texts(xml: &str, tag: &[u8]) -> Vec<String> {
@@ -12606,8 +12616,10 @@ impl ReminderAction {
     }
 }
 
-fn parse_reminder_actions(body: &str) -> Vec<ReminderAction> {
-    extract_all_tag_blocks(body, b"ReminderItemAction")
+/// `Err` when the request body is malformed: a partially parsed batch must not
+/// be applied (`Dismiss` is a persisted state change).
+fn parse_reminder_actions(body: &str) -> Result<Vec<ReminderAction>, quick_xml::Error> {
+    Ok(extract_all_tag_blocks_checked(body, b"ReminderItemAction")?
         .into_iter()
         .map(|block| ReminderAction {
             // A missing ItemId keeps the action (with an empty id) so the
@@ -12618,7 +12630,7 @@ fn parse_reminder_actions(body: &str) -> Vec<ReminderAction> {
             change_key: extract_first_attr(&block, b"ItemId", b"ChangeKey").unwrap_or_default(),
             new_reminder_time: extract_first_tag_text(&block, b"NewReminderTime"),
         })
-        .collect()
+        .collect())
 }
 
 /// Handle EWS PerformReminderAction ([MS-OXWSCORE] §3.1.4.2 /
@@ -12635,7 +12647,18 @@ async fn handle_perform_reminder_action(
     auth: &AuthContext,
     body: &str,
 ) -> Response {
-    let actions = parse_reminder_actions(body);
+    let actions = match parse_reminder_actions(body) {
+        Ok(actions) => actions,
+        Err(e) => {
+            tracing::error!(error = %e, "PerformReminderAction: malformed request body");
+            return operation_error_response(
+                &EwsAction::PerformReminderAction,
+                "ErrorInvalidRequest",
+                "The PerformReminderAction body is not well-formed XML",
+                StatusCode::OK,
+            );
+        }
+    };
     if actions.is_empty() {
         return operation_error_response(
             &EwsAction::PerformReminderAction,
@@ -14180,6 +14203,27 @@ mod tests {
 
     /// `t:ReminderItemAction` parsing: ActionType/ItemId/NewReminderTime, the
     /// two legal actions only, and one block per action.
+    /// A malformed reminder batch is REJECTED rather than applied as its parsed
+    /// prefix, and a well-formed one still parses.
+    #[test]
+    fn parse_reminder_actions_rejects_a_malformed_batch() {
+        // The first action is complete; the document breaks afterwards. The
+        // parsed prefix must NOT be applied.
+        let broken = r#"<PerformReminderAction><ReminderItemActions>
+            <t:ReminderItemAction><t:ActionType>Dismiss</t:ActionType>
+            <t:ItemId Id="i1"/></t:ReminderItemAction></WrongName>"#;
+        assert!(
+            parse_reminder_actions(broken).is_err(),
+            "a malformed tail must not yield a partially applied batch"
+        );
+        let ok = r#"<PerformReminderAction><ReminderItemActions>
+            <t:ReminderItemAction><t:ActionType>Dismiss</t:ActionType>
+            <t:ItemId Id="i1"/></t:ReminderItemAction></ReminderItemActions></PerformReminderAction>"#;
+        let actions = parse_reminder_actions(ok).expect("well-formed");
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].item_id, "i1");
+    }
+
     #[test]
     fn test_parse_reminder_actions_matrix() {
         let body = r#"<t:PerformReminderAction>
@@ -14195,7 +14239,7 @@ mod tests {
               </t:ReminderItemAction>
             </t:ReminderItemActions>
         </t:PerformReminderAction>"#;
-        let actions = parse_reminder_actions(body);
+        let actions = parse_reminder_actions(body).expect("well-formed batch");
         assert_eq!(actions.len(), 2);
         assert_eq!(actions[0].item_id, "cal-1");
         assert_eq!(actions[0].dismissal(), Some(true));

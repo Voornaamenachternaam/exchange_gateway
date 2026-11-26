@@ -203,7 +203,13 @@ pub fn build_sieve_script(
             }
         }
         ExternalAudience::KnownExternal => {
-            // Treat KnownExternal same as External for now.
+            // Sieve cannot consult the owner's contacts, so "known senders"
+            // cannot be distinguished from arbitrary external senders; replies
+            // therefore go to every external sender (the same as `All`). The
+            // alternative — refusing the setting — would make the client's
+            // "known contacts only" choice fail outright, and suppressing
+            // external replies entirely would silently ignore a configured
+            // absence message.
             if !external_escaped.is_empty() {
                 rule_blocks.push_str(&format!(
                     "if allof ({}) {{\n  {}\n}}\n",
@@ -225,11 +231,20 @@ pub fn build_sieve_script(
     // If date range is provided, wrap the rule blocks in an outer `currentdate`
     // condition (RFC 5260): the test applies to the current date/time and needs
     // the `date` + `relational` capabilities and the `iso8601` date-part. The
-    // timestamps are formatted as ISO 8601 (`YYYY-MM-DDTHH:MM:SS±ZZZZ`).
+    // bounds are UTC with a trailing `Z` (RFC 3339 §5.6 null offset), which every
+    // `iso8601` parser reads as UTC; a bare `+0000` offset is only unambiguous in
+    // ISO 8601, and without `:zone` a parser that ignores it would compare the
+    // server's LOCAL wall time against these bounds.
     if date_required {
         if let (Some(start), Some(end)) = (start_time, end_time) {
-            let start_str = start.format("%Y-%m-%dT%H:%M:%S%z").to_string();
-            let end_str = end.format("%Y-%m-%dT%H:%M:%S%z").to_string();
+            let start_str = start
+                .with_timezone(&Utc)
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string();
+            let end_str = end
+                .with_timezone(&Utc)
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string();
             let wrapped = format!(
                 "if allof (currentdate :value \"ge\" \"iso8601\" \"{}\", currentdate :value \"le\" \"iso8601\" \"{}\") {{\n{}\n}}\n",
                 start_str, end_str, rule_blocks
@@ -282,8 +297,11 @@ fn parse_vacation_replies(script: &str) -> (Option<String>, Option<String>) {
 /// [`build_sieve_script`] emits (RFC 5260):
 ///
 /// ```text
-/// if allof (currentdate :value "ge" "iso8601" "2026-01-01T00:00:00+0000",
-///           currentdate :value "le" "iso8601" "2026-01-05T00:00:00+0000") { ... }
+/// if allof (currentdate :value "ge" "iso8601" "2026-01-01T00:00:00Z",
+///           currentdate :value "le" "iso8601" "2026-01-05T00:00:00Z") { ... }
+///
+/// Scripts stored before the `Z` form carry an explicit `+0000` offset; both
+/// are read, because Stalwart keeps the script that was stored.
 /// ```
 ///
 /// Returns `(None, None)` when the script carries no window.
@@ -310,7 +328,10 @@ pub fn parse_vacation_window(
         let marker = format!("currentdate :value \"{op}\" \"iso8601\" \"");
         let rest = &script[script.find(&marker)? + marker.len()..];
         let value = &rest[..rest.find('"')?];
-        chrono::DateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%z")
+        // Current builds emit `...Z`; scripts stored before that carry an
+        // explicit `+0000` offset, so both forms are read.
+        chrono::DateTime::parse_from_rfc3339(value)
+            .or_else(|_| chrono::DateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%z"))
             .ok()
             .map(|d| d.with_timezone(&Utc))
     };
@@ -686,7 +707,7 @@ pub fn create_oof_manager(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Duration;
+    use chrono::{Duration, Timelike};
 
     #[test]
     fn test_null_oof_manager() {
@@ -809,7 +830,11 @@ mod tests {
     /// block is appended after it.
     #[test]
     fn test_parse_vacation_window_still_parses_before_the_rules_block() {
-        let start = Utc::now();
+        // The script carries whole seconds, so a sub-second `now()` would not
+        // round-trip.
+        let start = Utc::now()
+            .with_nanosecond(0)
+            .expect("nanosecond truncation");
         let end = start + Duration::days(2);
         let mut script = build_sieve_script(
             "example.com",
@@ -836,6 +861,41 @@ mod tests {
             parsed_end.map(|d| d.timestamp()),
             Some(end.timestamp()),
             "the OOF section's upper bound must still parse"
+        );
+    }
+
+    /// The emitted bounds are UTC with a trailing `Z` (unambiguous for both
+    /// RFC 3339 and ISO 8601 parsers), and a script stored in the older
+    /// `+0000` form still parses to the same instant.
+    #[test]
+    fn test_vacation_window_bounds_are_utc_and_legacy_offsets_still_parse() {
+        let start = chrono::DateTime::parse_from_rfc3339("2026-03-01T08:30:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let end = chrono::DateTime::parse_from_rfc3339("2026-03-03T17:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let script = build_sieve_script(
+            "example.com",
+            Some("Internal"),
+            None,
+            ExternalAudience::None,
+            Some(start),
+            Some(end),
+        )
+        .unwrap();
+        assert!(
+            script.contains("\"2026-03-01T08:30:00Z\"")
+                && script.contains("\"2026-03-03T17:00:00Z\""),
+            "bounds must be Z-suffixed UTC: {script}"
+        );
+        assert_eq!(parse_vacation_window(&script), (Some(start), Some(end)));
+
+        let legacy = "if allof (currentdate :value \"ge\" \"iso8601\" \"2026-03-01T08:30:00+0000\",                       currentdate :value \"le\" \"iso8601\" \"2026-03-03T17:00:00+0000\") {\n}\n";
+        assert_eq!(
+            parse_vacation_window(legacy),
+            (Some(start), Some(end)),
+            "a previously stored +0000 window still parses"
         );
     }
 
