@@ -790,9 +790,14 @@ impl RopMoveFolderRequest {
     }
 }
 
-/// `RopMoveFolder` success response
-/// (MS-OXCROPS §2.2.4.5.2 is a sectionless envelope):
+/// `NullDestinationObject` ([MS-OXCDATA] §2.2.1.5.2 / [MS-OXCPRPT] §2.2.8.2
+/// table): the destination object does not exist.
+pub const NULL_DESTINATION_OBJECT: u32 = 0x0000_0503;
+
+/// `RopMoveFolder` success response (MS-OXCROPS §2.2.4.7.2):
 ///   `RopId · SourceHandleIndex · ReturnValue(4 LE) · PartialCompletion(1)`.
+/// `ReturnValue` MUST be a value other than [`NULL_DESTINATION_OBJECT`]; that
+/// code has its own response layout, [`RopMoveFolderNullDestination`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RopMoveFolderSuccess {
     pub rop_id: RopId,
@@ -806,6 +811,28 @@ impl RopMoveFolderSuccess {
         out.push(self.source_handle_index);
         out.extend(&self.return_value.to_u32().to_le_bytes());
         out.push(self.partial_completion);
+    }
+}
+
+/// `RopMoveFolder` null-destination failure response (MS-OXCROPS §2.2.4.7.3):
+///   `RopId · SourceHandleIndex · ReturnValue(4 LE, 0x00000503) ·
+///    DestHandleIndex(4 LE) · PartialCompletion(1)`.
+///
+/// The extra `DestHandleIndex` field is what makes this layout distinct: a
+/// client parsing the ordinary response would read the first byte of that field
+/// as `PartialCompletion` and mis-frame the next ROP.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopMoveFolderNullDestination {
+    pub source_handle_index: u8,
+    pub dest_handle_index: u32,
+}
+impl RopMoveFolderNullDestination {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_MOVE_FOLDER.to_u8());
+        out.push(self.source_handle_index);
+        out.extend_from_slice(&NULL_DESTINATION_OBJECT.to_le_bytes());
+        out.extend_from_slice(&self.dest_handle_index.to_le_bytes());
+        out.push(0);
     }
 }
 

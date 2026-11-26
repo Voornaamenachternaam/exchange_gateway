@@ -946,6 +946,12 @@ pub(crate) async fn handle_move_folder(
         // (see `Storage::lock_folder_mutation`): a concurrent rename/move of the
         // SAME folder must not interleave a mirror derived from a stale
         // snapshot. Held across BOTH the `Mailbox/set` call and the mirror.
+        //
+        // The TREE lock is taken FIRST (see `Storage::lock_folder_tree`): a
+        // recursive EAS FolderDelete holds it across its
+        // revalidate-then-destroy walk, and a reparent is exactly the shape
+        // change that walk cannot observe through the per-folder lock.
+        let _tree_guard = state.storage.lock_folder_tree(&owner).await;
         let _folder_guard = state
             .storage
             .lock_folder_mutation(&owner, &mailbox_id)
@@ -3677,6 +3683,82 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
         (base, calls)
+    }
+
+    /// A recursive EAS `FolderDelete` walks the subtree under the per-OWNER
+    /// tree lock (`Storage::lock_folder_tree`) so a REPARENT cannot slip between
+    /// a node's membership revalidation and its destroy. The move side must
+    /// therefore take the SAME lock: while it is held, an EWS `MoveFolder` may
+    /// not touch the backend or the mirror.
+    #[tokio::test]
+    async fn move_folder_waits_for_the_folder_tree_lock() {
+        let (base, calls) = spawn_move_stub().await;
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let owner = "u@example.com";
+        storage
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner,
+                    server_id: "mb-1",
+                    parent_id: "0",
+                    display_name: "Projects",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mb-1",
+                },
+                "folder-add",
+            )
+            .await
+            .unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base,
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(crate::models::AppState::new(cfg, StdArc::new(storage)));
+        let tree = state.storage.lock_folder_tree(owner).await;
+        let body = r#"<?xml version="1.0"?><m:MoveFolder xmlns:m="m" xmlns:t="t"><m:ToFolderId><t:FolderId Id="mb-dest"/></m:ToFolderId><m:FolderIds><t:FolderId Id="mb-1"/></m:FolderIds></m:MoveFolder>"#;
+        let moving = {
+            let state = state.clone();
+            tokio::spawn(async move {
+                let auth = AuthContext {
+                    username: "u@example.com".to_string(),
+                    password: SecretString::from("pw"),
+                };
+                handle_move_folder(&state, &auth, body).await
+            })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            !moving.is_finished(),
+            "a reparent must wait for the tree lock a recursive delete holds"
+        );
+        // No MUTATING backend call may have escaped while the lock was held
+        // (read-only address resolution before the lock is fine).
+        assert!(
+            !calls
+                .lock()
+                .await
+                .iter()
+                .any(|c| c.get(0).and_then(|v| v.as_str()) == Some("Mailbox/set")),
+            "the reparent must not reach the backend while the tree lock is held"
+        );
+        drop(tree);
+        let resp = moving.await.expect("move task");
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&bytes).contains("NoError"),
+            "the move completes once the tree lock is released"
+        );
+        let row = state.storage.get_folder(owner, "mb-1").await.unwrap();
+        assert!(row.is_some(), "the mapping must survive the deferred move");
     }
 
     /// An EWS `MoveFolder` reparents the backend mailbox, but the backend move does

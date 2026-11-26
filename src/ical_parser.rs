@@ -343,6 +343,36 @@ pub fn unescape_ical_text(input: &str) -> String {
     result
 }
 
+/// RFC 5545 §3.3.6 `DURATION` as whole SECONDS, keeping the second-level
+/// precision a VEVENT needs (`PT30S` is a 30-second event; the minute-based
+/// parser truncates it to zero). [`parse_ical_duration_minutes`] stays for
+/// VALARM triggers, whose precision is minutes.
+pub fn parse_ical_duration_seconds(input: &str) -> Result<i64, nom::Err<nom::error::Error<&str>>> {
+    let negative = input.starts_with('-');
+    let to_parse = if negative { &input[1..] } else { input };
+
+    let duration: IsoDuration = to_parse.parse().map_err(|_| {
+        nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Verify))
+    })?;
+
+    let seconds = iso_duration_to_seconds(&duration);
+
+    Ok(if negative { -seconds } else { seconds })
+}
+
+fn iso_duration_to_seconds(d: &IsoDuration) -> i64 {
+    // Same nominal-length approximation the minute parser uses for years and
+    // months (RFC 5545 §3.3.6: a nominal duration cannot be resolved to an
+    // exact instant without a reference date).
+    let seconds = f64::from(d.year) * 31_556_952.0
+        + f64::from(d.month) * 2_629_746.0
+        + f64::from(d.day) * 86_400.0
+        + f64::from(d.hour) * 3_600.0
+        + f64::from(d.minute) * 60.0
+        + f64::from(d.second);
+    seconds.round() as i64
+}
+
 pub fn parse_ical_duration_minutes(input: &str) -> Result<i32, nom::Err<nom::error::Error<&str>>> {
     let negative = input.starts_with('-');
     let to_parse = if negative { &input[1..] } else { input };

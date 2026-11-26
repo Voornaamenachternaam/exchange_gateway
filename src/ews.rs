@@ -5154,6 +5154,21 @@ async fn handle_sync_email_prime(
     soap_ok(response)
 }
 
+/// Does the fetched message STILL belong to `mailbox_id`?
+///
+/// The membership feed reports the ids whose `mailboxIds` changed, so an id can
+/// be in `added` while the message has already moved on again: rendering a
+/// Create/Update from such a fetch would place the item in two folders at once.
+/// A missing `mailboxIds` property is treated as a member (never filter mail on
+/// an absent property — `mailboxIds` is always requested, so this is a server
+/// quirk, and dropping a genuine arrival would lose it).
+fn email_lives_in_mailbox(email: &crate::jmap::JmapEmail, mailbox_id: &str) -> bool {
+    match email.mailbox_ids.as_ref() {
+        Some(map) => map.get(mailbox_id).copied().unwrap_or(false),
+        None => true,
+    }
+}
+
 async fn handle_sync_email_folder_items(
     state: &Arc<AppState>,
     auth: &AuthContext,
@@ -5553,6 +5568,13 @@ async fn handle_sync_email_folder_items(
                 .get_email(&account_id, email_id, &auth.username, &auth.password, true)
                 .await
             {
+                Ok(Some(email)) if !email_lives_in_mailbox(&email, &mailbox_id) => {
+                    // The message left this folder between the membership feed
+                    // and this fetch: an Update here would describe an item that
+                    // no longer belongs to it (its departure is reported by the
+                    // destroyed walk as a Delete).
+                    undelivered_ids.insert(email_id.clone());
+                }
                 Ok(Some(email)) => {
                     let server_id = email_server_id_from_jmap_id(email_id);
                     let change_key = server_id.clone();
@@ -5588,6 +5610,11 @@ async fn handle_sync_email_folder_items(
             .get_email(&account_id, email_id, &auth.username, &auth.password, true)
             .await
         {
+            Ok(Some(email)) if !email_lives_in_mailbox(&email, &mailbox_id) => {
+                // Arrived and left again before this fetch: a Create would
+                // advertise an item the folder does not hold.
+                undelivered_ids.insert(email_id.clone());
+            }
             Ok(Some(email)) => {
                 let server_id = email_server_id_from_jmap_id(email_id);
                 let change_key = server_id.clone();
@@ -5629,7 +5656,10 @@ async fn handle_sync_email_folder_items(
     // holds (in-place Update, not a Delete) OR a new arrival (already rendered as
     // a Create above, so it must be skipped here to avoid a spurious Delete).
     // `overlap_held` is exactly the held-in-folder subset; every other overlap id
-    // was handled by the created loop.
+    // was handled by the created loop. An overlap id whose LIVE membership says
+    // the message left the folder is a genuine departure (Delete + membership
+    // prune), not a reorder.
+    let mut left_ids: Vec<String> = Vec::new();
     for email_id in &changes.destroyed {
         let server_id = email_server_id_from_jmap_id(email_id);
         if overlap_all.contains(email_id.as_str()) {
@@ -5645,6 +5675,14 @@ async fn handle_sync_email_folder_items(
                 .get_email(&account_id, email_id, &auth.username, &auth.password, true)
                 .await
             {
+                Ok(Some(email)) if !email_lives_in_mailbox(&email, &mailbox_id) => {
+                    rendered_ids.insert(email_id.clone());
+                    changes_xml.push_str(&format!(
+                        r#"<t:Delete><t:ItemId Id="{}" /></t:Delete>"#,
+                        xml_escape(&server_id)
+                    ));
+                    left_ids.push(email_id.clone());
+                }
                 Ok(Some(email)) => {
                     rendered_ids.insert(email_id.clone());
                     let change_key = server_id.clone();
@@ -5703,6 +5741,11 @@ async fn handle_sync_email_folder_items(
             .get_email(&account_id, &op.id, &auth.username, &auth.password, true)
             .await
         {
+            Ok(Some(email)) if !email_lives_in_mailbox(&email, &mailbox_id) => {
+                // Left the folder since the scan observed it: the membership feed
+                // reports the departure, so a flag Update here would be a stray.
+                undelivered_ids.insert(op.id.clone());
+            }
             Ok(Some(email)) => {
                 let server_id = email_server_id_from_jmap_id(&op.id);
                 let change_key = server_id.clone();
@@ -5746,12 +5789,13 @@ async fn handle_sync_email_folder_items(
     // delivered-membership rows are pruned in the same transaction as the new
     // state: the client no longer holds them, so a later re-arrival must be a
     // `Create`, not an in-place `Update`.
-    let departed_ids: Vec<String> = changes
+    let mut departed_ids: Vec<String> = changes
         .destroyed
         .iter()
         .filter(|id| !overlap_all.contains(id.as_str()))
         .cloned()
         .collect();
+    departed_ids.extend(left_ids);
     if let Err(e) = state
         .storage
         .set_ews_sync_state_with_seeds(
@@ -6518,6 +6562,36 @@ async fn handle_sync_folder_items(
                                 } else {
                                     etag
                                 };
+                                // The ChangeKey below is derived from THIS ETag:
+                                // acknowledging it without persisting it would
+                                // hand the client a key the stored row does not
+                                // carry, so the next conditional write would fail
+                                // with 412. A failed write leaves the cursor
+                                // untouched and answers retryably.
+                                if let Err(e) = state
+                                    .storage
+                                    .upsert_item_map(
+                                        owner,
+                                        stored.caldav_href.as_deref().unwrap_or(""),
+                                        &stored.resource_href,
+                                        &row.server_id,
+                                        &item.uid,
+                                        &effective_etag,
+                                    )
+                                    .await
+                                {
+                                    tracing::error!(
+                                        server_id = %row.server_id,
+                                        error = %e,
+                                        "Failed to upsert item map in SyncFolderItems JMAP fetch"
+                                    );
+                                    return operation_error_response(
+                                        &EwsAction::SyncFolderItems,
+                                        "ErrorServerBusy",
+                                        "Failed to record a changed event; retry later",
+                                        StatusCode::SERVICE_UNAVAILABLE,
+                                    );
+                                }
                                 Some((item, effective_etag))
                             }
                             Err(e) => {
@@ -6609,7 +6683,20 @@ async fn handle_sync_folder_items(
                             }
                         }
                     } else {
-                        None
+                        // No CalDAV client: a deployment/transport failure, NOT
+                        // evidence that the event is gone. Tombstoning here would
+                        // emit a <Delete> for a live item, so answer retryably
+                        // with the sync cursor unchanged.
+                        tracing::warn!(
+                            server_id = %row.server_id,
+                            "CalDAV client unavailable for a mapped event; not tombstoning"
+                        );
+                        return operation_error_response(
+                            &EwsAction::SyncFolderItems,
+                            "ErrorServerBusy",
+                            "A changed event could not be read; retry later",
+                            StatusCode::SERVICE_UNAVAILABLE,
+                        );
                     };
                     if let Some((item, effective_etag)) = fetched {
                         // Derive the ChangeKey from the ETag that was actually
@@ -6896,21 +6983,56 @@ async fn handle_sync_folder_hierarchy(
         }
         changes
     } else {
-        let mut changes = String::new();
+        // Coalesce the window per folder RELATIVE to the client's cursor: a
+        // folder created and deleted between two polls was never on the client,
+        // so the pair is a net no-op (a bare `<Delete>` for it would name a
+        // FolderId the client never received). A folder the client already knew
+        // (created BEFORE this window) still gets its `<Delete>`.
+        let added_in_window: std::collections::HashSet<&str> = journal
+            .iter()
+            .filter(|r| r.op == "folder-add")
+            .map(|r| r.server_id.as_str())
+            .collect();
+        let deleted_in_window: std::collections::HashSet<&str> = journal
+            .iter()
+            .filter(|r| r.op == "folder-delete")
+            .map(|r| r.server_id.as_str())
+            .collect();
+        // At most ONE change per folder, decided by the LAST row in the window
+        // (a delete supersedes a preceding update; a repeated update collapses)
+        // and emitted in the order each folder FIRST appears, so the delta still
+        // reads chronologically.
+        let mut first_seen: Vec<&str> = Vec::with_capacity(journal.len());
+        let mut net: std::collections::HashMap<&str, &crate::storage::JournalRow> =
+            std::collections::HashMap::with_capacity(journal.len());
         for row in &journal {
+            let server_id = row.server_id.as_str();
+            if net.insert(server_id, row).is_none() {
+                first_seen.push(server_id);
+            }
+        }
+        let mut changes = String::new();
+        for server_id in first_seen {
+            let Some(row) = net.get(server_id).copied() else {
+                continue;
+            };
             if row.op == "folder-delete" {
                 // Only a Type 12 mail folder is ever advertised here (Create and
                 // Update below are restricted to `custom`, which is Type 12
                 // only). A Type 13 CalDAV collection that EAS created and then
                 // deleted is journaled too — deleting a FolderId this client was
                 // never given would be a protocol violation, so it is skipped.
-                if row.folder_type == Some(12) {
+                if row.folder_type == Some(12) && !added_in_window.contains(server_id) {
                     changes.push_str(&format!(
                         r#"<t:Delete><t:FolderId Id="{}" ChangeKey="1" /></t:Delete>"#,
                         xml_escape(&row.server_id)
                     ));
                 }
-            } else if let Some(f) = custom.iter().find(|f| f.server_id == row.server_id) {
+            } else if !deleted_in_window.contains(server_id)
+                && let Some(f) = custom.iter().find(|f| f.server_id == row.server_id)
+            {
+                // A folder that is gone again by the end of the window is
+                // covered by its `<Delete>` row above (when the client knew it).
                 let tag = if row.op == "folder-add" {
                     "Create"
                 } else {
@@ -7155,6 +7277,9 @@ fn render_notification_event(
     watermark: &str,
     timestamp: &str,
 ) -> String {
+    // Element order is fixed by the schema: `BaseObjectChangedEventType`
+    // EXTENDS `BaseNotificationEventType`, so the base's `Watermark` precedes the
+    // extension's `TimeStamp` ([MS-OXWSNTIF] §2.2.4.4/§2.2.4.5).
     let ts = format!("<t:TimeStamp>{}</t:TimeStamp>", timestamp);
     let watermark_xml = format!("<t:Watermark>{}</t:Watermark>", watermark);
     match event {
@@ -7165,7 +7290,7 @@ fn render_notification_event(
             ..
         } => {
             format!(
-                "<t:CreatedEvent>{ts}{wm}<t:ItemId Id=\"{iid}\" ChangeKey=\"{ck}\"/><t:ParentFolderId Id=\"{fid}\"/></t:CreatedEvent>",
+                "<t:CreatedEvent>{wm}{ts}<t:ItemId Id=\"{iid}\" ChangeKey=\"{ck}\"/><t:ParentFolderId Id=\"{fid}\"/></t:CreatedEvent>",
                 ts = ts,
                 wm = watermark_xml,
                 iid = xml_escape(item_id),
@@ -7180,7 +7305,7 @@ fn render_notification_event(
             ..
         } => {
             format!(
-                "<t:ModifiedEvent>{ts}{wm}<t:ItemId Id=\"{iid}\" ChangeKey=\"{ck}\"/><t:ParentFolderId Id=\"{fid}\"/></t:ModifiedEvent>",
+                "<t:ModifiedEvent>{wm}{ts}<t:ItemId Id=\"{iid}\" ChangeKey=\"{ck}\"/><t:ParentFolderId Id=\"{fid}\"/></t:ModifiedEvent>",
                 ts = ts,
                 wm = watermark_xml,
                 iid = xml_escape(item_id),
@@ -7192,7 +7317,7 @@ fn render_notification_event(
             folder_id, item_id, ..
         } => {
             format!(
-                "<t:DeletedEvent>{ts}{wm}<t:ItemId Id=\"{iid}\"/><t:ParentFolderId Id=\"{fid}\"/></t:DeletedEvent>",
+                "<t:DeletedEvent>{wm}{ts}<t:ItemId Id=\"{iid}\"/><t:ParentFolderId Id=\"{fid}\"/></t:DeletedEvent>",
                 ts = ts,
                 wm = watermark_xml,
                 iid = xml_escape(item_id),
@@ -7206,7 +7331,7 @@ fn render_notification_event(
             ..
         } => {
             format!(
-                "<t:NewMailEvent>{ts}{wm}<t:ItemId Id=\"{iid}\" ChangeKey=\"{ck}\"/><t:ParentFolderId Id=\"{fid}\"/></t:NewMailEvent>",
+                "<t:NewMailEvent>{wm}{ts}<t:ItemId Id=\"{iid}\" ChangeKey=\"{ck}\"/><t:ParentFolderId Id=\"{fid}\"/></t:NewMailEvent>",
                 ts = ts,
                 wm = watermark_xml,
                 iid = xml_escape(item_id),
@@ -7223,7 +7348,7 @@ fn render_notification_event(
             ..
         } => {
             format!(
-                "<t:MovedEvent>{ts}{wm}<t:ItemId Id=\"{iid}\" ChangeKey=\"{ck}\"/><t:ParentFolderId Id=\"{nfid}\"/><t:OldItemId Id=\"{oid}\"/><t:OldParentFolderId Id=\"{ofid}\"/></t:MovedEvent>",
+                "<t:MovedEvent>{wm}{ts}<t:ItemId Id=\"{iid}\" ChangeKey=\"{ck}\"/><t:ParentFolderId Id=\"{nfid}\"/><t:OldItemId Id=\"{oid}\"/><t:OldParentFolderId Id=\"{ofid}\"/></t:MovedEvent>",
                 ts = ts,
                 wm = watermark_xml,
                 iid = xml_escape(new_item_id),
@@ -7242,7 +7367,7 @@ fn render_notification_event(
             ..
         } => {
             format!(
-                "<t:CopiedEvent>{ts}{wm}<t:ItemId Id=\"{iid}\" ChangeKey=\"{ck}\"/><t:ParentFolderId Id=\"{nfid}\"/><t:OldItemId Id=\"{oid}\"/><t:OldParentFolderId Id=\"{ofid}\"/></t:CopiedEvent>",
+                "<t:CopiedEvent>{wm}{ts}<t:ItemId Id=\"{iid}\" ChangeKey=\"{ck}\"/><t:ParentFolderId Id=\"{nfid}\"/><t:OldItemId Id=\"{oid}\"/><t:OldParentFolderId Id=\"{ofid}\"/></t:CopiedEvent>",
                 ts = ts,
                 wm = watermark_xml,
                 iid = xml_escape(new_item_id),
@@ -10331,6 +10456,25 @@ async fn handle_get_user_availability(
     let mut combined_merged = String::new();
     let mut responses = String::new();
     for mailbox in &mailboxes {
+        // The backend probe authenticates with THIS request's credentials, so
+        // querying another user's mailbox would mean logging into their account
+        // with the caller's password (a guaranteed failure, and a credential
+        // mix-up when the two happen to share a password). Free/busy is
+        // therefore answered only for the caller's own mailbox; any other target
+        // gets a per-mailbox error, which is also what a directory that hides
+        // other users' calendars should report.
+        if !mailbox.eq_ignore_ascii_case(&auth.username) {
+            tracing::debug!(
+                target: "ews",
+                mailbox = %mailbox,
+                caller = %auth.username,
+                "GetUserAvailability: target mailbox is not the authenticated user; no free/busy access"
+            );
+            responses.push_str(
+                r#"<m:FreeBusyResponse><m:ResponseMessage ResponseClass="Error"><m:ResponseCode>ErrorMailRecipientNotFound</m:ResponseCode><m:MessageText>Free/busy is only available for the signed-in mailbox</m:MessageText></m:ResponseMessage></m:FreeBusyResponse>"#,
+            );
+            continue;
+        }
         let (merged, events_xml) = merged_freebusy_for_mailbox(
             state,
             mailbox,
@@ -10415,10 +10559,13 @@ async fn handle_get_user_oof_settings(
     } else {
         "Enabled"
     };
+    // Wire vocabulary per [MS-OXWOOF] §2.2.5.1: `None | Known | All`.
     let external_audience = match settings.external_audience {
-        crate::oof::ExternalAudience::External => "External",
-        crate::oof::ExternalAudience::KnownExternal => "KnownExternal",
-        crate::oof::ExternalAudience::All => "All",
+        crate::oof::ExternalAudience::None => "None",
+        crate::oof::ExternalAudience::KnownExternal => "Known",
+        // `External` (external-only, no internal reply) still sends to every
+        // external sender, which is the wire's `All`.
+        crate::oof::ExternalAudience::External | crate::oof::ExternalAudience::All => "All",
     };
 
     // Duration: if start/end are set, include them; else use zeros (per stub).
@@ -10496,12 +10643,24 @@ async fn handle_set_user_oof_settings(
     };
     let enabled = !oof_state_text.trim().eq_ignore_ascii_case("Disabled");
 
-    let external_audience_text =
-        extract_first_tag_text(body, b"ExternalAudience").unwrap_or_else(|| "All".to_string());
-    let external_audience = match external_audience_text.to_lowercase().as_str() {
-        "external" => crate::oof::ExternalAudience::External,
-        "knownexternal" => crate::oof::ExternalAudience::KnownExternal,
-        _ => crate::oof::ExternalAudience::All,
+    let external_audience_text = extract_first_tag_text(body, b"ExternalAudience")
+        .map(|v| v.trim().to_lowercase())
+        .unwrap_or_else(|| "all".to_string());
+    // `t:ExternalAudience` is `None | Known | All` ([MS-OXWOOF] §2.2.5.1) — an
+    // unrecognised token is a client error, never a silent "All" (which sends
+    // external auto-replies the user never asked for). The `External`/
+    // `KnownExternal` spellings are accepted because earlier gateway versions
+    // rendered them, so a client echoing that response still round-trips.
+    let external_audience = match external_audience_text.as_str() {
+        "none" => crate::oof::ExternalAudience::None,
+        "known" | "knownexternal" => crate::oof::ExternalAudience::KnownExternal,
+        "all" | "external" => crate::oof::ExternalAudience::All,
+        other => {
+            return set_user_oof_error_response(
+                "ErrorInvalidRequest",
+                &format!("Unknown ExternalAudience '{other}'"),
+            );
+        }
     };
 
     // Duration
@@ -11091,6 +11250,60 @@ async fn handle_find_people(state: &Arc<AppState>, auth: &AuthContext, body: &st
 /// `Email/query` filtered on `threadId` (RFC 8621 §4.3), order the results
 /// oldest-first, and render each message as a `ConversationNode`/`Items` entry
 /// (MS-OXWSCONV §2.2.4.1) so the client can display the full thread.
+/// The `FoldersToIgnore` ids of a `GetConversationItems` request
+/// ([MS-OXWSCONV] §3.1.4.3.3.8), as `(is_distinguished, id)`.
+fn parse_conversation_folders_to_ignore(body: &str) -> Vec<(bool, String)> {
+    let mut out = Vec::new();
+    let mut reader = Reader::from_str(body);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    let mut depth: i32 = 0;
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) if e.name().local_name().as_ref() == "FoldersToIgnore" => {
+                depth += 1;
+            }
+            Ok(Event::End(e)) if e.name().local_name().as_ref() == "FoldersToIgnore" => {
+                depth -= 1;
+            }
+            Ok(Event::Start(e)) | Ok(Event::Empty(e))
+                if depth > 0
+                    && matches!(
+                        e.name().local_name().as_ref(),
+                        "FolderId" | "DistinguishedFolderId"
+                    ) =>
+            {
+                let distinguished = e.name().local_name().as_ref() == "DistinguishedFolderId";
+                for a in e.attributes().flatten() {
+                    if a.key.local_name().as_ref() == "Id"
+                        && let Ok(v) = a.normalized_value(XmlVersion::Implicit1_0)
+                    {
+                        out.push((distinguished, v.into_owned()));
+                    }
+                }
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    out
+}
+
+/// JMAP mailbox role for a mail folder, mirroring the EWS SyncFolderItems
+/// mapping. Non-mail folders (Calendar/Contacts/…) have no role.
+fn conversation_role_for(folder: DistinguishedFolder) -> Option<&'static str> {
+    match folder {
+        DistinguishedFolder::Inbox => Some("inbox"),
+        DistinguishedFolder::SentItems => Some("sent"),
+        DistinguishedFolder::Drafts => Some("drafts"),
+        DistinguishedFolder::JunkEmail => Some("junk"),
+        DistinguishedFolder::DeletedItems => Some("trash"),
+        DistinguishedFolder::Outbox => Some("outbox"),
+        _ => None,
+    }
+}
+
 async fn handle_get_conversation_items(
     state: &Arc<AppState>,
     auth: &AuthContext,
@@ -11136,6 +11349,46 @@ async fn handle_get_conversation_items(
 
     // Honour the client's size cap; default to a bounded page when absent.
     let max_items = extract_int(body, b"MaxItemsToReturn", 100).clamp(1, 512);
+
+    // `FoldersToIgnore` ([MS-OXWSCONV] §3.1.4.3.3.8) excludes nodes that live
+    // ONLY in the named folders (Deleted Items, Junk, …). It is resolved to JMAP
+    // mailbox ids HERE and applied BEFORE the page is truncated, so an ignored
+    // message cannot consume the client's `MaxItemsToReturn` budget.
+    let mut ignored_mailboxes: HashSet<String> = HashSet::new();
+    let owner = owner_from_username(&auth.username);
+    for (distinguished, raw) in parse_conversation_folders_to_ignore(body) {
+        let folder = if distinguished {
+            raw.parse::<DistinguishedFolder>().ok()
+        } else {
+            crate::ews_folders::resolve_folder_id(&raw, owner)
+        };
+        match folder.and_then(conversation_role_for) {
+            Some(role) => match jmap
+                .get_mailbox_ids_for_role(&account_id, role, &auth.username, &auth.password)
+                .await
+            {
+                Ok(ids) => ignored_mailboxes.extend(ids),
+                Err(e) => {
+                    // Fail CLOSED: without the ignore set the response could
+                    // include nodes the client asked to hide.
+                    tracing::warn!(error = %e, role = role, "GetConversationItems: FoldersToIgnore role lookup failed");
+                    return operation_error_response(
+                        &EwsAction::GetConversationItems,
+                        "ErrorServerBusy",
+                        "Failed to resolve the folders to ignore",
+                        StatusCode::SERVICE_UNAVAILABLE,
+                    );
+                }
+            },
+            // A non-distinguished id is one of this gateway's own folder
+            // ServerIds, which for a mail folder IS its JMAP mailbox id.
+            None if !distinguished => {
+                ignored_mailboxes.insert(raw);
+            }
+            None => {}
+        }
+    }
+    let ignored_mailboxes = ignored_mailboxes;
 
     // [MS-OXWSCONV] §3.1.4.3.4.1 `ConversationNodeSortOrder`: the gateway renders
     // a FLAT node list (one node per message), where tree order and date order
@@ -11186,6 +11439,19 @@ async fn handle_get_conversation_items(
                     .await
                 {
                     Ok(mut emails) => {
+                        // Exclude messages that live ONLY in an ignored folder.
+                        // A message also reachable from a visible folder stays
+                        // (dropping it would hide content the client did not ask
+                        // to hide). Budget-wise this runs BEFORE the truncation.
+                        if !ignored_mailboxes.is_empty() {
+                            emails.retain(|email| {
+                                email.mailbox_ids.as_ref().is_none_or(|memberships| {
+                                    memberships.iter().any(|(id, member)| {
+                                        *member && !ignored_mailboxes.contains(id)
+                                    })
+                                })
+                            });
+                        }
                         // Apply the requested order, THEN honour the client's
                         // page size: truncating first would return the oldest
                         // messages of a descending request.
@@ -11226,16 +11492,18 @@ async fn handle_get_conversation_items(
                                 internet_message_id, parent_message_id, message_xml
                             ));
                         }
-                        let total_nodes = emails.len();
                         resp_messages.push_str(&format!(
                             // [MS-OXWSCONV] §3.1.4.3.3.6: the response message
                             // carries a DIRECT `Conversation` child
                             // (`t:ConversationResponseType`) — there is no
-                            // `Conversations` wrapper element in the schema.
-                            r#"<m:GetConversationItemsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Conversation><t:ConversationId Id="{}" /><t:SyncState/><t:ConversationNodes>{}</t:ConversationNodes><t:TotalConversationNodes>{}</t:TotalConversationNodes></m:Conversation></m:GetConversationItemsResponseMessage>"#,
+                            // `Conversations` wrapper element in the schema, and
+                            // the type has NO `TotalConversationNodes` element
+                            // (§3.1.4.3.3.5: ConversationId, SyncState,
+                            // ConversationNodes only), so emitting one would be
+                            // an unexpected element.
+                            r#"<m:GetConversationItemsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Conversation><t:ConversationId Id="{}" /><t:SyncState/><t:ConversationNodes>{}</t:ConversationNodes></m:Conversation></m:GetConversationItemsResponseMessage>"#,
                             xml_escape(&thread_id),
                             nodes_xml,
-                            total_nodes
                         ));
                         continue;
                     }
@@ -11931,7 +12199,12 @@ async fn handle_get_reminders(state: &Arc<AppState>, auth: &AuthContext, body: &
             continue;
         };
 
-        let ck = changekey_for_item(&current.row);
+        // The ChangeKey carries the occurrence so the client's later
+        // PerformReminderAction targets exactly this reminder.
+        let ck = reminder_item_ref_change_key(
+            &changekey_for_item(&current.row),
+            &reminder_occurrence_key(occurrence.reminder_due),
+        );
         let mut xml = String::new();
         xml.push_str(&format!(
             r#"<t:Reminder><t:Subject>{}</t:Subject><t:ReminderTime>{}</t:ReminderTime><t:StartDate>{}</t:StartDate><t:EndDate>{}</t:EndDate><t:ItemId Id="{}" ChangeKey="{}" /><t:ReminderGroup>Calendar</t:ReminderGroup><t:UID>{}</t:UID>"#,
@@ -11981,10 +12254,12 @@ struct ReminderOccurrence {
 
 /// The reminder occurrence to DISPLAY for `item`.
 ///
-/// Occurrences are walked from `window_start` minus [`SNOOZE_LOOKBACK_MINUTES`]
-/// so a reminder snoozed into the window is still surfaced, and window
-/// membership is decided on the EFFECTIVE instant (the recorded snooze when
-/// there is one, otherwise the original due time).
+/// A SNOOZED occurrence that predates the window is surfaced by consulting the
+/// recorded states directly (a snooze can move any occurrence into the window),
+/// and the recurrence walk itself starts at the first occurrence whose reminder
+/// is due inside the window. Window membership is decided on the EFFECTIVE
+/// instant (the recorded snooze when there is one, otherwise the original due
+/// time).
 fn reminder_occurrence_in_window(
     item: &crate::calendar::CalendarItem,
     server_id: &str,
@@ -11993,14 +12268,57 @@ fn reminder_occurrence_in_window(
     window_end: chrono::DateTime<Utc>,
     now: chrono::DateTime<Utc>,
 ) -> Option<ReminderOccurrence> {
-    /// How far before the window a snoozed reminder may still be shown. A
-    /// snooze is minutes-to-days in practice; this bound keeps the walk finite
-    /// for a long-running series.
-    const SNOOZE_LOOKBACK_MINUTES: i64 = 60 * 24 * 30;
     /// Backstop against a pathological recurrence rule.
     const MAX_OCCURRENCES: usize = 512;
     let lead = chrono::Duration::minutes(i64::from(item.reminder?.unsigned_abs().min(525_600)));
-    let mut cursor = window_start + lead - chrono::Duration::minutes(SNOOZE_LOOKBACK_MINUTES);
+    // Occurrences BEFORE the window can only still be displayed if the client
+    // SNOOZED one into it — and those are exactly the recorded states, so they
+    // are consulted directly instead of walking the recurrence from a fixed
+    // lookback. An hourly series over a 30-day lookback is 720 occurrences: it
+    // used to burn the whole occurrence budget before any in-window occurrence
+    // was ever reached, hiding the reminder entirely.
+    let mut carried: Option<ReminderOccurrence> = None;
+    for ((item_id, occurrence_key), state) in reminder_state {
+        if item_id != server_id {
+            continue;
+        }
+        let Some(reminder_due) = crate::calendar::parse_datetime(occurrence_key) else {
+            continue;
+        };
+        // Due in or after the window: the forward walk below covers it.
+        if reminder_due >= window_start {
+            continue;
+        }
+        let Some(show_at) = reminder_show_instant(Some(state), reminder_due, now, window_end)
+        else {
+            continue;
+        };
+        if show_at < window_start || show_at > window_end {
+            continue;
+        }
+        // The occurrence the snooze belongs to: its due instant is `lead`
+        // before the occurrence start, exactly how it was recorded.
+        let occurrence_start = reminder_due + lead;
+        let occurrence = ReminderOccurrence {
+            occurrence_start,
+            occurrence_end: occurrence_start + (item.end - item.start),
+            reminder_due,
+            show_at,
+        };
+        if carried
+            .as_ref()
+            .is_none_or(|c| occurrence.occurrence_start < c.occurrence_start)
+        {
+            carried = Some(occurrence);
+        }
+    }
+    if carried.is_some() {
+        return carried;
+    }
+    // Every remaining candidate has its reminder due at or after the window
+    // start, so the walk begins there: no occurrence before the window can
+    // consume the budget.
+    let mut cursor = window_start + lead;
     for _ in 0..MAX_OCCURRENCES {
         let occurrence_start = next_occurrence_start(item, cursor)?;
         let occurrence_end = occurrence_start + (item.end - item.start);
@@ -12035,6 +12353,28 @@ fn reminder_occurrence_in_window(
 /// The stable storage key of one reminder occurrence.
 fn reminder_occurrence_key(reminder_due: chrono::DateTime<Utc>) -> String {
     reminder_due.to_rfc3339()
+}
+
+/// Separator between an item's ChangeKey and its occurrence key in the
+/// `<t:ItemId ChangeKey>` a `GetReminders` response hands the client. A
+/// gateway ChangeKey is a hex digest, so `~` can never appear in one.
+const REMINDER_OCCURRENCE_SEPARATOR: char = '~';
+
+/// The `<t:ItemId/@ChangeKey>` a reminder carries: the item's ChangeKey plus the
+/// occurrence it refers to. `PerformReminderAction` echoes it back, so the
+/// action lands on the reminder the client actually displayed instead of a
+/// re-derived occurrence.
+fn reminder_item_ref_change_key(change_key: &str, occurrence: &str) -> String {
+    format!("{change_key}{REMINDER_OCCURRENCE_SEPARATOR}{occurrence}")
+}
+
+/// Split an echoed reminder `ChangeKey` back into `(item change key,
+/// occurrence key)`. Anything without a separator (a client echoing the plain
+/// item ChangeKey, or a foreign client) is not occurrence-qualified.
+fn split_reminder_item_ref(change_key: &str) -> Option<(&str, &str)> {
+    change_key
+        .split_once(REMINDER_OCCURRENCE_SEPARATOR)
+        .filter(|(ck, occ)| !ck.is_empty() && !occ.is_empty())
 }
 
 /// Apply a recorded reminder action to a due instant: `None` hides the
@@ -12087,6 +12427,11 @@ fn parse_reminder_window(
 struct ReminderAction {
     action_type: String,
     item_id: String,
+    /// The `ItemId/@ChangeKey` the client echoes from `GetReminders`. It carries
+    /// the OCCURRENCE the client was shown (see
+    /// [`reminder_item_ref_change_key`]), so an action targets exactly that
+    /// reminder even when the gateway's window defaults moved on since.
+    change_key: String,
     new_reminder_time: Option<String>,
 }
 
@@ -12122,6 +12467,7 @@ fn parse_reminder_actions(body: &str) -> Vec<ReminderAction> {
             // action being silently dropped.
             action_type: extract_first_tag_text(&block, b"ActionType").unwrap_or_default(),
             item_id: extract_first_attr(&block, b"ItemId", b"Id").unwrap_or_default(),
+            change_key: extract_first_attr(&block, b"ItemId", b"ChangeKey").unwrap_or_default(),
             new_reminder_time: extract_first_tag_text(&block, b"NewReminderTime"),
         })
         .collect()
@@ -12241,69 +12587,32 @@ async fn handle_perform_reminder_action(
         }
     }
 
-    // `UpdatedItemIds` must carry each item's REAL ChangeKey: echoing the id as
-    // the ChangeKey made a client that compared it against the id it held see a
-    // phantom change.
+    // RESOLVE EVERY action before writing ANY state: a batch that fails midway
+    // must not leave the first actions recorded while the client is told the
+    // whole request failed (a retry would then re-apply them against a different
+    // window). Each item's real ChangeKey is resolved here too — the
+    // `UpdatedItemIds` entry must carry it, since echoing the id as the
+    // ChangeKey made a client comparing it against the id it held see a phantom
+    // change.
+    //
+    // The occurrence comes from the ChangeKey the client echoed from
+    // `GetReminders` when it is occurrence-qualified and plausible; otherwise
+    // the gateway re-derives it with the SAME helper `GetReminders` uses, so a
+    // client that does not echo the ChangeKey still works.
     let mut updated_xml = String::new();
+    let mut writes: Vec<(String, String, Option<String>)> = Vec::with_capacity(actions.len());
+    let occurrence_bounds = (
+        load_start - chrono::Duration::minutes(30),
+        load_end + chrono::Duration::minutes(120),
+    );
     for action in &actions {
         let item_id = &action.item_id;
-        match state
+        let row = match state
             .storage
             .get_ews_item_by_server_id(&auth.username, item_id)
             .await
         {
-            Ok(Some(row)) => {
-                let ck = changekey_for_item(&row);
-                updated_xml.push_str(&format!(
-                    r#"<t:ItemId Id="{}" ChangeKey="{}" />"#,
-                    xml_escape(item_id),
-                    xml_escape(&ck)
-                ));
-                // Record the action against the occurrence the client is acting
-                // on, so `GetReminders` stops showing it (Dismiss) or shows it
-                // again at the snooze instant (Snooze). Acknowledging an action
-                // that is not recorded makes the reminder reappear.
-                match occurrence_by_id.get(item_id) {
-                    Some(occurrence) => {
-                        let snooze = match action.dismissal() {
-                            Some(false) => Some(action.snooze_until(now).to_rfc3339()),
-                            _ => None,
-                        };
-                        if let Err(e) = state
-                            .storage
-                            .set_reminder_state(owner, item_id, occurrence, snooze.as_deref())
-                            .await
-                        {
-                            tracing::error!(
-                                error = %e,
-                                item_id = %item_id,
-                                "PerformReminderAction: failed to record the reminder action"
-                            );
-                            return operation_error_response(
-                                &EwsAction::PerformReminderAction,
-                                "ErrorInternalServerError",
-                                "Failed to record the reminder action",
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                            );
-                        }
-                    }
-                    None => {
-                        // The reminder is not being displayed (dismissed, or not
-                        // due in the window): recording nothing and answering
-                        // Success would tell the client the action was applied.
-                        tracing::warn!(
-                            item_id = %item_id,
-                            "PerformReminderAction: no reminder occurrence in the window; rejecting the action"
-                        );
-                        return operation_error_response(
-                            &EwsAction::PerformReminderAction,
-                            "ErrorInvalidRequest",
-                            "The reminder is not currently displayed for this item",
-                            StatusCode::OK,
-                        );
-                    }
-                }
-            }
+            Ok(Some(row)) => row,
             Ok(None) => {
                 return operation_error_response(
                     &EwsAction::PerformReminderAction,
@@ -12321,7 +12630,51 @@ async fn handle_perform_reminder_action(
                     StatusCode::INTERNAL_SERVER_ERROR,
                 );
             }
-        }
+        };
+        let ck = changekey_for_item(&row);
+        updated_xml.push_str(&format!(
+            r#"<t:ItemId Id="{}" ChangeKey="{}" />"#,
+            xml_escape(item_id),
+            xml_escape(&ck)
+        ));
+        let echoed_occurrence = split_reminder_item_ref(&action.change_key)
+            .map(|(_, occurrence)| occurrence.to_string())
+            .filter(|occurrence| {
+                crate::calendar::parse_datetime(occurrence)
+                    .is_some_and(|due| due >= occurrence_bounds.0 && due <= occurrence_bounds.1)
+            });
+        let Some(occurrence) = echoed_occurrence.or_else(|| occurrence_by_id.get(item_id).cloned())
+        else {
+            // The reminder is not being displayed (dismissed, or not due in the
+            // window): recording nothing and answering Success would tell the
+            // client the action was applied.
+            tracing::warn!(
+                item_id = %item_id,
+                "PerformReminderAction: no reminder occurrence in the window; rejecting the action"
+            );
+            return operation_error_response(
+                &EwsAction::PerformReminderAction,
+                "ErrorInvalidRequest",
+                "The reminder is not currently displayed for this item",
+                StatusCode::OK,
+            );
+        };
+        let snooze = match action.dismissal() {
+            Some(false) => Some(action.snooze_until(now).to_rfc3339()),
+            _ => None,
+        };
+        writes.push((item_id.clone(), occurrence, snooze));
+    }
+    // ONE transaction: a partial batch is rolled back, so the response can only
+    // be a Success for a request whose actions were all recorded.
+    if let Err(e) = state.storage.set_reminder_states(owner, &writes).await {
+        tracing::error!(error = %e, "PerformReminderAction: failed to record the reminder actions");
+        return operation_error_response(
+            &EwsAction::PerformReminderAction,
+            "ErrorInternalServerError",
+            "Failed to record the reminder action",
+            StatusCode::INTERNAL_SERVER_ERROR,
+        );
     }
 
     let inner = format!(
@@ -13692,6 +14045,7 @@ mod tests {
         let no_time = ReminderAction {
             action_type: "snooze".to_string(),
             item_id: "cal-3".to_string(),
+            change_key: String::new(),
             new_reminder_time: None,
         };
         assert_eq!(
@@ -13703,9 +14057,98 @@ mod tests {
         let bogus = ReminderAction {
             action_type: "Explode".to_string(),
             item_id: "cal-4".to_string(),
+            change_key: String::new(),
             new_reminder_time: None,
         };
         assert_eq!(bogus.dismissal(), None);
+    }
+
+    /// A high-frequency series must still surface its IN-WINDOW occurrence:
+    /// walking from a fixed lookback would spend the whole occurrence budget
+    /// before the window opened (an hourly series over 30 days is 720
+    /// occurrences against a 512 budget), which is why the walk starts at the
+    /// window and only recorded snoozes are consulted for earlier occurrences.
+    #[test]
+    fn test_reminder_occurrence_walk_reaches_the_window() {
+        let base = crate::calendar::parse_datetime("2026-03-01T00:00:00Z").unwrap();
+        let item = crate::calendar::CalendarItem {
+            uid: "uid-hourly".to_string(),
+            start: base,
+            end: base + chrono::Duration::hours(1),
+            rrule: Some("FREQ=HOURLY".to_string()),
+            reminder: Some(15),
+            ..Default::default()
+        };
+        // The window opens at 08:30 so the 09:00 occurrence's 08:45 reminder is
+        // inside it; a 30-day lookback would have consumed the entire 512
+        // occurrence budget before ever reaching 20 March.
+        let window_start = crate::calendar::parse_datetime("2026-03-20T08:30:00Z").unwrap();
+        let window_end = crate::calendar::parse_datetime("2026-03-20T12:00:00Z").unwrap();
+        let now = window_start;
+        let occurrence = reminder_occurrence_in_window(
+            &item,
+            "cal-hourly",
+            &Default::default(),
+            window_start,
+            window_end,
+            now,
+        )
+        .expect("the 09:00 occurrence's 08:45 reminder must be in the window");
+        assert_eq!(
+            occurrence.occurrence_start,
+            crate::calendar::parse_datetime("2026-03-20T09:00:00Z").unwrap(),
+            "the walk must land on the first in-window occurrence"
+        );
+
+        // A SNOOZE from an occurrence BEFORE the window is still surfaced: it is
+        // read from the recorded state rather than found by walking.
+        let earlier_due = window_start - chrono::Duration::hours(5);
+        let mut state = std::collections::HashMap::new();
+        state.insert(
+            (
+                "cal-hourly".to_string(),
+                reminder_occurrence_key(earlier_due),
+            ),
+            Some((window_start + chrono::Duration::minutes(10)).to_rfc3339()),
+        );
+        let snoozed = reminder_occurrence_in_window(
+            &item,
+            "cal-hourly",
+            &state,
+            window_start,
+            window_end,
+            now,
+        )
+        .expect("a snoozed earlier occurrence must surface inside the window");
+        assert_eq!(
+            snoozed.show_at,
+            window_start + chrono::Duration::minutes(10)
+        );
+
+        // A DISMISSED occurrence stays hidden even when its (would-be) reminder
+        // instant falls inside a window that holds no other reminder.
+        let tick = |s: &str| crate::calendar::parse_datetime(s).unwrap();
+        let (quiet_start, quiet_end) = (tick("2026-03-20T00:05:00Z"), tick("2026-03-20T00:40:00Z"));
+        let mut dismissed: std::collections::HashMap<(String, String), Option<String>> =
+            std::collections::HashMap::new();
+        // The 00:35 occurrence's reminder (due 00:20) would be shown; the
+        // dismissal must hide it, and the forward walk finds nothing else.
+        dismissed.insert(
+            (
+                "cal-hourly".to_string(),
+                reminder_occurrence_key(tick("2026-03-20T00:20:00Z")),
+            ),
+            None,
+        );
+        let hidden = reminder_occurrence_in_window(
+            &item,
+            "cal-hourly",
+            &dismissed,
+            quiet_start,
+            quiet_end,
+            quiet_start,
+        );
+        assert!(hidden.is_none(), "a dismissed reminder must not resurface");
     }
 
     /// A recorded action decides whether a computed reminder is shown, and at
@@ -18348,6 +18791,106 @@ mod tests {
         assert!(
             !delta.contains("Top of Information Store") && !delta.contains("Projects"),
             "a delta must not re-send the whole hierarchy: {delta}"
+        );
+    }
+
+    /// A folder created AND deleted between two polls was never on the client:
+    /// the delta must report neither a `<t:Create>` nor a `<t:Delete>` for it. A
+    /// folder the client already had still gets exactly ONE `<t:Delete>` even
+    /// when an update precedes the delete in the same window.
+    #[tokio::test]
+    async fn sync_folder_hierarchy_coalesces_within_one_window() {
+        let state = meeting_test_state().await;
+        let owner = "user@example.com";
+        let seed =
+            |server_id: &'static str, name: &'static str| crate::storage::FolderUpsertParams {
+                owner,
+                server_id,
+                parent_id: "0",
+                display_name: name,
+                folder_type: 12,
+                backend_kind: "jmap",
+                backend_id: server_id,
+            };
+        let empty_prime =
+            r#"<SyncFolderHierarchy><FolderShape/><SyncState/></SyncFolderHierarchy>"#;
+        let prime =
+            response_body(handle_sync_folder_hierarchy(&state, &meeting_auth(), empty_prime).await)
+                .await;
+        let token0 = extract_first_tag_text(&prime, b"SyncState").expect("SyncState");
+        let delta = |token: &str| {
+            format!(
+                "<SyncFolderHierarchy><FolderShape/><SyncState>{}</SyncState></SyncFolderHierarchy>",
+                xml_escape(token)
+            )
+        };
+
+        // Created and deleted inside ONE window: net no-op for this client.
+        state
+            .storage
+            .upsert_folder_journaled(seed("mb-temp", "Temp"), "folder-add")
+            .await
+            .expect("create");
+        state
+            .storage
+            .delete_folders_journaled(owner, &["mb-temp".to_string()])
+            .await
+            .expect("delete");
+        let text = response_body(
+            handle_sync_folder_hierarchy(&state, &meeting_auth(), &delta(&token0)).await,
+        )
+        .await;
+        assert!(
+            !text.contains("mb-temp"),
+            "a folder created and deleted in one window must not be reported at all: {text}"
+        );
+        assert!(
+            text.contains("<m:Changes></m:Changes>"),
+            "no changes: {text}"
+        );
+        let token1 = extract_first_tag_text(&text, b"SyncState").expect("SyncState");
+
+        // A folder the client HAS (create delivered by the previous delta) that
+        // is updated and then deleted in the next window: one Delete, no Update.
+        state
+            .storage
+            .upsert_folder_journaled(seed("mb-keep", "Keep"), "folder-add")
+            .await
+            .expect("create keep");
+        let created = response_body(
+            handle_sync_folder_hierarchy(&state, &meeting_auth(), &delta(&token1)).await,
+        )
+        .await;
+        assert!(
+            created.contains(r#"<t:Create>"#) && created.contains("Keep"),
+            "{created}"
+        );
+        let token2 = extract_first_tag_text(&created, b"SyncState").expect("SyncState");
+
+        state
+            .storage
+            .update_folder_journaled(owner, "mb-keep", None, Some("Renamed"))
+            .await
+            .expect("rename");
+        state
+            .storage
+            .delete_folders_journaled(owner, &["mb-keep".to_string()])
+            .await
+            .expect("delete keep");
+        let removed = response_body(
+            handle_sync_folder_hierarchy(&state, &meeting_auth(), &delta(&token2)).await,
+        )
+        .await;
+        assert_eq!(
+            removed
+                .matches(r#"<t:Delete><t:FolderId Id="mb-keep""#)
+                .count(),
+            1,
+            "exactly one Delete for the known folder: {removed}"
+        );
+        assert!(
+            !removed.contains("<t:Update>"),
+            "the pending update must be superseded by the delete: {removed}"
         );
     }
 

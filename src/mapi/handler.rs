@@ -863,11 +863,13 @@ async fn resolve_copy_source(
     parent_backend_id: &str,
     folder_id: u64,
 ) -> Result<Option<String>, ()> {
-    // A client that omits the FID (or repeats the handle's own FID) means "the
-    // folder this handle names".
-    if folder_id == 0 || crate::mapi::store::folder_id_from_backend(parent_backend_id) == folder_id
-    {
-        return Ok(Some(parent_backend_id.to_string()));
+    // EVERY FID goes through the direct-child lookup, including 0 (no folder
+    // has FID 0) and the handle's own FID: `FolderId` names the folder to COPY
+    // ([MS-OXCROPS] §2.2.4.8.1), i.e. a CHILD of the source handle. Treating
+    // either as "the source handle itself" would copy the parent into its own
+    // child instead of the folder the client asked for.
+    if folder_id == 0 {
+        return Ok(None);
     }
     let mailboxes = enumerate_mailboxes(jmap, username, password).await?;
     Ok(mailboxes
@@ -880,6 +882,169 @@ async fn resolve_copy_source(
                     .is_some_and(|id| crate::mapi::store::folder_id_from_backend(id) == folder_id)
         })
         .and_then(|mb| mb.id.clone()))
+}
+
+/// `(id, parent, name)` for `root_id` and its whole descendant subtree, PARENT
+/// FIRST — each folder after the root names a parent that already appears
+/// earlier in the list, which is what a recursive folder COPY needs to create
+/// the copy under its copied parent.
+fn mailbox_subtree_parent_first(
+    mailboxes: &[crate::jmap::JmapMailbox],
+    root_id: &str,
+) -> Vec<(String, Option<String>, String)> {
+    let mut deepest = mailbox_subtree_deepest_first(mailboxes, root_id);
+    // Deepest-first reversed is shallowest-first, so a parent always precedes
+    // its children.
+    deepest.reverse();
+    let by_id: std::collections::HashMap<&str, &crate::jmap::JmapMailbox> = mailboxes
+        .iter()
+        .filter_map(|mb| mb.id.as_deref().map(|id| (id, mb)))
+        .collect();
+    deepest
+        .into_iter()
+        .filter_map(|id| {
+            let mb = by_id.get(id.as_str())?;
+            Some((
+                id,
+                mb.parent_id.clone(),
+                mb.name
+                    .clone()
+                    .unwrap_or_else(|| "Untitled Folder".to_string()),
+            ))
+        })
+        .collect()
+}
+
+/// Page one mailbox's message ids: deduplicated, with `true` when the walk hit
+/// its page bound (a server that ignores `position`) and the set is INCOMPLETE.
+async fn enumerate_mailbox_message_ids(
+    jc: &crate::jmap::JmapClient,
+    account_id: &str,
+    mailbox_id: &str,
+    username: &str,
+    password: &SecretString,
+) -> Result<(Vec<String>, bool), ()> {
+    const PAGE: u64 = 256;
+    /// Hard bound on the inventory walk: a server that ignores `position` would
+    /// otherwise loop forever.
+    const MAX_PAGES: usize = 10_000;
+    let mut message_ids: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut position = 0u64;
+    let mut pages = 0usize;
+    loop {
+        if pages >= MAX_PAGES {
+            tracing::warn!(pages, mailbox = %mailbox_id, "Foldercopy: message enumeration hit the page bound");
+            return Ok((message_ids, true));
+        }
+        pages += 1;
+        // A page SHORTER than `PAGE` is not the end: a server may clamp `limit`
+        // below what was asked for. Only an EMPTY page ends the walk.
+        let page = jc
+            .query_email_ids(crate::jmap::QueryEmailsParams {
+                account_id,
+                filter: Some(serde_json::json!({ "inMailbox": mailbox_id })),
+                sort: None,
+                position,
+                limit: PAGE,
+                anchor: None,
+                anchor_offset: 0,
+                username,
+                password,
+            })
+            .await
+            .map_err(|e| {
+                tracing::warn!(error = %e, mailbox = %mailbox_id, "Foldercopy: source message enumeration failed");
+            })?;
+        if page.is_empty() {
+            break;
+        }
+        let received = page.len() as u64;
+        for id in page {
+            if seen.insert(id.clone()) {
+                message_ids.push(id);
+            }
+        }
+        position += received;
+    }
+    Ok((message_ids, false))
+}
+
+/// Recursive `RopCopyFolder`: replicate the source folder's whole descendant
+/// subtree into `dest`, creating each child under its COPIED parent and copying
+/// every folder's messages. `Ok(incomplete)` reports whether anything was left
+/// out (a page bound, a failed create or a failed message copy).
+async fn copy_folder_subtree(
+    jc: &crate::jmap::JmapClient,
+    username: &str,
+    password: &SecretString,
+    account_id: &str,
+    subtree: &[(String, Option<String>, String)],
+    dest: &str,
+    requested_name: &str,
+) -> Result<bool, ()> {
+    // Inventory EVERY folder before creating anything: an unreadable source must
+    // leave no half-copied hierarchy behind.
+    let mut inventories: Vec<(Vec<String>, bool)> = Vec::with_capacity(subtree.len());
+    for (old_id, _, _) in subtree {
+        inventories
+            .push(enumerate_mailbox_message_ids(jc, account_id, old_id, username, password).await?);
+    }
+    let mut incomplete = false;
+    let mut created: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
+    for (index, (old_id, old_parent, name)) in subtree.iter().enumerate() {
+        let parent_new = if index == 0 {
+            dest.to_string()
+        } else {
+            match old_parent.as_deref().and_then(|p| created.get(p)) {
+                Some(p) => p.clone(),
+                None => {
+                    // Its parent's copy does not exist (create failed above):
+                    // this whole branch cannot be replicated.
+                    incomplete = true;
+                    continue;
+                }
+            }
+        };
+        let dst_name = if index == 0 && !requested_name.is_empty() {
+            requested_name.to_string()
+        } else if index == 0 {
+            format!("{name} (copy)")
+        } else {
+            name.clone()
+        };
+        let new_id = match jc
+            .create_mailbox(account_id, &dst_name, Some(&parent_new), username, password)
+            .await
+        {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::warn!(error = %e, folder = %name, "RopCopyFolder: recursive destination creation failed");
+                incomplete = true;
+                continue;
+            }
+        };
+        created.insert(old_id.as_str(), new_id.clone());
+        let (ids, truncated) = &inventories[index];
+        if *truncated {
+            incomplete = true;
+        }
+        match jc
+            .copy_emails(account_id, ids, &new_id, username, password)
+            .await
+        {
+            Ok(copied) => {
+                if copied != ids.len() {
+                    incomplete = true;
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, folder = %name, "RopCopyFolder: recursive message copy failed");
+                incomplete = true;
+            }
+        }
+    }
+    Ok(incomplete)
 }
 
 /// Whether `mailbox_id` still exists in the live JMAP hierarchy. Used to
@@ -5176,15 +5341,21 @@ async fn execute_one_rop(
                     _ => String::new(),
                 })
                 .unwrap_or_default();
-            let dest_backend = sessions
-                .with_handle(session_id, req.dest_handle_index, |h| match h {
+            // Three distinct destination states ([MS-OXCROPS] §2.2.4.7.2/7.3):
+            // an installed mail folder (the ordinary path), an installed handle
+            // that is NOT a mail folder (structural NoSupport), and an EMPTY
+            // HANDLE SLOT (`None`), which is the "null destination" answered
+            // with `NullDestinationObject` and its own response layout.
+            let dest_slot: Option<Option<String>> =
+                sessions.with_handle(session_id, req.dest_handle_index, |h| match h {
                     Handle::Folder {
                         backend_id,
                         kind: FolderKind::Mail,
-                    } => backend_id.clone(),
-                    _ => String::new(),
-                })
-                .unwrap_or_default();
+                    } => Some(backend_id.clone()),
+                    _ => None,
+                });
+            let dest_is_null_slot = dest_slot.is_none();
+            let dest_backend = dest_slot.flatten().unwrap_or_default();
             let outcome: RopErrorCode;
             let partial: u8;
             match (jmap, password, &src_backend, &dest_backend) {
@@ -5305,6 +5476,16 @@ async fn execute_one_rop(
                         // `Mailbox/set` call and the mirror. The lock is only
                         // meaningful when a mirror may run (storage wired); with
                         // no storage there is no mirror to interleave.
+                        // Lock ORDER: the per-OWNER tree lock FIRST, then the
+                        // per-folder lock (`Storage::lock_folder_tree`). A
+                        // recursive EAS FolderDelete holds the tree lock across
+                        // its revalidate-then-destroy walk; a reparent is the
+                        // shape change the per-folder lock cannot order against
+                        // it.
+                        let _tree_guard = match storage {
+                            Some(s) => Some(s.lock_folder_tree(owner).await),
+                            None => None,
+                        };
                         let _folder_guard = match storage {
                             Some(s) => Some(s.lock_folder_mutation(owner, src).await),
                             None => None,
@@ -5437,13 +5618,23 @@ async fn execute_one_rop(
                     }
                 }
             }
-            crate::mapi::rops::RopMoveFolderSuccess {
-                rop_id,
-                source_handle_index: req.source_handle_index,
-                return_value: outcome,
-                partial_completion: partial,
+            if dest_is_null_slot {
+                // The destination object does not exist: distinct response
+                // layout (§2.2.4.7.3).
+                crate::mapi::rops::RopMoveFolderNullDestination {
+                    source_handle_index: req.source_handle_index,
+                    dest_handle_index: u32::from(req.dest_handle_index),
+                }
+                .encode(out);
+            } else {
+                crate::mapi::rops::RopMoveFolderSuccess {
+                    rop_id,
+                    source_handle_index: req.source_handle_index,
+                    return_value: outcome,
+                    partial_completion: partial,
+                }
+                .encode(out);
             }
-            .encode(out);
         }
         RopId::ROP_COPY_FOLDER => {
             // MS-OXCROPS §2.2.4.8.1: the source FOLDER is identified by the
@@ -9292,12 +9483,13 @@ async fn handle_disconnect(req: MapiRequest, state: &MapiState) -> MapiResponse 
 }
 
 /// `RopCopyFolder` ([MS-OXCFOLD] §2.2.1.5): create the destination mailbox and
-/// copy the source folder's messages into it.
+/// copy the source folder's messages into it; with `WantRecursive` the whole
+/// descendant subtree is replicated too.
 ///
 /// The source inventory is read BEFORE anything is created, so an unreadable
-/// source leaves no stray empty folder behind. The folder TREE is not
-/// replicated: a source holding child folders, or a copy that came up short,
-/// is reported as PARTIAL completion instead of a plain success.
+/// source leaves no stray empty folder behind. A copy that came up short (a page
+/// bound, a failed create or a failed message copy) is reported as PARTIAL
+/// completion instead of a plain success.
 #[allow(clippy::too_many_arguments)]
 async fn rop_copy_folder(
     jc: &crate::jmap::JmapClient,
@@ -9330,6 +9522,31 @@ async fn rop_copy_folder(
         .mailboxes
         .iter()
         .any(|m| m.parent_id.as_deref() == Some(src));
+
+    // A RECURSIVE copy replicates the whole descendant subtree, each child
+    // created under its COPIED parent ([MS-OXCROPS] §2.2.4.8.1 `WantRecursive`).
+    // Reporting PartialCompletion for the children would leave the client with a
+    // folder it believes was copied and no way to learn what is missing.
+    if recursive && has_children {
+        let subtree = mailbox_subtree_parent_first(&listing.mailboxes, src);
+        if subtree.is_empty() {
+            return (RopErrorCode::NotFound, 0);
+        }
+        return match copy_folder_subtree(
+            jc,
+            username,
+            password,
+            account_id,
+            &subtree,
+            dest,
+            requested_name,
+        )
+        .await
+        {
+            Ok(incomplete) => (RopErrorCode::Success, u8::from(incomplete)),
+            Err(()) => (RopErrorCode::DiskError, 0),
+        };
+    }
 
     let mut message_ids: Vec<String> = Vec::new();
     // Positional paging over a mailbox that changes underneath can repeat an
@@ -9467,13 +9684,64 @@ async fn rop_copy_folder(
             position += page.len() as u64;
         }
     }
-    let complete =
-        (!has_children || !recursive) && !truncated && verified && copied == message_ids.len();
+    // Reaching here means the copy is NON-recursive (or has no children), so
+    // only the inventory/completeness of THIS folder can make it partial.
+    let complete = !truncated && verified && copied == message_ids.len();
     (RopErrorCode::Success, u8::from(!complete))
 }
 
 #[cfg(test)]
 mod tests {
+    /// `RopCopyFolder` recreates a source subtree, so the copies must be written
+    /// PARENT-first (a child cannot be created under a parent that does not exist
+    /// yet) — the exact reverse of the deepest-first walk the delete ROPs use.
+    #[test]
+    fn mailbox_subtree_parent_first_orders_parents_before_children() {
+        let mbx = |id: &str, parent: &str, name: &str| crate::jmap::JmapMailbox {
+            id: Some(id.to_string()),
+            name: Some(name.to_string()),
+            parent_id: Some(parent.to_string()),
+            role: None,
+            sort_order: None,
+            total_emails: None,
+            unread_emails: None,
+            total_threads: None,
+            unread_threads: None,
+            is_subscribed: None,
+            share_with: None,
+        };
+        let mailboxes = vec![
+            mbx("root", "0", "Root"),
+            mbx("a", "root", "A"),
+            mbx("a1", "a", "A1"),
+            mbx("a1x", "a1", "A1X"),
+            mbx("b", "root", "B"),
+            mbx("other", "0", "Other"),
+        ];
+        let ordered = mailbox_subtree_parent_first(&mailboxes, "root");
+        let ids: Vec<&str> = ordered.iter().map(|(id, _, _)| id.as_str()).collect();
+        assert_eq!(
+            ids.len(),
+            5,
+            "the whole subtree of `root` is copied: {ids:?}"
+        );
+        assert!(
+            !ids.contains(&"other"),
+            "a sibling subtree is excluded: {ids:?}"
+        );
+        let position = |id: &str| ids.iter().position(|x| *x == id).expect(id);
+        assert_eq!(position("root"), 0, "the source root is first: {ids:?}");
+        for (parent, child) in [("root", "a"), ("a", "a1"), ("a1", "a1x"), ("root", "b")] {
+            assert!(
+                position(parent) < position(child),
+                "{parent} must precede {child}: {ids:?}"
+            );
+        }
+        // The rendered names (and the parent ids) ride along for the copy.
+        assert_eq!(ordered[0].2, "Root");
+        assert_eq!(ordered[0].1.as_deref(), Some("0"));
+    }
+
     use super::*;
     // The full transportŌåÆlogon plumbing is exercised in the integration
     // test target against the real AuthVerifier; the unit tests below cover

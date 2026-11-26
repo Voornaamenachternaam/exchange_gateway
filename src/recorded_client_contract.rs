@@ -892,11 +892,16 @@ async fn mapi_connect_execute_disconnect_sequence() {
         .and_then(|v| v.split(';').next())
         .expect("session id in cookie");
 
-    // Execute: RopGetHierarchyTable then RopBuffer
+    // Execute: a VALID `RopGetHierarchyTable` request ([MS-OXCROPS]
+    // §2.2.4.13.1): RopId(0x04) · LogonId · InputHandleIndex · OutputHandleIndex
+    // · TableFlags. `0x03` would be `RopOpenMessage`, and omitting
+    // `InputHandleIndex`/`TableFlags` shifts every following field.
     let execute_body = vec![
-        0x03, // RopGetHierarchyTable RopId
+        0x04, // RopId ROP_GET_HIERARCHY_TABLE
         0x00, // LogonId
+        0x04, // InputHandleIndex (the logon handle installed by RopLogon)
         0x04, // OutputHandleIndex
+        0x00, // TableFlags ([MS-OXCFOLD] §2.2.1.13.1; 0 = no flags)
     ];
     // Trailing bytes are allowed (Truncated handled by producer)
     let response = gateway
@@ -914,6 +919,21 @@ async fn mapi_connect_execute_disconnect_sequence() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
+    // Decode the ROP response (4-byte RopBufferSize, then the ROP buffer) and
+    // assert the hierarchy table was actually OPENED (§2.2.4.13.2): RopId ·
+    // OutputHandleIndex · ReturnValue(4) · RowCount(4). Relying on the HTTP
+    // status alone would accept a ROP-level NotFound.
+    let execute_bytes = response.bytes().await.unwrap();
+    let rop = &execute_bytes[4..];
+    assert_eq!(
+        rop[0], 0x04,
+        "the response must be a RopGetHierarchyTable ROP"
+    );
+    assert_eq!(rop[1], 0x04, "OutputHandleIndex must be echoed");
+    let return_value = u32::from_le_bytes([rop[2], rop[3], rop[4], rop[5]]);
+    assert_eq!(return_value, 0, "RopGetHierarchyTable must succeed");
+    let row_count = u32::from_le_bytes([rop[6], rop[7], rop[8], rop[9]]);
+    assert!(row_count > 0, "the hierarchy table must carry rows");
 
     // Disconnect: RopLogoff
     let disconnect_body = vec![
@@ -1174,10 +1194,32 @@ async fn eas_itemoperations_multipart_fetch_over_http() {
         );
         referenced.push(part);
     }
+    // EXACT coverage, not just the count: the referenced part indexes must be
+    // precisely 1..parts.len() (no gap, no duplicate) and the referenced
+    // FileReferences must be exactly the requested attachment set.
+    referenced.sort_unstable();
+    let expected_parts: Vec<usize> = (1..parts.len()).collect();
     assert_eq!(
-        referenced.len(),
-        parts.len() - 1,
+        referenced, expected_parts,
         "every binary part must be referenced exactly once"
+    );
+    let mut references: Vec<&str> = blocks
+        .iter()
+        .map(|block| {
+            if block.contains("<AirSyncBase:FileReference>attach-1") {
+                "attach-1"
+            } else if block.contains("<AirSyncBase:FileReference>attach-2") {
+                "attach-2"
+            } else {
+                panic!("Fetch block must echo its FileReference, got: {block}")
+            }
+        })
+        .collect();
+    references.sort_unstable();
+    assert_eq!(
+        references,
+        vec!["attach-1", "attach-2"],
+        "the response must cover exactly the requested attachments"
     );
     gateway.assert_backend_used().await;
 }

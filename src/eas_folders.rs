@@ -260,6 +260,10 @@ pub async fn create_folder(
     display_name: &str,
     folder_type: i64,
 ) -> FolderMutationResult {
+    // A create is a hierarchy-SHAPE mutation: hold the per-owner tree lock so it
+    // cannot interleave with a deferred prune's read-then-delete
+    // (`reconcile_deferred_folder_prunes`) or a recursive FolderDelete walk.
+    let _tree_guard = state.storage.lock_folder_tree(owner).await;
     let display_name = display_name.trim();
     let parent_id = parent_id.trim();
     if display_name.is_empty() || parent_id.is_empty() {
@@ -548,7 +552,14 @@ async fn create_caldav_folder(
         .get_pending_calendar_create(owner, &coll.href)
         .await
     {
-        Ok(intent) => intent,
+        // The intent describes ONE request. Two display names can sanitize to
+        // the same collection (`Foo/Bar` and `Foo_Bar`), so a request whose
+        // name differs from the recorded intent must NOT replay it: it would
+        // report success for a collection it never created. It falls through to
+        // the normal 405 handling (Status 2 for the name collision).
+        Ok(intent) => {
+            intent.filter(|intent| intent.display_name.eq_ignore_ascii_case(display_name))
+        }
         Err(e) => {
             tracing::warn!(error = %e, "FolderCreate: failed to read the pending calendar create intent");
             return FolderMutationResult::status(6);
@@ -703,12 +714,24 @@ async fn create_caldav_folder(
                                 .display_name
                                 .eq_ignore_ascii_case(&intent.display_name) =>
                         {
+                            // The intent stays replayable (with its retention
+                            // window refreshed) rather than being consumed: if
+                            // THIS response is lost too, the client's next retry
+                            // must reconcile again instead of answering Status 2
+                            // (a permanent name collision) for a collection that
+                            // exists and is mapped. Expiry — not this success —
+                            // ends the replay window, and creating a different
+                            // collection invalidates it by replacing the row.
                             if let Err(e) = state
                                 .storage
-                                .clear_pending_calendar_create(owner, &coll.href)
+                                .record_pending_calendar_create(
+                                    owner,
+                                    &coll.href,
+                                    &intent.display_name,
+                                )
                                 .await
                             {
-                                tracing::warn!(error = %e, "FolderCreate: failed to clear pending calendar create");
+                                tracing::warn!(error = %e, "FolderCreate: failed to retain pending calendar create");
                             }
                             return FolderMutationResult::created(coll.href);
                         }
@@ -738,17 +761,19 @@ async fn create_caldav_folder(
                         .await;
                     match result {
                         Ok(()) => {
-                            // The intent is consumed only by a SUCCESSFUL
-                            // reconciliation: clearing it after a failed mapping
-                            // write would leave the live collection unmapped and
-                            // the next retry answering Status 2 (a permanent name
-                            // collision) instead of reconciling again.
+                            // Retained (window refreshed), not consumed: a lost
+                            // reconciliation response must still be replayable by
+                            // the next retry. Only the retention expiry ends it.
                             if let Err(e) = state
                                 .storage
-                                .clear_pending_calendar_create(owner, &coll.href)
+                                .record_pending_calendar_create(
+                                    owner,
+                                    &coll.href,
+                                    &intent.display_name,
+                                )
                                 .await
                             {
-                                tracing::warn!(error = %e, "FolderCreate: failed to clear pending calendar create");
+                                tracing::warn!(error = %e, "FolderCreate: failed to retain pending calendar create");
                             }
                             return FolderMutationResult::created(coll.href);
                         }
@@ -844,6 +869,14 @@ pub async fn delete_folder(
             return FolderMutationResult::status(6);
         }
     }
+
+    // Order the whole walk against every REPARENT: a move changes an
+    // ANCESTOR's `parent_id`, which the per-folder lock below does not cover,
+    // so without this guard a folder could be reparented out of the subtree
+    // between its membership revalidation and its destroy and still be
+    // destroyed. Held until the last destroy, and released before the mirror
+    // prune (which takes no folder locks).
+    let _tree_guard = state.storage.lock_folder_tree(owner).await;
 
     // Collect the folder and every descendant, deepest-first, so a parent is
     // never destroyed while it still has children (JMAP rejects that with
@@ -1163,20 +1196,10 @@ async fn folder_is_within_subtree(
     root_server_id: &str,
     server_id: &str,
 ) -> crate::error::Result<bool> {
-    let rows = state.storage.list_folders(owner).await?;
-    let by_id: std::collections::HashMap<&str, &FolderRow> =
-        rows.iter().map(|r| (r.server_id.as_str(), r)).collect();
-    let mut cur = server_id.to_string();
-    for _ in 0..=rows.len() {
-        if cur == root_server_id {
-            return Ok(true);
-        }
-        match by_id.get(cur.as_str()) {
-            Some(row) => cur = row.parent_id.clone(),
-            None => return Ok(false),
-        }
-    }
-    Ok(false)
+    state
+        .storage
+        .folder_is_within_subtree(owner, root_server_id, server_id)
+        .await
 }
 
 /// Reconcile the owner's outstanding `pending_folder_prune` intents against the
@@ -1210,6 +1233,14 @@ pub(crate) async fn reconcile_deferred_folder_prunes(
     if pending.is_empty() {
         return;
     }
+    // Serialize the whole read-then-prune with every hierarchy-SHAPE mutation
+    // (`Storage::lock_folder_tree`): a folder RE-CREATED between the live-set
+    // read below and the prune would otherwise be classified against the older
+    // live set and its fresh mapping deleted. `create_folder`, `delete_folder`
+    // and every reparent hold this same lock, so a captured candidate can never
+    // change identity underneath the prune. Taken only when an intent actually
+    // exists, so the ordinary GetHierarchy/FolderSync path never blocks.
+    let _tree_guard = state.storage.lock_folder_tree(owner).await;
     // `pending` is the CANDIDATE set: captured BEFORE any live query and passed
     // through unchanged. A concurrent request can record a NEW intent (and
     // create its mailbox/collection) while a query below is in flight;
@@ -3316,15 +3347,25 @@ mod tests {
             .unwrap()
             .expect("reconciled mapping must persist");
         assert_eq!(row.backend_kind, "caldav");
-        // The pending intent must be cleared after reconciliation.
+        // The intent is RETAINED (window refreshed), not consumed: if THIS
+        // response is lost as well, the next retry must reconcile again rather
+        // than answer a permanent Status 2 for a collection that exists.
         let intent = state
             .storage
             .get_pending_calendar_create("u@example.com", "/cal/u@example.com/Reconcile/")
             .await
             .unwrap();
         assert!(
-            intent.is_none(),
-            "pending intent must be cleared after reconcile"
+            intent.is_some(),
+            "a successful reconcile must stay replayable until it expires"
+        );
+        let coll = caldav_collection_for("", "u@example.com", "Reconcile", 13)
+            .expect("caldav collection descriptor");
+        let again =
+            create_caldav_folder(&state, "u@example.com", &pw(), "Reconcile", 13, coll).await;
+        assert_eq!(
+            again.status, 1,
+            "a second lost response must still reconcile, not collide"
         );
         let calls = dav_calls.lock().await;
         assert!(

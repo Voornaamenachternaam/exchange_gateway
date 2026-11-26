@@ -19,16 +19,42 @@ pub struct CaldavClient {
 fn body_has_multistatus_root(body: &str) -> bool {
     let mut reader = quick_xml::Reader::from_str(body);
     let mut buf = Vec::new();
+    let mut depth = 0usize;
+    let mut root_seen = false;
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(quick_xml::events::Event::Start(ref e))
-            | Ok(quick_xml::events::Event::Empty(ref e)) => {
-                return e.name().local_name().as_ref() == "multistatus";
+            Ok(quick_xml::events::Event::Start(ref e)) => {
+                if !root_seen {
+                    if e.name().local_name().as_ref() != "multistatus" {
+                        return false;
+                    }
+                    root_seen = true;
+                }
+                depth += 1;
+            }
+            // `<multistatus/>` is a CLOSED, empty root.
+            Ok(quick_xml::events::Event::Empty(ref e)) => {
+                if !root_seen {
+                    return e.name().local_name().as_ref() == "multistatus";
+                }
+            }
+            Ok(quick_xml::events::Event::End(_)) => {
+                if root_seen {
+                    depth = depth.saturating_sub(1);
+                    // Only a CLOSED root is a complete snapshot: a truncated
+                    // body would otherwise parse as a partial one and the
+                    // caller's deletion sweep would tombstone the cut-off
+                    // events.
+                    if depth == 0 {
+                        return true;
+                    }
+                }
             }
             Ok(quick_xml::events::Event::Eof) => return false,
             Ok(_) => {}
             Err(_) => return false,
         }
+        buf.clear();
     }
 }
 
@@ -1376,10 +1402,14 @@ fn parse_calendar_collection_hrefs(xml_body: &str, home_url: &str) -> (Vec<Strin
 
         all_seen.push(href.clone());
 
-        let is_calendar = r
-            .propstats
-            .iter()
-            .any(|ps| ps.prop.resourcetype.calendar.is_some());
+        // RFC 4791 §4.2: a calendar collection's `resourcetype` carries BOTH
+        // `collection` and `calendar`, and only a SUCCESSFUL propstat is
+        // authoritative evidence (a per-property failure in a 207 is not).
+        let is_calendar = r.propstats.iter().any(|ps| {
+            ps.is_success()
+                && ps.prop.resourcetype.calendar.is_some()
+                && ps.prop.resourcetype.collection.is_some()
+        });
         if is_calendar {
             confirmed.push(href);
         }
@@ -2244,6 +2274,66 @@ END:VCALENDAR
         // Malformed XML and an empty body fail closed.
         assert!(!multistatus_displayname_ok("<D:multistatus"));
         assert!(!multistatus_displayname_ok(""));
+    }
+
+    #[test]
+    fn test_body_has_multistatus_root_requires_a_closed_root() {
+        assert!(body_has_multistatus_root(
+            r#"<?xml version="1.0"?><D:multistatus xmlns:D="DAV:"></D:multistatus>"#
+        ));
+        assert!(
+            body_has_multistatus_root(r#"<D:multistatus xmlns:D="DAV:"/>"#),
+            "a closed, empty root is a complete (empty) snapshot"
+        );
+        // TRUNCATED body: the root never closes, so it is not a snapshot. A
+        // caller's deletion sweep must not treat the cut-off events as gone.
+        assert!(!body_has_multistatus_root(
+            r#"<D:multistatus xmlns:D="DAV:"><D:response><D:href>/a.ics</D:href>"#
+        ));
+        assert!(!body_has_multistatus_root(
+            "<html><body>proxy error</body></html>"
+        ));
+        assert!(!body_has_multistatus_root(""));
+    }
+
+    #[test]
+    fn test_calendar_discovery_requires_both_resourcetype_markers() {
+        let body = r#"<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <D:response>
+    <D:href>/dav/cal/user/real/</D:href>
+    <D:propstat>
+      <D:prop><D:resourcetype><D:collection/><C:calendar/></D:resourcetype></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>/dav/cal/user/calendar-only/</D:href>
+    <D:propstat>
+      <D:prop><D:resourcetype><C:calendar/></D:resourcetype></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>/dav/cal/user/failed-propstat/</D:href>
+    <D:propstat>
+      <D:prop><D:resourcetype><D:collection/><C:calendar/></D:resourcetype></D:prop>
+      <D:status>HTTP/1.1 403 Forbidden</D:status>
+    </D:propstat>
+  </D:response>
+</D:multistatus>"#;
+        let (confirmed, all_seen) =
+            parse_calendar_collection_hrefs(body, "https://dav.example.com/dav/cal/user/");
+        assert_eq!(
+            confirmed,
+            vec!["https://dav.example.com/dav/cal/user/real/".to_string()],
+            "only a successful propstat carrying BOTH collection and calendar is a calendar"
+        );
+        assert_eq!(
+            all_seen.len(),
+            3,
+            "every listed href stays visible to absence checks"
+        );
     }
 
     #[test]

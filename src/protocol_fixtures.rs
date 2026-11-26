@@ -82,15 +82,20 @@ pub fn ews_soap_response(inner: &str) -> String {
     )
 }
 
+/// A SOAP 1.1 fault fragment, exactly as the production `soap_fault` emits it
+/// (`<faultcode>`/`<faultstring>` + `<detail><m:ResponseCode>`, per
+/// [MS-OXWCONFIG] §3.1.4.1.2.1) — NOT the SOAP 1.2 `<Code>`/`<Reason>`
+/// structure, which no Exchange client parses.
 pub fn ews_error_response(code: &str, message: &str) -> String {
     let escaped_code = xml_escape(code);
     let escaped_message = xml_escape(message);
     format!(
         r#"<s:Fault>
-<s:Code><s:Value>s:Sender</s:Value><s:Subcode><s:Value>{}</s:Value></s:Subcode></s:Code>
-<s:Reason><s:Text xml:lang="en-US">{}</s:Text></s:Reason>
+<faultcode>s:Client</faultcode>
+<faultstring xml:lang="en-US">{}</faultstring>
+<detail><m:ResponseCode xmlns:m="{}">{}</m:ResponseCode></detail>
 </s:Fault>"#,
-        escaped_code, escaped_message
+        escaped_message, EWS_MSG_NS, escaped_code
     )
 }
 

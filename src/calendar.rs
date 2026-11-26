@@ -731,6 +731,14 @@ fn parse_duration_minutes(trigger: &str) -> Option<i32> {
     ical_parser::parse_ical_duration_minutes(trigger).ok()
 }
 
+/// RFC 5545 §3.3.6 `DURATION` of a VEVENT, at SECOND precision (`PT30S` is a
+/// 30-second event, not a zero-length one).
+fn parse_duration_seconds(value: &str) -> Option<chrono::Duration> {
+    ical_parser::parse_ical_duration_seconds(value)
+        .ok()
+        .map(chrono::Duration::seconds)
+}
+
 fn parse_event_lines(
     lines: &[String],
     tz_resolver: &mut dyn FnMut(&str) -> Option<String>,
@@ -799,10 +807,10 @@ fn parse_event_lines(
                 }
             }
             k if k.starts_with("DURATION") => {
-                fields.duration = parse_duration_minutes(value)
-                    .map(|minutes| chrono::Duration::minutes(i64::from(minutes)));
+                fields.duration = parse_duration_seconds(value);
             }
             k if k.starts_with("DTEND") => {
+                fields.dtend_present = true;
                 let tzid = parse_tzid_from_key(k);
                 let supplied = tzid.is_some();
                 let zone = resolve_property_zone(tzid.clone(), tz_resolver);
@@ -901,6 +909,11 @@ struct CalendarEventFields {
     uid: Option<String>,
     start: Option<chrono::DateTime<Utc>>,
     end: Option<chrono::DateTime<Utc>>,
+    /// The component carried a `DTEND`/`DTEND`-equivalent property. Tracked
+    /// separately from `end` so an explicit but UNREADABLE `DTEND` (a naive
+    /// value under an unresolvable `TZID`) fails closed instead of silently
+    /// becoming a zero-length event that is then written back.
+    dtend_present: bool,
     /// RFC 5545 §3.3.6 `DURATION`: the alternative to `DTEND`. Stalwart's
     /// JSCalendar events carry `duration` (not `end`), and the calcard
     /// exporter renders it as `DURATION`, so a reader that only honours
@@ -1028,12 +1041,20 @@ pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
             description: fields.description.unwrap_or_default(),
             location: fields.location.unwrap_or_default(),
             start: fields.start?,
-            end: derive_component_end(
-                fields.start,
-                fields.end,
-                fields.duration,
-                fields.all_day.unwrap_or(false),
-            )?,
+            // An explicit DTEND that could not be read (e.g. a naive value under
+            // an unresolvable TZID) must not degrade into a zero-length event
+            // that is then written back to the backend as the event's own end.
+            // An OMITTED DTEND still falls back to DURATION (or the all-day
+            // default), per RFC 5545 §3.6.1.
+            end: match (fields.dtend_present, fields.end) {
+                (true, None) => return None,
+                (_, end) => derive_component_end(
+                    fields.start,
+                    end,
+                    fields.duration,
+                    fields.all_day.unwrap_or(false),
+                )?,
+            },
             all_day: fields.all_day.unwrap_or(false),
             dtstamp: fields.dtstamp,
             timezone: fields.timezone,
@@ -1266,7 +1287,11 @@ pub fn render_ics(item: &CalendarItem) -> String {
             // A matching VTIMEZONE was produced (the authoritative stored blob
             // was re-emitted, or a canonical one was synthesised). Emit the
             // start/end as local wall-clock with a TZID referencing it.
-            event.ends((item.end.with_timezone(&tz).naive_local(), tz));
+            // RFC 5545 §3.8.2.2: DTEND MUST be later than DTSTART, so a
+            // zero-length event is written with DTSTART alone (§3.6.1).
+            if item.end > item.start {
+                event.ends((item.end.with_timezone(&tz).naive_local(), tz));
+            }
             event.starts((item.start.with_timezone(&tz).naive_local(), tz));
         } else {
             // The IANA id parses as a Tz here, but neither the authoritative
@@ -1274,11 +1299,15 @@ pub fn render_ics(item: &CalendarItem) -> String {
             // absolute UTC instant (with `Z`) so no orphan `DTSTART;TZID=...`
             // references a missing VTIMEZONE, keeping the iCalendar
             // RFC-5545-valid.
-            event.ends(item.end);
+            if item.end > item.start {
+                event.ends(item.end);
+            }
             event.starts(item.start);
         }
     } else {
-        event.ends(item.end);
+        if item.end > item.start {
+            event.ends(item.end);
+        }
         event.starts(item.start);
     }
 
@@ -1536,7 +1565,10 @@ pub fn render_ics(item: &CalendarItem) -> String {
                 .done(),
             );
             ex_event.starts((effective_start.with_timezone(&tz).naive_local(), tz));
-            ex_event.ends((effective_end.with_timezone(&tz).naive_local(), tz));
+            // RFC 5545 §3.8.2.2: DTEND must be later than DTSTART.
+            if effective_end > effective_start {
+                ex_event.ends((effective_end.with_timezone(&tz).naive_local(), tz));
+            }
         } else {
             ex_event.append_property(Property::new(
                 "RECURRENCE-ID",
@@ -1546,7 +1578,9 @@ pub fn render_ics(item: &CalendarItem) -> String {
                     .to_string(),
             ));
             ex_event.starts(effective_start);
-            ex_event.ends(effective_end);
+            if effective_end > effective_start {
+                ex_event.ends(effective_end);
+            }
         }
 
         if let Some(location) = exception.location.as_deref().or(Some(&item.location))
@@ -2140,8 +2174,70 @@ pub fn extract_ews_item_field(xml: &str, tag: &[u8]) -> Option<String> {
                     .is_none_or(|p| !p.tag_name().name().eq_ignore_ascii_case("Envelope"))
             })
             .find_map(|n| n.text().map(|s| s.to_string())),
-        Err(_) => extract_ews_field_lenient(xml, tag),
+        // An undeclared prefix (a malformed envelope) forces this path, so it
+        // needs the SAME envelope exclusion or the envelope's own `<s:Body>`
+        // leaks in as the item body.
+        Err(_) => extract_ews_item_field_lenient(xml, tag),
     }
+}
+
+/// [`extract_ews_item_field`] over malformed XML (quick-xml, which tolerates an
+/// undeclared prefix): the first matching element's direct text whose PARENT is
+/// not `Envelope`.
+fn extract_ews_item_field_lenient(xml: &str, tag: &[u8]) -> Option<String> {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(false);
+    let mut buf = Vec::new();
+    // Local names of the open elements OUTSIDE the captured element, so the
+    // candidate's parent can be checked. Bounded by the envelope's depth.
+    let mut ancestors: Vec<String> = Vec::new();
+    let mut depth = 0usize;
+    let mut out: Option<String> = None;
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => {
+                let local = local_name_str(e.name().as_ref());
+                if depth == 0 {
+                    if local.as_bytes() == tag
+                        && !ancestors
+                            .last()
+                            .is_some_and(|p| p.eq_ignore_ascii_case("Envelope"))
+                    {
+                        depth = 1;
+                    } else {
+                        ancestors.push(local);
+                    }
+                } else {
+                    depth += 1;
+                }
+            }
+            Ok(Event::Text(t)) => {
+                if depth == 1 {
+                    out.get_or_insert_with(String::new).push_str(t.as_ref());
+                }
+            }
+            Ok(Event::GeneralRef(r)) => {
+                if depth == 1 {
+                    out.get_or_insert_with(String::new)
+                        .push_str(&resolve_xml_reference(r.as_ref()));
+                }
+            }
+            Ok(Event::End(_)) => {
+                if depth > 0 {
+                    depth -= 1;
+                    if depth == 0 && out.is_some() {
+                        break;
+                    }
+                } else {
+                    ancestors.pop();
+                }
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    out
 }
 
 /// Extract the request-wide timezone from the SOAP `t:TimeZoneContext` header
@@ -3009,6 +3105,110 @@ mod scheduling_tests {
             "the envelope Body is not a description"
         );
         assert_eq!(item.subject, "Envelope body must not leak");
+    }
+
+    #[test]
+    fn sub_minute_duration_keeps_second_precision() {
+        // RFC 5545 §3.3.6 allows a second-level DURATION; truncating it to
+        // whole minutes made `PT30S` a zero-length event.
+        let ics = "BEGIN:VCALENDAR\r\n\
+             VERSION:2.0\r\n\
+             BEGIN:VEVENT\r\n\
+             UID:seconds@example.com\r\n\
+             DTSTART:20260115T090000Z\r\n\
+             DURATION:PT30S\r\n\
+             END:VEVENT\r\n\
+             END:VCALENDAR\r\n";
+        let ev = parse_ics_event(ics).expect("a PT30S event must parse");
+        assert_eq!(
+            ev.end.timestamp() - ev.start.timestamp(),
+            30,
+            "DURATION:PT30S is a 30-second event"
+        );
+    }
+
+    #[test]
+    fn explicit_unreadable_dtend_fails_closed() {
+        // A DTEND that is PRESENT but unreadable (a naive value under an
+        // unresolvable TZID) must not degrade into a zero-length event that is
+        // then written back as the event's own end.
+        let ics = "BEGIN:VCALENDAR\r\n\
+             VERSION:2.0\r\n\
+             BEGIN:VEVENT\r\n\
+             UID:bad-dtend@example.com\r\n\
+             DTSTART:20260115T090000Z\r\n\
+             DTEND;TZID=Not/AZone:20260115T100000\r\n\
+             SUMMARY:Unreadable end\r\n\
+             END:VEVENT\r\n\
+             END:VCALENDAR\r\n";
+        assert!(
+            parse_ics_event(ics).is_none(),
+            "an explicit but unreadable DTEND must be rejected, not defaulted"
+        );
+
+        // An OMITTED DTEND keeps the documented fallback (DURATION here).
+        let no_dtend = "BEGIN:VCALENDAR\r\n\
+             VERSION:2.0\r\n\
+             BEGIN:VEVENT\r\n\
+             UID:no-dtend@example.com\r\n\
+             DTSTART:20260115T090000Z\r\n\
+             DURATION:PT1H\r\n\
+             END:VEVENT\r\n\
+             END:VCALENDAR\r\n";
+        let ev = parse_ics_event(no_dtend).expect("an omitted DTEND still parses");
+        assert_eq!(ev.end.timestamp() - ev.start.timestamp(), 3600);
+    }
+
+    #[test]
+    fn zero_length_timed_event_renders_without_dtend() {
+        // RFC 5545 §3.8.2.2: DTEND MUST be later than DTSTART, so a zero-length
+        // timed event is written with DTSTART alone (§3.6.1).
+        let start = parse_datetime("20260115T090000Z").unwrap();
+        for tz in [None, Some("Europe/Berlin".to_string())] {
+            let item = CalendarItem {
+                uid: "zero@example.com".to_string(),
+                subject: "Zero".to_string(),
+                start,
+                end: start,
+                timezone: tz.clone(),
+                ..Default::default()
+            };
+            let ics = render_ics(&item);
+            assert!(
+                !ics.contains("DTEND"),
+                "a zero-length timed event must not carry DTEND (tz={tz:?}): {ics}"
+            );
+            assert!(
+                ics.contains("DTSTART"),
+                "DTSTART must still be written: {ics}"
+            );
+        }
+    }
+
+    #[test]
+    fn item_field_lenient_extraction_skips_an_undeclared_prefix_envelope_body() {
+        // An undeclared prefix forces the quick-xml fallback; it must apply the
+        // same envelope exclusion as the strict path.
+        let xml = r#"<s:Envelope>
+  <s:Body>
+    <m:UpdateItem><m:ItemChanges/></m:UpdateItem>
+  </s:Body>
+</s:Envelope>"#;
+        assert_eq!(
+            extract_ews_item_field(xml, b"Body"),
+            None,
+            "the envelope's own Body must never be read as the item body"
+        );
+
+        let with_body = r#"<s:Envelope>
+  <s:Body>
+    <t:CalendarItem><t:Body>Agenda</t:Body></t:CalendarItem>
+  </s:Body>
+</s:Envelope>"#;
+        assert_eq!(
+            extract_ews_item_field(with_body, b"Body").as_deref(),
+            Some("Agenda")
+        );
     }
 
     #[test]

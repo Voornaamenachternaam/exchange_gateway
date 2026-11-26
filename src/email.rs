@@ -1687,18 +1687,31 @@ pub async fn move_email_to_mailbox_via_jmap(
         }
     }
 
+    // A KNOWN-source move is written as an RFC 8621 §4.5 per-key patch
+    // (`mailboxIds/<src>: null`, `mailboxIds/<dst>: true`). Unlike a full
+    // `mailboxIds` REPLACEMENT built from the read above, the patch cannot
+    // clobber a concurrent edit to an UNRELATED membership: it names exactly
+    // the two keys it changes, so no read-modify-write window (and no
+    // `ifInState` + retry loop) is needed.
     let mut mailbox_ids_patch = serde_json::Map::new();
-    if let Some(ids) = current_mailboxes
-        && let Some(src) = source_mailbox_id
-    {
-        for (k, v) in ids {
-            if k.as_str() == src {
-                continue;
+    match source_mailbox_id {
+        Some(src) => {
+            mailbox_ids_patch.insert(format!("mailboxIds/{src}"), serde_json::Value::Null);
+        }
+        // No source named: the caller wants a replacement that drops every
+        // unrelated membership, expressed from the read above.
+        None => {
+            if let Some(ids) = current_mailboxes {
+                for (k, v) in ids {
+                    mailbox_ids_patch.insert(k.clone(), serde_json::Value::Bool(*v));
+                }
             }
-            mailbox_ids_patch.insert(k.clone(), serde_json::Value::Bool(*v));
         }
     }
-    mailbox_ids_patch.insert(target_mb_id.to_string(), serde_json::Value::Bool(true));
+    mailbox_ids_patch.insert(
+        format!("mailboxIds/{target_mb_id}"),
+        serde_json::Value::Bool(true),
+    );
 
     // Clone jmap_id: the `json!` macro below moves it into the `Value`,
     // but we still need it afterward to verify the `updated` collection.
@@ -1708,9 +1721,7 @@ pub async fn move_email_to_mailbox_via_jmap(
         .update_email_checked(
             account_id,
             &json!({
-                (jmap_id): {
-                    "mailboxIds": mailbox_ids_patch,
-                },
+                (jmap_id): mailbox_ids_patch,
             }),
             username,
             password,
@@ -2533,17 +2544,33 @@ pub async fn apply_eas_email_mutations(
                             }
                             match trash_ids.as_ref().and_then(|v| v.first()) {
                                 Some(trash) => {
+                                    // RFC 8621 §4.5 per-key patch: a
+                                    // Delete-as-move drops ONLY the confirmed
+                                    // source membership and adds Trash. The
+                                    // every-membership rewrite `move_emails`
+                                    // performs would also remove the message
+                                    // from unrelated folders it is filed in.
+                                    let mut patch = serde_json::Map::new();
+                                    patch.insert(
+                                        format!("mailboxIds/{collection_id}"),
+                                        serde_json::Value::Null,
+                                    );
+                                    patch.insert(
+                                        format!("mailboxIds/{trash}"),
+                                        serde_json::Value::Bool(true),
+                                    );
+                                    let update = serde_json::json!({ (jmap_id): patch });
                                     match jmap
-                                        .move_emails(
-                                            account_id,
-                                            &[jmap_id.to_string()],
-                                            trash,
-                                            username,
-                                            password,
+                                        .update_email_checked(
+                                            account_id, &update, username, password,
                                         )
                                         .await
                                     {
-                                        Ok(1) => "1",
+                                        Ok(outcome)
+                                            if outcome.updated.iter().any(|id| id == jmap_id) =>
+                                        {
+                                            "1"
+                                        }
                                         Ok(_) => "8",
                                         Err(e) => {
                                             tracing::warn!(
@@ -4401,6 +4428,16 @@ Body\r\n";
         assert_eq!(
             set[1]["update"]["7"].get("mailboxIds/inbox1"),
             Some(&serde_json::json!(null))
+        );
+        // ...and NOTHING else: a Delete-as-move must not rewrite the message's
+        // other memberships (a shared/project folder would silently lose it).
+        let patch = set[1]["update"]["7"]
+            .as_object()
+            .expect("the move patch must be an object");
+        assert_eq!(
+            patch.len(),
+            2,
+            "only the source and Trash may be touched: {patch:?}"
         );
     }
 

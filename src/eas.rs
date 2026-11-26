@@ -578,7 +578,17 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
     if root_name.to_ascii_lowercase() != lower_cmd {
         return Err("Root element does not match command");
     }
-    if !root_ns.is_empty() && !root_ns.contains(grammar.namespace) {
+    // [MS-ASCMD] §2.2.1.14–§2.2.1.16: SendMail, SmartReply and SmartForward all
+    // live on the shared `ComposeMail:` code page, so a conformant client sends
+    // `<SendMail xmlns="ComposeMail:">`. The per-command URIs stay accepted for
+    // clients that spell them that way.
+    let namespace_ok = root_ns.is_empty()
+        || root_ns.contains(grammar.namespace)
+        || (matches!(
+            lower_cmd.as_str(),
+            "sendmail" | "smartreply" | "smartforward"
+        ) && root_ns.contains("ComposeMail:"));
+    if !namespace_ok {
         return Err("Invalid namespace");
     }
 
@@ -2102,13 +2112,19 @@ async fn render_folder_hierarchy_changes(
     let by_id: std::collections::HashMap<&str, &crate::storage::FolderRow> =
         folders.iter().map(|f| (f.server_id.as_str(), f)).collect();
 
-    let mut changes = String::new();
+    // [MS-ASCMD] §2.2.3.25 fixes the child order of `Changes`: Count, then all
+    // Update elements, then Delete, then Add. A schema-driven client parser is
+    // entitled to rely on it, so the per-folder decisions are bucketed and
+    // emitted in that order (per-folder compaction is unchanged).
+    let mut updates = String::new();
+    let mut deletes = String::new();
+    let mut adds = String::new();
     let mut count = 0usize;
     for server_id in &order {
         let op = latest.get(server_id).map(String::as_str).unwrap_or("");
         match op {
             "folder-delete" => {
-                changes.push_str(&format!(
+                deletes.push_str(&format!(
                     "<Delete><ServerId>{}</ServerId></Delete>",
                     xml_escape(server_id)
                 ));
@@ -2118,7 +2134,7 @@ async fn render_folder_hierarchy_changes(
                 let Some(row) = by_id.get(server_id.as_str()) else {
                     // The folder vanished before this delta was built; report a
                     // delete rather than a stale add.
-                    changes.push_str(&format!(
+                    deletes.push_str(&format!(
                         "<Delete><ServerId>{}</ServerId></Delete>",
                         xml_escape(server_id)
                     ));
@@ -2128,12 +2144,17 @@ async fn render_folder_hierarchy_changes(
                 // A folder added since the client's watermark must be an `Add`
                 // even if it was later renamed (`saw_add`); only a folder the
                 // client already had is an `Update`.
+                let target = if saw_add.contains(server_id) {
+                    &mut adds
+                } else {
+                    &mut updates
+                };
                 let tag = if saw_add.contains(server_id) {
                     "Add"
                 } else {
                     "Update"
                 };
-                changes.push_str(&format!(
+                target.push_str(&format!(
                     "<{tag}><ServerId>{}</ServerId><ParentId>{}</ParentId><DisplayName>{}</DisplayName><Type>{}</Type></{tag}>",
                     xml_escape(&row.server_id),
                     xml_escape(&row.parent_id),
@@ -2146,7 +2167,7 @@ async fn render_folder_hierarchy_changes(
         }
     }
     Ok(format!(
-        "<Changes><Count>{count}</Count>{changes}</Changes>"
+        "<Changes><Count>{count}</Count>{updates}{deletes}{adds}</Changes>"
     ))
 }
 
@@ -2929,7 +2950,9 @@ fn oof_audience_from_oof_messages(
         (true, true) => crate::oof::ExternalAudience::All,
         (true, false) => crate::oof::ExternalAudience::KnownExternal,
         (false, true) => crate::oof::ExternalAudience::External,
-        (false, false) => crate::oof::ExternalAudience::All,
+        // Neither external audience enabled: the client asked for NO external
+        // replies, which is not the same as "all external senders".
+        (false, false) => crate::oof::ExternalAudience::None,
     };
     (internal_reply, external_reply, external_audience)
 }
@@ -3242,6 +3265,7 @@ async fn handle_settings(
                         crate::oof::ExternalAudience::All => (true, true),
                         crate::oof::ExternalAudience::KnownExternal => (true, false),
                         crate::oof::ExternalAudience::External => (false, true),
+                        crate::oof::ExternalAudience::None => (false, false),
                     };
                     let oof_message = |audience: &str, on: bool, reply: &str| {
                         format!(
@@ -3904,6 +3928,112 @@ struct ItemOperationsCtx<'a> {
     multipart: bool,
 }
 
+/// One Fetch's request-scoped inputs for resolving a FileReference against
+/// either attachment store. Grouped so the resolution stays out of
+/// [`handle_item_operations`], which owns request ordering, the
+/// `served_content_bytes` budget and multipart part numbering.
+struct AttachmentFetchRequest<'a> {
+    state: &'a Arc<AppState>,
+    username: &'a str,
+    password: &'a SecretString,
+    owner_lower: &'a str,
+    file_ref: &'a str,
+    /// The requested window (`Range<u64>` is not `Copy`, hence the clone in the
+    /// destructure below).
+    byte_range: Option<std::ops::Range<u64>>,
+    max_bytes: usize,
+}
+
+/// Resolve one `<Fetch>`'s FileReference to attachment bytes, or the
+/// [MS-ASCMD] §2.2.3.177.8 status that classifies the failure. The `bool` is
+/// true for a gateway-managed (calendar) attachment, which the caller
+/// announces with `<AirSync:Class>Calendar</AirSync:Class>`.
+async fn resolve_attachment_fetch(
+    req: &AttachmentFetchRequest<'_>,
+) -> Result<(AttachmentFetchOutcome, bool), u16> {
+    let state = req.state;
+    let username = req.username;
+    let password = req.password;
+    let owner_lower = req.owner_lower;
+    let file_ref = req.file_ref;
+    let byte_range = req.byte_range.clone();
+    let max_bytes = req.max_bytes;
+    match state
+        .attachment_manager
+        .get_attachment(owner_lower, file_ref)
+        .await
+    {
+        Ok(Some(attachment)) => {
+            // Gateway-managed (calendar) attachment: enforce the
+            // parent item's read permission first. Without an
+            // owner row the access cannot be established, so the
+            // request is denied ([MS-ASCMD] §2.2.3.177.8 status
+            // 16, "Access to the resource is denied").
+            let item_owner = match state
+                .storage
+                .get_item_owner(&attachment.parent_item_server_id)
+                .await
+            {
+                Ok(Some(o)) => o,
+                Ok(None) => return Err(16),
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to get item owner");
+                    return Err(3);
+                }
+            };
+            let calendar_folder_id = crate::ews_folders::folder_id_for(
+                &item_owner,
+                crate::ews_folders::DistinguishedFolder::Calendar,
+            );
+            let enforcement = PermissionEnforcement::new(&state.storage);
+            let perm_ctx = PermissionContext::new(
+                username.to_string(),
+                item_owner.clone(),
+                calendar_folder_id,
+            );
+            match enforcement.can_read_item(&perm_ctx).await {
+                Ok(true) => {}
+                Ok(false) => return Err(16),
+                Err(e) => {
+                    tracing::error!(error = %e, "Permission check failed");
+                    return Err(3);
+                }
+            }
+            calendar_attachment_outcome(&attachment, byte_range, max_bytes)
+                .map(|outcome| (outcome, true))
+        }
+        Ok(None) => {
+            // Not a gateway-managed attachment: EAS email
+            // attachment FileReferences carry the JMAP blobId, so
+            // fetch the bytes from the user's own JMAP account.
+            let Some(jmap) = state
+                .jmap_client
+                .clone()
+                .filter(|_| state.cfg.email_enabled)
+            else {
+                // The email backend is unreachable from this
+                // deployment: a server-side failure.
+                return Err(3);
+            };
+            handle_email_attachment_fetch(
+                &jmap, username, password, file_ref, byte_range, max_bytes,
+            )
+            .await
+            .map(|outcome| (outcome, false))
+        }
+        Err(e) => {
+            tracing::error!(
+                "ItemOperations attachment fetch error for {}: {}",
+                file_ref,
+                e
+            );
+            // The attachment store itself failed: a server-side
+            // failure, not a missing attachment.
+            Err(3)
+        }
+    }
+}
+
 async fn handle_item_operations(ctx: &ItemOperationsCtx<'_>) -> Response {
     let ItemOperationsCtx {
         state,
@@ -4032,82 +4162,21 @@ async fn handle_item_operations(ctx: &ItemOperationsCtx<'_>) -> Response {
             // blobId fetched from the user's own account. Both funnel into
             // the same window slicing and the same response renderer; only
             // the byte source and the failure classification differ.
-            let outcome: Result<(AttachmentFetchOutcome, bool), u16> = async {
-                match state
-                    .attachment_manager
-                    .get_attachment(&owner_lower, file_ref)
-                    .await
-                {
-                    Ok(Some(attachment)) => {
-                        // Gateway-managed (calendar) attachment: enforce the
-                        // parent item's read permission first. Without an
-                        // owner row the access cannot be established, so the
-                        // request is denied ([MS-ASCMD] §2.2.3.177.8 status
-                        // 16, "Access to the resource is denied").
-                        let item_owner = match state
-                            .storage
-                            .get_item_owner(&attachment.parent_item_server_id)
-                            .await
-                        {
-                            Ok(Some(o)) => o,
-                            Ok(None) => return Err(16),
-                            Err(e) => {
-                                tracing::error!(error = %e, "Failed to get item owner");
-                                return Err(3);
-                            }
-                        };
-                        let calendar_folder_id = crate::ews_folders::folder_id_for(
-                            &item_owner,
-                            crate::ews_folders::DistinguishedFolder::Calendar,
-                        );
-                        let enforcement = PermissionEnforcement::new(&state.storage);
-                        let perm_ctx = PermissionContext::new(
-                            username.to_string(),
-                            item_owner.clone(),
-                            calendar_folder_id,
-                        );
-                        match enforcement.can_read_item(&perm_ctx).await {
-                            Ok(true) => {}
-                            Ok(false) => return Err(16),
-                            Err(e) => {
-                                tracing::error!(error = %e, "Permission check failed");
-                                return Err(3);
-                            }
-                        }
-                        calendar_attachment_outcome(&attachment, byte_range, max_bytes)
-                            .map(|outcome| (outcome, true))
-                    }
-                    Ok(None) => {
-                        // Not a gateway-managed attachment: EAS email
-                        // attachment FileReferences carry the JMAP blobId, so
-                        // fetch the bytes from the user's own JMAP account.
-                        let Some(jmap) = state
-                            .jmap_client
-                            .clone()
-                            .filter(|_| state.cfg.email_enabled)
-                        else {
-                            // The email backend is unreachable from this
-                            // deployment: a server-side failure.
-                            return Err(3);
-                        };
-                        handle_email_attachment_fetch(
-                            &jmap, username, password, file_ref, byte_range, max_bytes,
-                        )
-                        .await
-                        .map(|outcome| (outcome, false))
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            "ItemOperations attachment fetch error for {}: {}",
-                            file_ref,
-                            e
-                        );
-                        // The attachment store itself failed: a server-side
-                        // failure, not a missing attachment.
-                        Err(3)
-                    }
-                }
-            }
+            // The attachment bytes come from one of two stores, selected by
+            // the FileReference itself: gateway-managed calendar attachments
+            // live in the gateway's SQLite store, everything else is a JMAP
+            // blobId fetched from the user's own account. Both funnel into the
+            // same window slicing and the same response renderer; only the
+            // byte source and the failure classification differ.
+            let outcome = resolve_attachment_fetch(&AttachmentFetchRequest {
+                state,
+                username,
+                password,
+                owner_lower: &owner_lower,
+                file_ref,
+                byte_range,
+                max_bytes,
+            })
             .await;
 
             match outcome {
@@ -4751,56 +4820,33 @@ async fn handle_move_items(
                 }
             }
         } else {
-            // Calendar item move
-            // Only support moving to default calendar (collection ID "1")
-            // because only one calendar folder is exposed.
-            // Destination folder must be the Calendar folder (id "1" or distinguished "calendar").
-            // Also source must belong to the default calendar; we can check via DB if needed.
-            if dst_fld_id != "1" && !dst_fld_id.eq_ignore_ascii_case("calendar") {
-                // Unsupported destination collection: status 2
-                // ([MS-ASCMD] §2.2.3.177.10), not 6 (a general conversion error).
-                responses.push_str(&format!(
-                    r#"<Response><SrcMsgId>{}</SrcMsgId><Status>2</Status></Response>"#,
-                    xml_escape(&src_msg_id)
-                ));
-                continue;
-            }
-
-            // For calendar, moving within the same (only) collection is a no-op:
-            // the item identifier does not change. That is only true of an item
-            // this account actually HAS — reporting success for an unknown id
-            // would tell the client a move happened for an item it can never
-            // refresh. [MS-ASCMD] §2.2.3.177.10 status 1 = invalid source item;
-            // 7 = transient (a failed lookup must not look like a vanished item).
-            match state
-                .storage
-                .get_ews_item_by_server_id(username, &src_msg_id)
-                .await
-            {
-                Ok(Some(_)) => {}
-                Ok(None) => {
-                    responses.push_str(&format!(
-                        r#"<Response><SrcMsgId>{}</SrcMsgId><Status>1</Status></Response>"#,
-                        xml_escape(&src_msg_id)
-                    ));
-                    continue;
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        src_msg_id = %src_msg_id,
-                        "MoveItems: calendar item lookup failed"
-                    );
-                    responses.push_str(&format!(
-                        r#"<Response><SrcMsgId>{}</SrcMsgId><Status>7</Status></Response>"#,
-                        xml_escape(&src_msg_id)
-                    ));
-                    continue;
-                }
-            }
+            // Calendar item move. Exactly one calendar collection is exposed
+            // for Sync ("1", alias "calendar"), so an event's calendar can only
+            // change by moving it INTO or OUT OF that collection — which this
+            // gateway cannot do (no cross-collection calendar move exists in
+            // the backend translation). Reporting success for a same-collection
+            // move would tell the client an item changed calendars when nothing
+            // changed, so the spec's own statuses are answered instead:
+            //   4 = source and destination collection IDs are the same
+            //   2 = invalid destination collection ID
+            //   1 = invalid source collection ID
+            // ([MS-ASCMD] §2.2.3.177.10).
+            let is_default_calendar = |id: &str| id == "1" || id.eq_ignore_ascii_case("calendar");
+            let dst_is_calendar = is_default_calendar(&dst_fld_id);
+            // An omitted SrcFldId cannot name a collection other than the one
+            // the item was addressed in, so it is treated as the same source.
+            let src_is_calendar = src_fld_id
+                .as_deref()
+                .is_none_or(|src| src.is_empty() || is_default_calendar(src));
+            let status = if dst_is_calendar && src_is_calendar {
+                4
+            } else if !dst_is_calendar {
+                2
+            } else {
+                1
+            };
             responses.push_str(&format!(
-                r#"<Response><SrcMsgId>{}</SrcMsgId><Status>3</Status><DstMsgId>{}</DstMsgId></Response>"#,
-                xml_escape(&src_msg_id),
+                r#"<Response><SrcMsgId>{}</SrcMsgId><Status>{status}</Status></Response>"#,
                 xml_escape(&src_msg_id)
             ));
         }
@@ -6250,13 +6296,24 @@ async fn handle_send_mail(
         .map(str::trim)
         .filter(|id| !id.is_empty());
     if let Some(client_id) = client_id {
+        // ONE atomic claim decides the whole race ([MS-ASCMD] §2.2.3.28): a
+        // confirmed submission answers 118 without resending, an unresolved
+        // earlier attempt inside its cool-down answers retryably, and two
+        // concurrent retries of the same ClientId cannot both submit — the
+        // loser's conditional upsert matches no row. The claim also refreshes
+        // the pending timestamp, so a resend after the cool-down starts a fresh
+        // window instead of leaving the original (already expired) one behind.
         match state
             .storage
-            .get_email_submission_state(username, client_id)
+            .claim_email_submission(
+                username,
+                client_id,
+                SENDMAIL_UNKNOWN_RETRY_AFTER_SECS as i64,
+            )
             .await
         {
-            // A confirmed submission: report 118 instead of sending twice.
-            Ok(Some((state, _))) if state == "submitted" => {
+            Ok(crate::storage::EmailSubmissionClaim::Claimed) => {}
+            Ok(crate::storage::EmailSubmissionClaim::AlreadySubmitted) => {
                 tracing::info!(
                     client_id,
                     "SendMail: ClientId was already submitted; reporting MessagePreviouslySent"
@@ -6268,17 +6325,9 @@ async fn handle_send_mail(
                     request_id,
                 );
             }
-            // An UNKNOWN outcome from an earlier attempt. Resubmitting
-            // immediately could duplicate the message, so the retry is answered
-            // retryably until the cool-down elapses; after that the earlier
-            // attempt is treated as failed (there is no atomic transaction with
-            // the mail store, so a bounded wait is the reconciliation).
-            Ok(Some((state, age)))
-                if state == "pending" && age < SENDMAIL_UNKNOWN_RETRY_AFTER_SECS as i64 =>
-            {
+            Ok(crate::storage::EmailSubmissionClaim::InFlight) => {
                 tracing::warn!(
                     client_id,
-                    age_secs = age,
                     "SendMail: earlier attempt has an unknown outcome; refusing to resubmit yet"
                 );
                 return xml_or_wbxml_response(
@@ -6288,11 +6337,10 @@ async fn handle_send_mail(
                     request_id,
                 );
             }
-            Ok(_) => {}
-            // A failed ledger READ must not silently disable the dedupe: answer
+            // A failed claim must not silently disable the dedupe: answer
             // retryably rather than risk a second submission.
             Err(e) => {
-                tracing::error!(error = %e, "SendMail: failed to read the submission ledger");
+                tracing::error!(error = %e, "SendMail: failed to claim the submission ledger");
                 return xml_or_wbxml_response(
                     wbxml,
                     as_wbxml,
@@ -6300,21 +6348,6 @@ async fn handle_send_mail(
                     request_id,
                 );
             }
-        }
-        // Record the attempt BEFORE the send: a crash or a lost response then
-        // leaves a `pending` row instead of an untracked duplicate.
-        if let Err(e) = state
-            .storage
-            .set_email_submission_state(username, client_id, "pending")
-            .await
-        {
-            tracing::error!(error = %e, "SendMail: failed to record the submission attempt");
-            return xml_or_wbxml_response(
-                wbxml,
-                as_wbxml,
-                r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="ComposeMail:">4</Status>"#,
-                request_id,
-            );
         }
     }
 
@@ -6683,6 +6716,7 @@ async fn handle_sync_collections(ctx: &SyncCtx<'_>, collections: &[SyncCollectio
                         window: effective_collection_window,
                         options: resolved_options.as_ref(),
                         conversation_mode: coll.conversation_mode,
+                        get_changes: coll.get_changes,
                     })
                     .await
                     {
@@ -8798,6 +8832,10 @@ struct EmailSyncRequestCtx<'a> {
     window: usize,
     options: Option<&'a crate::eas_sync_options::EasSyncCollectionOptions>,
     conversation_mode: bool,
+    /// `<GetChanges>` ([MS-ASCMD] §2.2.3.72). `false` means the client only
+    /// wants its own mutations acknowledged: nothing may be delivered OR
+    /// consumed, or the queued changes would never reach it.
+    get_changes: bool,
 }
 
 async fn handle_email_sync(ctx: &EmailSyncRequestCtx<'_>) -> anyhow::Result<String> {
@@ -8811,6 +8849,7 @@ async fn handle_email_sync(ctx: &EmailSyncRequestCtx<'_>) -> anyhow::Result<Stri
         window,
         options,
         conversation_mode,
+        get_changes,
     } = *ctx;
     // Sticky <Options> ([MS-ASCMD] §2.2.3.125.6) resolve in
     // handle_sync_collections before dispatch; an absent block falls back
@@ -8941,6 +8980,52 @@ async fn handle_email_sync(ctx: &EmailSyncRequestCtx<'_>) -> anyhow::Result<Stri
                 xml_escape(collection_id)
             ));
         }
+    }
+
+    // [MS-ASCMD] §2.2.3.72: GetChanges=0 asks only for the client's own
+    // mutations to be acknowledged. Nothing is delivered, so nothing may be
+    // consumed either: the queue, the prime cursor and the query token must all
+    // survive, or the changes queued between two Syncs would never reach the
+    // client (the next GetChanges=1 Sync would start from the advanced state).
+    // The key still rotates (the client requires a fresh one) while carrying the
+    // previous token forward unchanged.
+    if !get_changes {
+        let carried_token = match state
+            .storage
+            .get_sync_key(username, state_collection_id)
+            .await
+        {
+            Ok(Some((_, token))) => token,
+            Ok(None) => None,
+            // Fail closed: acknowledging without knowing the watermark could
+            // drop the pending changes.
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to read the email sync token; deferring");
+                return Err(anyhow::anyhow!(
+                    "failed to read the email sync key for collection {state_collection_id}: {e}"
+                ));
+            }
+        };
+        let new_sync_key = Uuid::new_v4().simple().to_string();
+        state
+            .storage
+            .set_sync_key(
+                username,
+                state_collection_id,
+                &new_sync_key,
+                carried_token.as_deref(),
+            )
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "failed to persist the acknowledged sync key for collection {collection_id}: {e}"
+                )
+            })?;
+        return Ok(format!(
+            "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection>",
+            new_sync_key,
+            xml_escape(collection_id)
+        ));
     }
 
     let account_id = match jmap.get_account_id(username, password).await {
@@ -11972,6 +12057,132 @@ mod tests {
         );
     }
 
+    /// [MS-ASCMD] §2.2.3.25: the children of `Changes` are ordered Count, then
+    /// all Update, then Delete, then Add. A schema-driven client parser is
+    /// entitled to rely on it.
+    #[tokio::test]
+    async fn test_folder_sync_changes_children_follow_the_schema_order() {
+        let state = test_sync_state().await;
+        let owner = "hierarchy-order@example.com";
+        let device = "device-order";
+
+        // Two folders the device already knows, then one added after its prime.
+        for (id, name) in [("mbx-keep", "Keep"), ("mbx-drop", "Drop")] {
+            state
+                .storage
+                .upsert_folder_journaled(
+                    crate::storage::FolderUpsertParams {
+                        owner,
+                        server_id: id,
+                        parent_id: "0",
+                        display_name: name,
+                        folder_type: 12,
+                        backend_kind: "jmap",
+                        backend_id: id,
+                    },
+                    "folder-add",
+                )
+                .await
+                .expect("persist folder");
+        }
+        let wbxml = Wbxml::new();
+        let prime_req = EasRequest {
+            command: "FolderSync".to_string(),
+            device_id: Some(device.to_string()),
+            sync_key: Some("0".to_string()),
+            ..Default::default()
+        };
+        let prime_text = response_text(
+            handle_folder_sync(
+                &state,
+                owner,
+                &SecretString::from("pw"),
+                &prime_req,
+                &wbxml,
+                false,
+                "prime",
+            )
+            .await,
+        )
+        .await;
+        let key = extract_first_tag_text(&prime_text, b"SyncKey")
+            .expect("prime must return a SyncKey")
+            .to_string();
+
+        // Now: an Update (rename), a Delete, and an Add — journaled in the
+        // reverse of the wire order to prove the renderer re-buckets.
+        state
+            .storage
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner,
+                    server_id: "mbx-new",
+                    parent_id: "0",
+                    display_name: "New",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mbx-new",
+                },
+                "folder-add",
+            )
+            .await
+            .expect("journal add");
+        state
+            .storage
+            .delete_folders_journaled(owner, &["mbx-drop".to_string()])
+            .await
+            .expect("journal delete");
+        state
+            .storage
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner,
+                    server_id: "mbx-keep",
+                    parent_id: "0",
+                    display_name: "Kept",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mbx-keep",
+                },
+                "folder-update",
+            )
+            .await
+            .expect("journal update");
+
+        let delta_req = EasRequest {
+            command: "FolderSync".to_string(),
+            device_id: Some(device.to_string()),
+            sync_key: Some(key),
+            ..Default::default()
+        };
+        let delta_text = response_text(
+            handle_folder_sync(
+                &state,
+                owner,
+                &SecretString::from("pw"),
+                &delta_req,
+                &wbxml,
+                false,
+                "delta",
+            )
+            .await,
+        )
+        .await;
+
+        let count_at = delta_text.find("<Count>").expect("Count element");
+        let update_at = delta_text.find("<Update>").expect("Update element");
+        let delete_at = delta_text.find("<Delete>").expect("Delete element");
+        let add_at = delta_text.find("<Add>").expect("Add element");
+        assert!(
+            count_at < update_at && update_at < delete_at && delete_at < add_at,
+            "Changes children must be Count, Update, Delete, Add (got: {delta_text})"
+        );
+        assert!(
+            delta_text.contains("<Count>3</Count>"),
+            "one op per folder (got: {delta_text})"
+        );
+    }
+
     /// AUDIT5 §2 / PR #2046: incremental FolderSync must compact each
     /// ServerId's journal entries relative to the CLIENT's starting state. A
     /// folder created and then renamed before a second device's first
@@ -12573,6 +12784,10 @@ mod tests {
         // Device A performs a successful mutation, rotating its key.
         let new_key_a =
             crate::eas_folders::rotate_hierarchy_sync_key(&state, owner, device_a, &key_a).await;
+        assert!(
+            !new_key_a.is_empty() && new_key_a != "0",
+            "a rotation must issue a real key, not force a re-prime: {new_key_a}"
+        );
         assert_ne!(new_key_a, key_a, "the mutating device's key must rotate");
 
         // Device A's next FolderSync (with the rotated key) must STILL see the
@@ -12583,19 +12798,24 @@ mod tests {
             sync_key: Some(new_key_a),
             ..Default::default()
         };
-        let text_a2 = response_text(
-            handle_folder_sync(
-                &state,
-                owner,
-                &SecretString::from("pw"),
-                &delta_a,
-                &wbxml,
-                false,
-                "d-a",
-            )
-            .await,
+        let resp_a2 = handle_folder_sync(
+            &state,
+            owner,
+            &SecretString::from("pw"),
+            &delta_a,
+            &wbxml,
+            false,
+            "d-a",
         )
         .await;
+        // `X-MS-RP` marks a PRIME response only, so its absence proves this was
+        // served as an incremental delta (not a silent re-prime that would make
+        // the `<Add>` assertion pass trivially).
+        assert!(
+            !resp_a2.headers().contains_key("X-MS-RP"),
+            "the rotated key must be served as an incremental FolderSync"
+        );
+        let text_a2 = response_text(resp_a2).await;
         assert!(text_a2.contains("<Status>1</Status>"), "delta-a: {text_a2}");
         assert!(
             text_a2.contains("<ServerId>mbx-other</ServerId>"),
@@ -12763,7 +12983,9 @@ mod tests {
     /// empty body would leave the client with no hierarchy at all.
     #[tokio::test]
     async fn test_get_hierarchy_empty_response_root_is_folders() {
-        let state = test_ping_state().await;
+        // Email (and CardDAV) disabled: GetHierarchy then answers the EMPTY
+        // branch, which is the branch this test exists to pin.
+        let state = test_sync_state().await;
         let owner = "hierarchy-empty@example.com";
         let wbxml = Wbxml::new();
         let ctx = FolderCmdCtx {
@@ -12780,6 +13002,10 @@ mod tests {
         assert!(
             text.contains("<Folders") && !text.contains("<GetHierarchy"),
             "an empty response root must be Folders: {text}"
+        );
+        assert!(
+            !text.contains("<Folder>"),
+            "the empty branch must carry no folder children: {text}"
         );
     }
 
@@ -13476,6 +13702,7 @@ mod tests {
             window: 512,
             options: Some(&options),
             conversation_mode: false,
+            get_changes: true,
         })
         .await;
 
@@ -13590,6 +13817,7 @@ mod tests {
             window: 512,
             options: Some(&options),
             conversation_mode: false,
+            get_changes: true,
         })
         .await
         .expect("a stale key must answer a Status 3 body, not an error");
@@ -14135,7 +14363,9 @@ mod tests {
                 let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
                 let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
                 let result = match name {
-                    "Mailbox/query" => json!({"accountId":"a","ids":[],"total":0,"queryState":"q0"}),
+                    "Mailbox/query" => {
+                        json!({"accountId":"a","ids":[],"total":0,"queryState":"q0"})
+                    }
                     "Mailbox/get" => json!({"accountId":"a","state":"m1","list":[]}),
                     "Email/queryChanges" => json!({
                         "accountId": "a", "oldQueryState": "q0", "newQueryState": "q1",
@@ -18313,18 +18543,20 @@ mod tests {
         assert_eq!(external_reply.as_deref(), Some("away known"));
         assert_eq!(audience, ExternalAudience::KnownExternal);
 
-        // Plain-XML self-closing form still matches (XML-mode clients).
+        // Plain-XML self-closing form still matches (XML-mode clients). An
+        // internal-only reply means NO external auto-reply — `None`, not
+        // `All` ([MS-ASCMD] §2.2.3.127/§2.2.3.128/§2.2.3.129).
         let plain = "<Set><OofState>1</OofState><OofMessage><AppliesToInternal/><Enabled>1</Enabled><ReplyMessage>plain internal</ReplyMessage></OofMessage></Set>";
         let (internal_reply, _, audience) = oof_audience_from_oof_messages(plain);
         assert_eq!(internal_reply.as_deref(), Some("plain internal"));
-        assert_eq!(audience, ExternalAudience::All);
+        assert_eq!(audience, ExternalAudience::None);
 
         // Disabled OofMessage nodes are skipped entirely.
         let disabled = "<Set><OofState>1</OofState><OofMessage><AppliesToExternalUnknown/><Enabled>0</Enabled><ReplyMessage>ignored</ReplyMessage></OofMessage></Set>";
         let (internal_reply, external_reply, audience) = oof_audience_from_oof_messages(disabled);
         assert_eq!(internal_reply, None);
         assert_eq!(external_reply, None);
-        assert_eq!(audience, ExternalAudience::All);
+        assert_eq!(audience, ExternalAudience::None);
     }
 
     /// [MS-ASCMD] §2.2.1.11 / §6.25: a MeetingResponse with no `<Request>`
@@ -19047,6 +19279,7 @@ mod tests {
             window: 2,
             options: Some(&options),
             conversation_mode: false,
+            get_changes: true,
         })
         .await;
 
@@ -19175,6 +19408,7 @@ mod tests {
             window: 512,
             options: Some(&options),
             conversation_mode: false,
+            get_changes: true,
         })
         .await;
 
@@ -19313,6 +19547,7 @@ mod tests {
             window: 10,
             options: Some(&options),
             conversation_mode: false,
+            get_changes: true,
         })
         .await;
         assert!(result.is_ok(), "initial prime must succeed: {result:?}");
@@ -19445,12 +19680,225 @@ mod tests {
             window: 512,
             options: Some(&options),
             conversation_mode: false,
+            get_changes: true,
         })
         .await;
 
         assert!(
             result.is_err(),
             "a failed state write on a drained prime must fail closed: {result:?}"
+        );
+    }
+
+    /// [MS-ASCMD] §2.2.3.72: a Sync with `<GetChanges>0</GetChanges>` asks only
+    /// for the client's own mutations to be acknowledged. Nothing may be
+    /// delivered OR consumed — the previous query token must survive, so the
+    /// queued change still reaches the client on its next GetChanges=1 Sync.
+    #[tokio::test]
+    async fn test_email_sync_get_changes_false_acknowledges_without_consuming_the_feed() {
+        use crate::models::AppState;
+        use axum::routing::{get, post};
+        use serde_json::{Value, json};
+        use std::sync::Arc as StdArc;
+
+        #[derive(Clone)]
+        struct Ctl {
+            base: String,
+            seen: std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
+        }
+
+        async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
+            axum::Json(json!({
+                "apiUrl": ctl.base,
+                "downloadUrl": format!("{}/download/{{accountId}}/{{blobId}}", ctl.base),
+                "uploadUrl": format!("{}/upload/{{accountId}}", ctl.base),
+                "eventSourceUrl": format!("{}/eventsource", ctl.base),
+                "state": "s",
+                "username": "u",
+                "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                "capabilities": {"urn:ietf:params:jmap:core": {"maxObjectsInGet": 500}}
+            }))
+        }
+
+        async fn api(
+            axum::Extension(ctl): axum::Extension<Ctl>,
+            body: String,
+        ) -> axum::response::Response {
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            ctl.seen.lock().unwrap().push(req.clone());
+            let mut responses = Vec::new();
+            for call in req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                let result = match name {
+                    "Mailbox/query" => json!({"accountId":"a","ids":["mbx-inbox"],"total":1}),
+                    "Email/query" => {
+                        json!({"accountId":"a","queryState":"QS0","ids":["m1"],"total":1,"position":0})
+                    }
+                    // One message arrived after the prime: the delta from QS0
+                    // must report it.
+                    "Email/queryChanges" => json!({
+                        "accountId":"a","oldQueryState":"QS0","newQueryState":"QS1",
+                        "added":[{"id":"m2","index":0}]
+                    }),
+                    "Email/get" => json!({"accountId":"a","state":"D0","list":[
+                        {"id":"m1","mailboxIds":{"mbx-inbox":true},"keywords":{},"subject":"s1","receivedAt":"2026-01-01T00:00:00Z"},
+                        {"id":"m2","mailboxIds":{"mbx-inbox":true},"keywords":{},"subject":"s2","receivedAt":"2026-01-02T00:00:00Z"}
+                    ]}),
+                    _ => json!({"accountId":"a"}),
+                };
+                responses.push(json!([name, result, cid]));
+            }
+            let resp = json!({"methodResponses": responses, "sessionState": "s"});
+            axum::response::Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                .unwrap()
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let ctl = Ctl {
+            base: base.clone(),
+            seen: seen.clone(),
+        };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base.clone(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(AppState::new(cfg, StdArc::new(storage)));
+
+        let owner = "u@example.com";
+        let scoped = scoped_collection_id("2", "dev-gc");
+        let password = SecretString::from("pw");
+        let options = crate::eas_sync_options::EasSyncCollectionOptions::default();
+
+        // Prime: one message, drained, token QS0.
+        let prime = handle_email_sync(&EmailSyncRequestCtx {
+            state: &state,
+            username: owner,
+            password: &password,
+            collection_id: "2",
+            state_collection_id: &scoped,
+            incoming_sync_key: "0",
+            window: 512,
+            options: Some(&options),
+            conversation_mode: false,
+            get_changes: true,
+        })
+        .await
+        .expect("prime must succeed");
+        assert!(prime.contains("<Status>1</Status>"), "prime: {prime}");
+        let prime_key = extract_first_tag_text(&prime, b"SyncKey")
+            .expect("prime key")
+            .to_string();
+        let stored = state
+            .storage
+            .get_sync_key(owner, &scoped)
+            .await
+            .unwrap()
+            .expect("stored key");
+        assert_eq!(stored.1.as_deref(), Some("QS0"), "prime stores the token");
+
+        // GetChanges=0 with the client's key: acknowledged, nothing delivered.
+        let ack = handle_email_sync(&EmailSyncRequestCtx {
+            state: &state,
+            username: owner,
+            password: &password,
+            collection_id: "2",
+            state_collection_id: &scoped,
+            incoming_sync_key: &prime_key,
+            window: 512,
+            options: Some(&options),
+            conversation_mode: false,
+            get_changes: false,
+        })
+        .await
+        .expect("acknowledgement must succeed");
+        assert!(ack.contains("<Status>1</Status>"), "ack: {ack}");
+        assert!(
+            !ack.contains("<Commands>"),
+            "GetChanges=0 must deliver nothing: {ack}"
+        );
+        let ack_key = extract_first_tag_text(&ack, b"SyncKey")
+            .expect("ack key")
+            .to_string();
+        assert_ne!(ack_key, prime_key, "the key must still rotate");
+        let after_ack = state
+            .storage
+            .get_sync_key(owner, &scoped)
+            .await
+            .unwrap()
+            .expect("stored key after ack");
+        assert_eq!(after_ack.0, ack_key, "the new key is persisted");
+        assert_eq!(
+            after_ack.1.as_deref(),
+            Some("QS0"),
+            "the query token must NOT be consumed by a GetChanges=0 Sync"
+        );
+
+        // The next GetChanges=1 Sync from the acknowledged key still diffs from
+        // the PRE-ack query state, so the change that arrived in between is
+        // requested (not skipped).
+        let before = seen.lock().unwrap().len();
+        let delta = handle_email_sync(&EmailSyncRequestCtx {
+            state: &state,
+            username: owner,
+            password: &password,
+            collection_id: "2",
+            state_collection_id: &scoped,
+            incoming_sync_key: &ack_key,
+            window: 512,
+            options: Some(&options),
+            conversation_mode: false,
+            get_changes: true,
+        })
+        .await
+        .expect("delta must succeed");
+        assert!(delta.contains("<Status>1</Status>"), "delta: {delta}");
+        let queried_from: Vec<String> = seen.lock().unwrap()[before..]
+            .iter()
+            .flat_map(|req| {
+                req.get("methodCalls")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .filter(|call| call.get(0).and_then(|v| v.as_str()) == Some("Email/queryChanges"))
+            .filter_map(|call| {
+                call.get(1)
+                    .and_then(|args| args.get("sinceQueryState"))
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+            })
+            .collect();
+        assert_eq!(
+            queried_from,
+            vec!["QS0".to_string()],
+            "the delta must resume from the pre-ack state, not a consumed one (delta: {delta})"
         );
     }
 
@@ -19516,6 +19964,7 @@ mod tests {
             window: 512,
             options: Some(&options),
             conversation_mode: false,
+            get_changes: true,
         })
         .await;
 
@@ -19638,6 +20087,7 @@ mod tests {
             window: 512,
             options: Some(&options),
             conversation_mode: false,
+            get_changes: true,
         })
         .await;
 
@@ -19875,6 +20325,7 @@ mod tests {
             window: 2,
             options: Some(&options),
             conversation_mode: false,
+            get_changes: true,
         })
         .await
         .expect("continuation sync");
@@ -19997,6 +20448,7 @@ mod tests {
             window: 2,
             options: Some(&options),
             conversation_mode: false,
+            get_changes: true,
         })
         .await
         .expect("a stale key is answered, not errored");
@@ -20159,6 +20611,7 @@ mod tests {
             window: 2,
             options: Some(&options),
             conversation_mode: false,
+            get_changes: true,
         })
         .await
         .expect("continuation sync");
@@ -20303,6 +20756,7 @@ mod tests {
             window: 2,
             options: Some(&options),
             conversation_mode: false,
+            get_changes: true,
         })
         .await
         .expect("continuation sync");
@@ -20446,6 +20900,7 @@ mod tests {
             window: 2,
             options: Some(&options),
             conversation_mode: false,
+            get_changes: true,
         })
         .await
         .expect("continuation sync");
@@ -20562,6 +21017,7 @@ mod tests {
             window: 512,
             options: Some(&options),
             conversation_mode: false,
+            get_changes: true,
         })
         .await;
 
@@ -20745,6 +21201,10 @@ mod tests {
   <Move><SrcMsgId>em-m1</SrcMsgId><SrcFldId>2</SrcFldId><DstFldId>mb-unmapped</DstFldId></Move>
   <Move><SrcMsgId>em-m1</SrcMsgId><SrcFldId>2</SrcFldId><DstFldId>mb-custom</DstFldId></Move>
   <Move><SrcMsgId>cal-1</SrcMsgId><DstFldId>1</DstFldId></Move>
+  <Move><SrcMsgId>cal-1</SrcMsgId><SrcFldId>1</SrcFldId><DstFldId>1</DstFldId></Move>
+  <Move><SrcMsgId>cal-1</SrcMsgId><SrcFldId>calendar</SrcFldId><DstFldId>1</DstFldId></Move>
+  <Move><SrcMsgId>cal-1</SrcMsgId><SrcFldId>2</SrcFldId><DstFldId>1</DstFldId></Move>
+  <Move><SrcMsgId>cal-1</SrcMsgId><SrcFldId>1</SrcFldId><DstFldId>5</DstFldId></Move>
   <Move><SrcMsgId>em-m1</SrcMsgId><DstFldId>5</DstFldId></Move>
 </MoveItems>"#;
         let password = SecretString::from("pw");
@@ -20761,12 +21221,18 @@ mod tests {
             .filter_map(|r| extract_first_tag_text(r, b"Status"))
             .collect();
         assert_eq!(
-            // `cal-1` is not in this account's item map, so the calendar move is
-            // an invalid source (1), never a fabricated success. An email `Move`
-            // with no `SrcFldId` is an invalid request (5) — rejected before any
-            // write, because the source membership could not be named.
+            // `cal-1` moves to collection 1 without naming a source, so it is a
+            // same-collection calendar move: status 4, never a fabricated
+            // success. An email `Move` with no `SrcFldId` is an invalid request
+            // (5) — rejected before any write, because the source membership
+            // could not be named.
+            // The four `cal-1` rows that follow pin the calendar matrix: the
+            // same collection under both spellings (4), a source outside the
+            // calendar (1), and a destination outside it (2).
             statuses,
-            vec!["3", "4", "2", "1", "7", "2", "3", "1", "5"],
+            vec![
+                "3", "4", "2", "1", "7", "2", "3", "4", "4", "4", "1", "2", "5"
+            ],
             "unexpected MoveItems status matrix: {text}"
         );
         assert!(

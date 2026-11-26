@@ -34,6 +34,9 @@ pub struct OofSettings {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub enum ExternalAudience {
+    /// No external OOF replies at all ([MS-OXWOOF] §2.2.5.1 `None`, EAS
+    /// `OofMessage` with every external audience disabled).
+    None,
     /// Only external senders
     External,
     /// Known external senders (contacts)
@@ -177,6 +180,16 @@ pub fn build_sieve_script(
                     "if allof ({}) {{\n  {}\n}}\n",
                     audience_cond(false),
                     vacation_cmd(&external_escaped)
+                ));
+            }
+        }
+        // No external audience: only the internal rule (if any) applies.
+        ExternalAudience::None => {
+            if !internal_escaped.is_empty() {
+                rule_blocks.push_str(&format!(
+                    "if allof ({}) {{\n  {}\n}}\n",
+                    audience_cond(true),
+                    vacation_cmd(&internal_escaped)
                 ));
             }
         }

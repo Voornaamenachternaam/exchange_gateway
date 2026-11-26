@@ -1850,6 +1850,13 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
 
     let start_db_seq = storage.get_latest_change_seq().await.unwrap_or(0);
 
+    // The owner-global `item_map` snapshot the DELETE SWEEP diffs the backend
+    // view against, captured BEFORE the backend read. A mapping written by a
+    // concurrent request DURING the backend read belongs to an event the read
+    // could not have seen: reading the map afterwards would make that event
+    // look "missing from the snapshot" and tombstone a live event on the client.
+    let existing_map = storage.list_ews_item_server_ids(params.owner).await?;
+
     // Canonical identity map: resolves the SAME event to ONE ServerId across the
     // CalDAV and JMAP representations, so this scope's ledger lookup and
     // Add-vs-Change decision are consistent no matter which backend delivered the
@@ -2484,14 +2491,13 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     // (`state_collection_id`), whose SyncKey 0 prime the client treats as "forget
     // everything".
     //
-    // `existing_map` (owner-global `item_map`) remains the candidate set for the
-    // owner-level DELETION sweep below: a deletion is an account-level fact and
-    // the shared row is what the delete fill removes once its `<Delete>` is
-    // emitted. It is read UNBOUNDED (`list_ews_item_server_ids`) — a page-bounded
-    // read would omit stored events whose row falls outside the page, making
-    // `!existing_map.contains_key(id)` true for a LIVE event and tombstoning it
-    // on a partial delta.
-    let existing_map = storage.list_ews_item_server_ids(params.owner).await?;
+    // `existing_map` (owner-global `item_map`, captured before the backend
+    // read above) remains the candidate set for the owner-level DELETION sweep
+    // below: a deletion is an account-level fact and the shared row is what the
+    // delete fill removes once its `<Delete>` is emitted. It is read UNBOUNDED
+    // (`list_ews_item_server_ids`) — a page-bounded read would omit stored
+    // events whose row falls outside the page, making `!existing_map.contains(id)`
+    // true for a LIVE event and tombstoning it on a partial delta.
 
     let initial_sync = params.incoming_sync_key == "0";
     let mut delivered_map = storage

@@ -319,6 +319,28 @@ impl std::error::Error for CopyPartialFailure {
     }
 }
 
+/// What one `JmapClient::copy_email_chunk` accomplished.
+struct ChunkCopyOutcome {
+    /// Copies the server CONFIRMED (`Email/import#created`).
+    created: usize,
+    /// Whether the `Email/import` request was actually sent. A chunk whose
+    /// sources all vanished sends nothing, so a later failure is still a plain
+    /// backend error rather than partial completion.
+    imported: bool,
+}
+
+/// Why one copy chunk stopped. The distinction decides whether a retry is safe.
+enum ChunkCopyError {
+    /// Failed BEFORE `Email/import` was submitted: no copy of this chunk exists.
+    BeforeImport(anyhow::Error),
+    /// The import was submitted but did not account for every creation id:
+    /// `confirmed` copies exist and the rest are unknown.
+    Unconfirmed {
+        confirmed: usize,
+        source: anyhow::Error,
+    },
+}
+
 /// One page of [`JmapClient::list_email_ids_with_keywords_page`].
 pub struct EmailKeywordPage {
     /// `(jmap id, sorted keyword names)` for the page.
@@ -2255,12 +2277,20 @@ impl JmapClient {
         // an item instead of a numeric offset; `position` is then ignored by
         // the server. A `null` anchor is the server default and must not be
         // sent, and `anchorOffset` is only meaningful alongside an anchor.
+        // RFC 8620 §2 `maxObjectsInGet`: the batch below fetches the page by
+        // BACK-REFERENCE, and a server that caps the referenced id list rejects
+        // the whole Email/get when the page is larger. Clamp the page to the
+        // same cap the keyword scan uses; `total` (calculateTotal) still reports
+        // the full match set, so the caller can page on.
+        let page_limit = params
+            .limit
+            .min(session_max_objects_in_get(&session).max(1) as u64);
         let mut query_args = json!({
             "accountId": params.account_id,
             "filter": filter_val,
             "sort": sort_val,
             "position": params.position,
-            "limit": params.limit,
+            "limit": page_limit,
             "calculateTotal": true,
         });
         if let Some(anchor) = params.anchor {
@@ -4094,6 +4124,7 @@ impl JmapClient {
         // §2); a server advertising a lower cap than `COPY_BATCH` would reject
         // the whole explicit-id lookup.
         let batch = Self::COPY_BATCH.min(session_max_objects_in_get(&session).max(1));
+        let mut import_sent = false;
         for chunk in email_ids.chunks(batch) {
             match self
                 .copy_email_chunk(
@@ -4106,12 +4137,31 @@ impl JmapClient {
                 )
                 .await
             {
-                Ok(n) => created += n,
-                // Carry the copies already made with the failure: the caller
-                // must report PARTIAL completion, or its retry would copy
-                // those messages a second time.
-                Err(source) => {
-                    return Err(anyhow::Error::new(CopyPartialFailure { created, source }));
+                Ok(outcome) => {
+                    created += outcome.created;
+                    import_sent |= outcome.imported;
+                }
+                // The import reached the server but did not account for every
+                // submitted creation: some copies exist and at least one is
+                // UNKNOWN. Carry the confirmed count with the failure — the
+                // caller must report partial completion, or its retry would
+                // copy the confirmed messages a second time.
+                Err(ChunkCopyError::Unconfirmed { confirmed, source }) => {
+                    return Err(anyhow::Error::new(CopyPartialFailure {
+                        created: created + confirmed,
+                        source,
+                    }));
+                }
+                // A failure BEFORE any `Email/import` was accepted is a plain
+                // backend error for the FIRST chunk (nothing was copied, a retry
+                // is safe). Once an earlier chunk copied anything, it is partial
+                // completion: re-running would duplicate those copies.
+                Err(ChunkCopyError::BeforeImport(source)) => {
+                    return if import_sent || created > 0 {
+                        Err(anyhow::Error::new(CopyPartialFailure { created, source }))
+                    } else {
+                        Err(source)
+                    };
                 }
             }
         }
@@ -4119,8 +4169,7 @@ impl JmapClient {
     }
 
     /// One chunk of [`Self::copy_emails`]: look the sources up by id, then
-    /// `Email/import` them into `target_mailbox_id`. Returns the number of
-    /// copies created.
+    /// `Email/import` them into `target_mailbox_id`.
     async fn copy_email_chunk(
         &self,
         account_id: &str,
@@ -4129,8 +4178,9 @@ impl JmapClient {
         target_mailbox_id: &str,
         username: &str,
         password: &SecretString,
-    ) -> Result<usize> {
-        let mut created = 0usize;
+    ) -> std::result::Result<ChunkCopyOutcome, ChunkCopyError> {
+        let mut created_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut not_created_ids: Vec<String> = Vec::new();
         // Source lookup: one `Email/get` for the chunk, keyed by id so a
         // reordered or partial response cannot mis-associate a blob.
         let calls = vec![(
@@ -4150,20 +4200,25 @@ impl JmapClient {
                 username,
                 password,
             )
-            .await?;
+            .await
+            .map_err(ChunkCopyError::BeforeImport)?;
         let mut sources: std::collections::HashMap<String, Value> =
             std::collections::HashMap::new();
         for (method, data, _) in &resp.method_responses {
             if method == "error" {
-                return Err(anyhow!("Email copy source lookup failed: {}", data));
+                return Err(ChunkCopyError::BeforeImport(anyhow!(
+                    "Email copy source lookup failed: {}",
+                    data
+                )));
             }
             if method != "Email/get" {
                 continue;
             }
-            let list = data
-                .get("list")
-                .and_then(|v| v.as_array())
-                .ok_or_else(|| anyhow!("Email copy source lookup returned no usable list"))?;
+            let Some(list) = data.get("list").and_then(|v| v.as_array()) else {
+                return Err(ChunkCopyError::BeforeImport(anyhow!(
+                    "Email copy source lookup returned no usable list"
+                )));
+            };
             for row in list {
                 if let Some(id) = row.get("id").and_then(|v| v.as_str()) {
                     sources.insert(id.to_string(), row.clone());
@@ -4180,12 +4235,19 @@ impl JmapClient {
                 tracing::warn!(email_id = %src, "Email copy source was not found");
                 continue;
             };
-            let entry = copy_import_entry(source, json!({ (target_mailbox_id): true }))?;
+            let entry = copy_import_entry(source, json!({ (target_mailbox_id): true }))
+                .map_err(ChunkCopyError::BeforeImport)?;
             imports.insert(format!("i{i}"), entry);
         }
         if imports.is_empty() {
-            return Ok(0);
+            return Ok(ChunkCopyOutcome {
+                created: 0,
+                imported: false,
+            });
         }
+        // The submitted creation ids, collected before the map is moved into
+        // the request: each one must come back in `created` or `notCreated`.
+        let submitted: Vec<String> = imports.keys().cloned().collect();
         let calls = vec![(
             "Email/import",
             json!({
@@ -4194,6 +4256,8 @@ impl JmapClient {
             }),
             "ei0",
         )];
+        // The import request itself reached the server: every failure below is
+        // "unconfirmed" territory, never "nothing was copied".
         let resp = self
             .api_call(
                 api_url,
@@ -4202,30 +4266,62 @@ impl JmapClient {
                 username,
                 password,
             )
-            .await?;
+            .await
+            .map_err(|e| ChunkCopyError::Unconfirmed {
+                confirmed: 0,
+                source: e,
+            })?;
         for (method, data, _) in resp.method_responses {
             if method == "error" {
-                return Err(anyhow!("Email copy import failed: {}", data));
+                return Err(ChunkCopyError::Unconfirmed {
+                    confirmed: 0,
+                    source: anyhow!("Email copy import failed: {}", data),
+                });
             }
             if method == "Email/import" {
                 if let Some(c) = data.get("created").and_then(|v| v.as_object()) {
-                    created += c.len();
+                    created_ids.extend(c.keys().cloned());
                 }
-                if let Some(not_created) = data.get("notCreated")
-                    && !not_created.is_null()
-                    && not_created.as_object().is_none_or(|o| !o.is_empty())
-                {
+                if let Some(nc) = data.get("notCreated").and_then(|v| v.as_object()) {
+                    not_created_ids.extend(nc.keys().cloned());
                     // Per-item copy failures are partial completion, not a
                     // hard error, matching RopMoveCopyMessages semantics.
-                    tracing::warn!(
-                        "JMAP Email/import copy partial failure: {} not created: {}",
-                        not_created.as_object().map(|o| o.len()).unwrap_or(0),
-                        not_created
-                    );
+                    if !nc.is_empty() {
+                        tracing::warn!(
+                            "JMAP Email/import copy partial failure: {} not created: {}",
+                            nc.len(),
+                            nc.keys().cloned().collect::<Vec<_>>().join(",")
+                        );
+                    }
                 }
             }
         }
-        Ok(created)
+        // An id the response did NOT mention in either collection is
+        // UNCONFIRMED: the server may or may not have created the copy, so
+        // neither counting it as created (a duplicate on a retry) nor as
+        // refused (a lost message) is safe.
+        let unconfirmed: Vec<&String> = submitted
+            .iter()
+            .filter(|k| !created_ids.contains(*k) && !not_created_ids.contains(k))
+            .collect();
+        if !unconfirmed.is_empty() {
+            return Err(ChunkCopyError::Unconfirmed {
+                confirmed: created_ids.len(),
+                source: anyhow!(
+                    "Email/import did not account for {} submitted creation(s): {}",
+                    unconfirmed.len(),
+                    unconfirmed
+                        .iter()
+                        .map(|k| k.as_str())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ),
+            });
+        }
+        Ok(ChunkCopyOutcome {
+            created: created_ids.len(),
+            imported: true,
+        })
     }
 
     /// Create a mailbox via JMAP `Mailbox/set` (RFC 8621 §5.2). Returns the

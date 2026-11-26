@@ -72,10 +72,59 @@ fn ews_soap_response_wraps_inner() {
 
 #[test]
 fn ews_error_response_has_fault_structure() {
-    let resp = ews_error_response("ErrorItemNotFound", "Item not found");
-    assert!(resp.contains("Fault"));
+    // The fault must be a well-formed SOAP 1.1 envelope carrying
+    // `<faultcode>`/`<faultstring>` children ([MS-OXWCONFIG] §3.1.4.1.2.1) —
+    // parsing the WRAPPED document is what proves both the envelope and the
+    // child ordering, which a substring check cannot.
+    let resp = ews_soap_response(&ews_error_response("ErrorItemNotFound", "Item not found"));
     assert!(resp.contains("ErrorItemNotFound"));
     assert!(resp.contains("Item not found"));
+
+    let mut reader = quick_xml::Reader::from_str(&resp);
+    let mut buf = Vec::new();
+    // Depth relative to `<Fault>`: only DIRECT children are recorded, so the
+    // `<m:ResponseCode>` nested inside `<detail>` cannot distort the order.
+    let mut fault_depth: Option<usize> = None;
+    let mut depth = 0usize;
+    let mut fault_children: Vec<String> = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(quick_xml::events::Event::Start(e)) => {
+                depth += 1;
+                let name = e.local_name().as_ref().to_string();
+                match fault_depth {
+                    None if name == "Fault" => fault_depth = Some(depth),
+                    // A DIRECT child of `<Fault>` opens at fault_depth + 1.
+                    Some(fd) if depth == fd + 1 => fault_children.push(name),
+                    _ => {}
+                }
+            }
+            Ok(quick_xml::events::Event::Empty(e)) => {
+                if fault_depth == Some(depth) {
+                    fault_children.push(e.local_name().as_ref().to_string());
+                }
+            }
+            Ok(quick_xml::events::Event::End(e)) => {
+                if e.local_name().as_ref() == "Fault" {
+                    fault_depth = None;
+                }
+                depth = depth.saturating_sub(1);
+            }
+            Ok(quick_xml::events::Event::Eof) => break,
+            Ok(_) => {}
+            Err(e) => panic!("EWS SOAP fault is not well-formed XML: {e}"),
+        }
+        buf.clear();
+    }
+    assert_eq!(
+        fault_children,
+        vec![
+            "faultcode".to_string(),
+            "faultstring".to_string(),
+            "detail".to_string()
+        ],
+        "a SOAP 1.1 fault carries faultcode/faultstring children in that order"
+    );
 }
 
 #[test]

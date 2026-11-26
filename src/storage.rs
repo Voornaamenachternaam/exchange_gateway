@@ -15,6 +15,25 @@ pub type SqlPool = Pool<Sqlite>;
 pub trait SafeDebug {
     fn safe_debug(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result;
 }
+/// How long a pending calendar-create intent stays replayable. Each successful
+/// replay refreshes it (`created_at`), so a client that keeps retrying a create
+/// whose response was lost keeps reconciling instead of falling out of the
+/// window into a permanent Status 2 name collision.
+pub const PENDING_CALENDAR_CREATE_TTL_SECS: i64 = 7 * 24 * 3600;
+
+/// Result of [`Storage::claim_email_submission`]: whether THIS request owns the
+/// submission of a ClientId, or a previous attempt already decided it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmailSubmissionClaim {
+    /// This request owns the send (a first attempt, or a retry after a
+    /// definitive failure / an expired unknown outcome).
+    Claimed,
+    /// A previous attempt confirmed the submission: answer 118, do not resend.
+    AlreadySubmitted,
+    /// A previous attempt's outcome is still unknown and inside its cool-down:
+    /// answer retryably, do not resend yet.
+    InFlight,
+}
 
 #[derive(Clone)]
 pub struct Storage {
@@ -81,6 +100,27 @@ impl Storage {
         };
         guard.guard = Some(mutex.lock_owned().await);
         guard
+    }
+
+    /// Take the per-OWNER folder-TREE lock.
+    ///
+    /// A subtree delete validates each node's ancestor chain and then destroys
+    /// it; a concurrent REPARENT (EWS/MAPI `MoveFolder`) changes an ancestor's
+    /// `parent_id` without touching the node being destroyed, so the per-folder
+    /// [`Storage::lock_folder_mutation`] guard does NOT order the two. This lock
+    /// is the ordering point for hierarchy-SHAPE changes: the recursive-delete
+    /// walk holds it from the snapshot through the last destroy, and every
+    /// reparent holds it too, so the walk can never destroy a folder a
+    /// concurrent move reparented out of the subtree.
+    ///
+    /// Lock ORDER is always tree → per-folder. Callers must take this guard
+    /// BEFORE [`Storage::lock_folder_mutation`]: the delete holds the tree lock
+    /// while taking a per-folder lock per node, so the reverse order in a move
+    /// would deadlock.
+    pub async fn lock_folder_tree(&self, owner: &str) -> FolderMutationGuard {
+        // NUL can never appear in a JMAP mailbox id or a CalDAV href, so the
+        // sentinel key cannot collide with a real per-folder lock.
+        self.lock_folder_mutation(owner, "\u{0}folder-tree").await
     }
 }
 
@@ -2916,8 +2956,14 @@ impl Storage {
         collection_id: &str,
         baseline_json: &str,
     ) -> Result<()> {
+        // A malformed payload must FAIL before the transaction: treating it as
+        // an empty map would delete the collection's real baseline and report
+        // success, so the next flag scan would see every tracked message as a
+        // first observation and swallow its changes. `{}` remains the explicit
+        // way to clear the baseline.
         let map: std::collections::BTreeMap<String, Vec<String>> =
-            serde_json::from_str(baseline_json).unwrap_or_default();
+            serde_json::from_str(baseline_json)
+                .map_err(|e| GatewayError::Storage(format!("Decode error: {}", e)))?;
         let mut tx = self
             .pool
             .begin()
@@ -3346,19 +3392,52 @@ impl Storage {
         occurrence: &str,
         snooze_until: Option<&str>,
     ) -> Result<()> {
-        sqlx::query(
-            "INSERT INTO reminder_state (owner, item_server_id, occurrence, snooze_until, updated_at)
-             VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-             ON CONFLICT(owner, item_server_id, occurrence)
-             DO UPDATE SET snooze_until = excluded.snooze_until, updated_at = CURRENT_TIMESTAMP",
+        self.set_reminder_states(
+            owner,
+            &[(
+                item_server_id.to_string(),
+                occurrence.to_string(),
+                snooze_until.map(str::to_string),
+            )],
         )
-        .bind(owner)
-        .bind(item_server_id)
-        .bind(occurrence)
-        .bind(snooze_until)
-        .execute(self.pool())
         .await
-        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+    }
+
+    /// Record several reminder actions ATOMICALLY (`(item, occurrence, snooze)`),
+    /// each `snooze_until = None` meaning dismissed for that occurrence.
+    ///
+    /// A multi-action `PerformReminderAction` must be all-or-nothing: committing
+    /// half a batch and then failing tells the client nothing was applied while
+    /// the first actions already are.
+    pub async fn set_reminder_states(
+        &self,
+        owner: &str,
+        states: &[(String, String, Option<String>)],
+    ) -> Result<()> {
+        if states.is_empty() {
+            return Ok(());
+        }
+        let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
+        for (item_server_id, occurrence, snooze_until) in states {
+            sqlx::query(
+                "INSERT INTO reminder_state (owner, item_server_id, occurrence, snooze_until, updated_at)
+                 VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                 ON CONFLICT(owner, item_server_id, occurrence)
+                 DO UPDATE SET snooze_until = excluded.snooze_until, updated_at = CURRENT_TIMESTAMP",
+            )
+            .bind(owner)
+            .bind(item_server_id)
+            .bind(occurrence)
+            .bind(snooze_until.as_deref())
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        }
+        tx.commit()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
         Ok(())
     }
 
@@ -4936,7 +5015,7 @@ impl Storage {
     ) -> Result<()> {
         sqlx::query(
             "INSERT INTO pending_calendar_create (owner, href, display_name) VALUES (?1, ?2, ?3)
-             ON CONFLICT(owner, href) DO UPDATE SET display_name = ?3",
+             ON CONFLICT(owner, href) DO UPDATE SET display_name = ?3, created_at = CURRENT_TIMESTAMP",
         )
         .bind(owner)
         .bind(href)
@@ -4957,15 +5036,31 @@ impl Storage {
         owner: &str,
         href: &str,
     ) -> Result<Option<PendingCalendarCreate>> {
+        // The intent stays replayable until `PENDING_CALENDAR_CREATE_TTL_SECS`
+        // elapses (each successful replay refreshes it), so a lost-response
+        // retry cannot fall out of the replay window while the client is still
+        // retrying; expired rows are pruned here so the table stays bounded.
         let row = sqlx::query_as::<_, PendingCalendarCreateRow>(
             "SELECT owner, href, display_name FROM pending_calendar_create
-             WHERE owner = ?1 AND href = ?2",
+             WHERE owner = ?1 AND href = ?2
+               AND created_at >= datetime('now', ?3)",
         )
         .bind(owner)
         .bind(href)
+        .bind(format!("-{PENDING_CALENDAR_CREATE_TTL_SECS} seconds"))
         .fetch_optional(self.pool.as_ref())
         .await
         .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        if row.is_none() {
+            // Best-effort housekeeping: an expired intent can never justify an
+            // adoption again.
+            let _ =
+                sqlx::query("DELETE FROM pending_calendar_create WHERE owner = ?1 AND href = ?2")
+                    .bind(owner)
+                    .bind(href)
+                    .execute(self.pool.as_ref())
+                    .await;
+        }
         Ok(row.map(|r| PendingCalendarCreate {
             owner: r.owner,
             href: r.href,
@@ -5010,13 +5105,75 @@ impl Storage {
         .execute(self.pool.as_ref())
         .await
         .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
-        sqlx::query("DELETE FROM email_submission_log WHERE owner = ?1 AND updated_at < ?2")
-            .bind(owner)
-            .bind(now - 7 * 24 * 3600)
-            .execute(self.pool.as_ref())
-            .await
-            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        // Retention housekeeping only: the ledger row IS written, so a failure
+        // here must not turn a recorded submission into a client-visible error.
+        if let Err(e) =
+            sqlx::query("DELETE FROM email_submission_log WHERE owner = ?1 AND updated_at < ?2")
+                .bind(owner)
+                .bind(now - 7 * 24 * 3600)
+                .execute(self.pool.as_ref())
+                .await
+        {
+            tracing::warn!(error = %e, "SendMail: failed to prune the submission ledger");
+        }
         Ok(())
+    }
+
+    /// Atomically claim the SendMail `client_id` for THIS request.
+    ///
+    /// One statement decides the whole race: an absent row is inserted, a
+    /// `rejected` row (a definitive failure — a retry may resend) or a
+    /// `pending` row older than `retry_after_secs` (the earlier attempt's
+    /// outcome never arrived) is refreshed to a fresh `pending`, and anything
+    /// else leaves the row untouched. Two concurrent retries of the same
+    /// ClientId therefore cannot both reach the mail store: SQLite serializes
+    /// the writers and the loser's conditional upsert matches no row.
+    pub async fn claim_email_submission(
+        &self,
+        owner: &str,
+        client_id: &str,
+        retry_after_secs: i64,
+    ) -> Result<EmailSubmissionClaim> {
+        let now = chrono::Utc::now().timestamp();
+        let claimed: Option<(String,)> = sqlx::query_as(
+            "INSERT INTO email_submission_log (owner, client_id, state, updated_at)
+             VALUES (?1, ?2, 'pending', ?3)
+             ON CONFLICT(owner, client_id) DO UPDATE SET state = 'pending', updated_at = ?3
+             WHERE email_submission_log.state = 'rejected'
+                OR (email_submission_log.state = 'pending'
+                    AND email_submission_log.updated_at <= ?3 - ?4)
+             RETURNING state",
+        )
+        .bind(owner)
+        .bind(client_id)
+        .bind(now)
+        .bind(retry_after_secs)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        if claimed.is_some() {
+            sqlx::query("DELETE FROM email_submission_log WHERE owner = ?1 AND updated_at < ?2")
+                .bind(owner)
+                .bind(now - 7 * 24 * 3600)
+                .execute(self.pool.as_ref())
+                .await
+                .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+            return Ok(EmailSubmissionClaim::Claimed);
+        }
+        let existing: Option<(String,)> = sqlx::query_as(
+            "SELECT state FROM email_submission_log WHERE owner = ?1 AND client_id = ?2",
+        )
+        .bind(owner)
+        .bind(client_id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(match existing.as_ref().map(|(state,)| state.as_str()) {
+            Some("submitted") => EmailSubmissionClaim::AlreadySubmitted,
+            // A vanished row (a prune raced the claim) is not a duplicate.
+            None => EmailSubmissionClaim::Claimed,
+            Some(_) => EmailSubmissionClaim::InFlight,
+        })
     }
 
     /// The recorded SendMail state for `client_id`, with the age in seconds.
@@ -5038,6 +5195,44 @@ impl Storage {
             let age = chrono::Utc::now().timestamp().saturating_sub(updated_at);
             (state, age)
         }))
+    }
+
+    /// Is `server_id` the same folder as, or a descendant of,
+    /// `root_server_id` in the owner's folder mirror?
+    ///
+    /// ONE bounded recursive query (a row per ANCESTOR) instead of reading the
+    /// whole hierarchy and indexing it: the EAS FolderDelete walk calls this per
+    /// candidate, so the cost must scale with the chain depth, not the tree size.
+    /// The `depth` bound keeps a cyclic `parent_id` chain (which a corrupt
+    /// mirror could hold) from looping forever.
+    pub async fn folder_is_within_subtree(
+        &self,
+        owner: &str,
+        root_server_id: &str,
+        server_id: &str,
+    ) -> Result<bool> {
+        if server_id == root_server_id {
+            return Ok(true);
+        }
+        let hit: Option<(i64,)> = sqlx::query_as(
+            "WITH RECURSIVE chain(server_id, parent_id, depth) AS (
+                 SELECT server_id, parent_id, 0
+                   FROM folder_map WHERE owner = ?1 AND server_id = ?2
+                 UNION ALL
+                 SELECT f.server_id, f.parent_id, chain.depth + 1
+                   FROM folder_map f
+                   JOIN chain ON f.server_id = chain.parent_id AND f.owner = ?1
+                  WHERE chain.depth < 1024
+             )
+             SELECT 1 FROM chain WHERE server_id = ?3 LIMIT 1",
+        )
+        .bind(owner)
+        .bind(server_id)
+        .bind(root_server_id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(hit.is_some())
     }
 
     /// The folder ids with an outstanding prune for `owner`, oldest first.
@@ -7876,34 +8071,57 @@ mod tests {
         // `mb-new` is recorded as a pending intent but is LIVE; it was captured
         // after the live set used below was read, so it must NOT be pruned even
         // though the older `live` set omits it.
+        for server_id in ["mb-new", "mb-dead"] {
+            storage
+                .upsert_folder_journaled(
+                    FolderUpsertParams {
+                        owner,
+                        server_id,
+                        parent_id: "0",
+                        display_name: server_id,
+                        folder_type: 12,
+                        backend_kind: "jmap",
+                        backend_id: server_id,
+                    },
+                    "folder-add",
+                )
+                .await
+                .expect("seed folder");
+        }
         storage
             .record_pending_folder_prunes(owner, &["mb-new".to_string()])
             .await
             .expect("record");
         storage
-            .upsert_folder_journaled(
-                FolderUpsertParams {
-                    owner,
-                    server_id: "mb-new",
-                    parent_id: "0",
-                    display_name: "mb-new",
-                    folder_type: 12,
-                    backend_kind: "jmap",
-                    backend_id: "mb-new",
-                },
-                "folder-add",
-            )
+            .record_pending_folder_prunes(owner, &["mb-dead".to_string()])
             .await
-            .expect("seed folder");
+            .expect("record");
 
-        // Candidates captured BEFORE `mb-new` was recorded: empty.
+        // The CANDIDATE set is captured BEFORE `mb-new` was recorded, so it
+        // names only `mb-dead`. The live set predates `mb-new` as well. The
+        // reconcile must therefore prune exactly `mb-dead` and leave the newer
+        // intent AND its mapping untouched — an EMPTY candidate set would make
+        // this vacuous (the fast path returns before classifying anything).
+        let candidates = vec!["mb-dead".to_string()];
         assert_eq!(
             storage
-                .reconcile_pending_folder_prunes(owner, &[], &std::collections::HashSet::new())
+                .reconcile_pending_folder_prunes(
+                    owner,
+                    &candidates,
+                    &std::collections::HashSet::new()
+                )
                 .await
                 .expect("reconcile"),
-            0,
-            "an intent recorded after the capture must not be reconciled"
+            1,
+            "only the captured candidate is reconciled"
+        );
+        assert!(
+            storage
+                .get_folder(owner, "mb-dead")
+                .await
+                .expect("db")
+                .is_none(),
+            "the captured dead candidate's mapping is pruned"
         );
         assert!(
             storage
@@ -8191,6 +8409,258 @@ mod tests {
         assert_eq!(
             storage.get_ews_sync_state(owner, folder).await.unwrap(),
             Some("state-2".to_string())
+        );
+    }
+
+    /// [MS-ASCMD] §2.2.3.28: the ClientId ledger is the ONLY thing preventing a
+    /// retried SendMail from submitting twice, so its claim must be atomic and
+    /// its cool-down must be refreshed by the resend it authorises.
+    #[tokio::test]
+    async fn claim_email_submission_is_atomic_and_honours_the_cool_down() {
+        let storage = Storage::new("sqlite::memory:").await.unwrap();
+        storage.init_schema().await.unwrap();
+        let owner = "u@example.com";
+
+        // A first attempt owns the send.
+        assert_eq!(
+            storage
+                .claim_email_submission(owner, "cid", 300)
+                .await
+                .unwrap(),
+            EmailSubmissionClaim::Claimed
+        );
+        // A repeat inside the cool-down does not.
+        assert_eq!(
+            storage
+                .claim_email_submission(owner, "cid", 300)
+                .await
+                .unwrap(),
+            EmailSubmissionClaim::InFlight
+        );
+
+        // A confirmed submission is never resent.
+        storage
+            .set_email_submission_state(owner, "cid", "submitted")
+            .await
+            .unwrap();
+        assert_eq!(
+            storage
+                .claim_email_submission(owner, "cid", 300)
+                .await
+                .unwrap(),
+            EmailSubmissionClaim::AlreadySubmitted
+        );
+
+        // A definitive failure may be retried immediately.
+        storage
+            .set_email_submission_state(owner, "cid", "rejected")
+            .await
+            .unwrap();
+        assert_eq!(
+            storage
+                .claim_email_submission(owner, "cid", 300)
+                .await
+                .unwrap(),
+            EmailSubmissionClaim::Claimed
+        );
+
+        // An unresolved attempt becomes retryable once the cool-down expires —
+        // and the retry REFRESHES the window, so the next attempt is refused
+        // instead of hammering the mail store on every client retry.
+        sqlx::query(
+            "UPDATE email_submission_log SET updated_at = ?1 WHERE owner = ?2 AND client_id = ?3",
+        )
+        .bind(chrono::Utc::now().timestamp() - 301)
+        .bind(owner)
+        .bind("cid")
+        .execute(storage.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            storage
+                .claim_email_submission(owner, "cid", 300)
+                .await
+                .unwrap(),
+            EmailSubmissionClaim::Claimed
+        );
+        assert_eq!(
+            storage
+                .claim_email_submission(owner, "cid", 300)
+                .await
+                .unwrap(),
+            EmailSubmissionClaim::InFlight
+        );
+        let (state, age) = storage
+            .get_email_submission_state(owner, "cid")
+            .await
+            .unwrap()
+            .expect("ledger row");
+        assert_eq!(state, "pending");
+        assert!(
+            age <= 1,
+            "the claim must refresh the timestamp, got age {age}"
+        );
+    }
+
+    /// Two concurrent retries of one ClientId must not both reach the mail
+    /// store: the conditional upsert is the arbitration point.
+    #[tokio::test]
+    async fn concurrent_email_submission_claims_yield_exactly_one_owner() {
+        let storage = Arc::new(Storage::new("sqlite::memory:").await.unwrap());
+        storage.init_schema().await.unwrap();
+        let mut set = tokio::task::JoinSet::new();
+        for _ in 0..8 {
+            let storage = storage.clone();
+            set.spawn(async move {
+                storage
+                    .claim_email_submission("u@example.com", "burst", 300)
+                    .await
+                    .unwrap()
+            });
+        }
+        let mut claimed = 0;
+        while let Some(result) = set.join_next().await {
+            if result.unwrap() == EmailSubmissionClaim::Claimed {
+                claimed += 1;
+            }
+        }
+        assert_eq!(
+            claimed, 1,
+            "exactly one concurrent retry may own the submission"
+        );
+    }
+
+    /// A pending calendar-create intent must stay replayable across repeated
+    /// lost responses (every successful replay refreshes the window) and only a
+    /// retention EXPIRY may end it — otherwise a client retrying a create whose
+    /// response was lost would fall out of reconciliation into a permanent
+    /// Status 2 name collision for a collection that exists and is mapped.
+    #[tokio::test]
+    async fn pending_calendar_create_intents_expire_and_refresh() {
+        let storage = Storage::new("sqlite::memory:").await.unwrap();
+        storage.init_schema().await.unwrap();
+        let owner = "u@example.com";
+        let href = "/dav/cal/u/Foo/";
+        storage
+            .record_pending_calendar_create(owner, href, "Foo")
+            .await
+            .unwrap();
+        assert!(
+            storage
+                .get_pending_calendar_create(owner, href)
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        // Older than the retention window: no longer replayable, and pruned by
+        // the read so the table stays bounded.
+        sqlx::query(
+            "UPDATE pending_calendar_create SET created_at = datetime('now', '-8 days') WHERE owner = ?1",
+        )
+        .bind(owner)
+        .execute(storage.pool())
+        .await
+        .unwrap();
+        assert!(
+            storage
+                .get_pending_calendar_create(owner, href)
+                .await
+                .unwrap()
+                .is_none(),
+            "an expired intent must not be replayed"
+        );
+        let remaining: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM pending_calendar_create WHERE owner = ?1")
+                .bind(owner)
+                .fetch_one(storage.pool())
+                .await
+                .unwrap();
+        assert_eq!(remaining.0, 0, "the expired intent must be pruned");
+
+        // Re-recording (a successful replay) restarts the window even for an
+        // intent that had already aged out.
+        sqlx::query(
+            "INSERT INTO pending_calendar_create (owner, href, display_name, created_at)
+             VALUES (?1, ?2, 'Foo', datetime('now', '-6 days'))",
+        )
+        .bind(owner)
+        .bind(href)
+        .execute(storage.pool())
+        .await
+        .unwrap();
+        assert!(
+            storage
+                .get_pending_calendar_create(owner, href)
+                .await
+                .unwrap()
+                .is_some(),
+            "an intent inside the window is replayable"
+        );
+        storage
+            .record_pending_calendar_create(owner, href, "Foo")
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE pending_calendar_create SET created_at = datetime('now', '-6 days') WHERE owner = ?1",
+        )
+        .bind(owner)
+        .execute(storage.pool())
+        .await
+        .unwrap();
+        storage
+            .record_pending_calendar_create(owner, href, "Foo")
+            .await
+            .unwrap();
+        assert!(
+            storage
+                .get_pending_calendar_create(owner, href)
+                .await
+                .unwrap()
+                .is_some(),
+            "a refresh must restart the retention window"
+        );
+    }
+
+    /// A malformed baseline payload must be REJECTED, not silently treated as
+    /// an empty map: the empty branch DELETEs the stored baseline and reports
+    /// success, which would make the next flag scan treat every tracked message
+    /// as a first observation and swallow its flag change.
+    #[tokio::test]
+    async fn set_email_keyword_baseline_rejects_malformed_json() {
+        let storage = mem_storage().await;
+        let owner = "u@example.com";
+        let collection = "1::device";
+        storage
+            .set_email_keyword_baseline(owner, collection, r#"{"m1":["$seen"]}"#)
+            .await
+            .expect("seed baseline");
+
+        let err = storage
+            .set_email_keyword_baseline(owner, collection, "not json")
+            .await;
+        assert!(err.is_err(), "malformed JSON must be a hard error");
+
+        // The seeded baseline survives the rejected write.
+        let row = storage
+            .get_email_keyword(owner, collection, "m1")
+            .await
+            .expect("read baseline")
+            .expect("the seeded row must survive");
+        assert!(row.iter().any(|k| k == "$seen"));
+
+        // `{}` is still the explicit way to clear it.
+        storage
+            .set_email_keyword_baseline(owner, collection, "{}")
+            .await
+            .expect("clear baseline");
+        assert!(
+            storage
+                .get_email_keyword(owner, collection, "m1")
+                .await
+                .expect("read baseline")
+                .is_none(),
+            "an explicit empty map clears the baseline"
         );
     }
 }

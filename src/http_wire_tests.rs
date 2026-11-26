@@ -127,6 +127,48 @@ fn session_json(base: &str) -> Value {
     })
 }
 
+/// Post RAW XML (not WBXML) — the form a client uses when it does not encode,
+/// which is where the entry-point namespace validation runs on the document as
+/// written.
+async fn post_eas_xml(
+    client: &reqwest::Client,
+    base: &str,
+    device_id: &str,
+    command: &str,
+    xml: &str,
+) -> EasWireResponse {
+    let response = client
+        .post(format!(
+            "{base}/Microsoft-Server-ActiveSync?Cmd={command}&User={OWNER}&DeviceId={device_id}&DeviceType=Outlook"
+        ))
+        .basic_auth(OWNER, Some(PASSWORD))
+        .header(header::CONTENT_TYPE, "text/xml")
+        .header("MS-ASProtocolVersion", "16.1")
+        .body(xml.to_string())
+        .send()
+        .await
+        .expect("gateway HTTP request must complete");
+    let status = response.status();
+    let content_type = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    let nosniff = response
+        .headers()
+        .get("x-content-type-options")
+        .and_then(|value| value.to_str().ok())
+        == Some("nosniff");
+    let body = response.text().await.unwrap_or_default();
+    EasWireResponse {
+        status,
+        content_type,
+        nosniff,
+        xml: body,
+    }
+}
+
 async fn post_eas(
     client: &reqwest::Client,
     base: &str,
@@ -356,4 +398,36 @@ async fn autodiscover_xml_completes_the_full_http_request_response_cycle() {
     assert!(body.contains("u@example.com"));
     assert!(body.contains("gateway.example.com"));
     assert!(body.contains("/EWS/Exchange.asmx"));
+}
+
+#[tokio::test]
+async fn eas_composemail_namespaced_sendmail_reaches_submission_over_http() {
+    // [MS-ASCMD] §2.2.1.14: the SendMail request element lives on the shared
+    // ComposeMail code page, so a conformant client sends
+    // `<ComposeMail:SendMail xmlns:ComposeMail="ComposeMail:">`. The entry-point
+    // namespace check must accept it (previously it answered HTTP 400 "Invalid
+    // namespace" before the parser ran).
+    let gw = WireGateway::spawn().await;
+    let mime = "From: u@example.com\r\nTo: v@example.com\r\nSubject: hi\r\n\r\nbody\r\n";
+    let xml = format!(
+        "<ComposeMail:SendMail xmlns:ComposeMail=\"ComposeMail:\"><ComposeMail:ClientId>wire-cid</ComposeMail:ClientId><ComposeMail:SaveInSentItems>1</ComposeMail:SaveInSentItems><ComposeMail:MIMEData>{}</ComposeMail:MIMEData></ComposeMail:SendMail>",
+        mime.replace('<', "&lt;").replace('>', "&gt;")
+    );
+    let response = post_eas_xml(&gw.client, &gw.base, &gw.device_id, "SendMail", &xml).await;
+    assert_eq!(
+        response.status,
+        StatusCode::OK,
+        "a ComposeMail-namespaced SendMail must reach mail submission, not be rejected: {}",
+        response.xml
+    );
+    assert!(
+        !response.xml.contains("Invalid namespace"),
+        "the entry point must accept the ComposeMail namespace: {}",
+        response.xml
+    );
+    assert!(
+        response.xml.contains("<Status") || response.xml.contains(":Status"),
+        "the response must be a ComposeMail Status document: {}",
+        response.xml
+    );
 }
