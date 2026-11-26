@@ -30,6 +30,14 @@ pub struct CalendarItem {
     pub timezone: Option<String>,
     pub timezone_blob: Option<String>,
     pub rrule: Option<String>,
+    /// The `DURATION` property text this event was parsed from, when the source
+    /// used `DURATION` instead of `DTEND`. RFC 5545 §3.8.5.3 gives the two
+    /// forms different recurrence semantics: `DURATION` fixes a NOMINAL length
+    /// (a `P1D` instance keeps its wall-clock end across a DST change), while
+    /// `DTEND` fixes one exact elapsed span for every instance. Preserved so a
+    /// write-back re-emits the DURATION form while it still describes the
+    /// event (re-verified against `start`/`end` by `render_ics`).
+    pub duration: Option<String>,
     pub exdates: Vec<chrono::DateTime<Utc>>,
     pub organizer_name: Option<String>,
     pub organizer_email: Option<String>,
@@ -289,6 +297,7 @@ impl EasBuilder {
             end,
             all_day: self.all_day.unwrap_or(false),
             dtstamp: self.dtstamp,
+            duration: None,
             timezone: self.timezone,
             timezone_blob: self.timezone_blob,
             rrule: self.recurrence.to_rrule(),
@@ -731,12 +740,48 @@ fn parse_duration_minutes(trigger: &str) -> Option<i32> {
     ical_parser::parse_ical_duration_minutes(trigger).ok()
 }
 
-/// RFC 5545 §3.3.6 `DURATION` of a VEVENT, at SECOND precision (`PT30S` is a
-/// 30-second event, not a zero-length one).
-fn parse_duration_seconds(value: &str) -> Option<chrono::Duration> {
-    ical_parser::parse_ical_duration_seconds(value)
-        .ok()
-        .map(chrono::Duration::seconds)
+/// RFC 5545 §3.3.6 `DURATION` of a VEVENT, split into its NOMINAL
+/// (days/weeks) and ELAPSED (h/m/s) parts — see
+/// [`ical_parser::IcalDurationParts`].
+fn parse_duration_parts(value: &str) -> Option<ical_parser::IcalDurationParts> {
+    ical_parser::parse_ical_duration_parts(value).ok()
+}
+
+/// Add a parsed `DURATION` to a start instant per RFC 5545 §3.3.6: whole
+/// days/weeks are NOMINAL — applied to the wall clock in the start's zone, so
+/// `P1D` across a DST transition keeps the local time — while hours/minutes/
+/// seconds are ELAPSED. `PT24H` therefore stays exactly 24 hours. Without a
+/// resolvable zone the nominal part degrades to elapsed days (the best
+/// available approximation).
+fn add_nominal_duration(
+    start: chrono::DateTime<Utc>,
+    parts: ical_parser::IcalDurationParts,
+    zone: Option<Tz>,
+) -> Option<chrono::DateTime<Utc>> {
+    let days = if parts.negative {
+        parts.days.checked_neg()?
+    } else {
+        parts.days
+    };
+    let mut end = if days == 0 {
+        start
+    } else {
+        let day_span = chrono::Duration::try_days(days)?;
+        match zone {
+            Some(tz) => {
+                let shifted = start.with_timezone(&tz).naive_local().checked_add_signed(day_span)?;
+                localize_gap_tolerant(shifted, tz)?
+            }
+            None => start.checked_add_signed(day_span)?,
+        }
+    };
+    let seconds = if parts.negative {
+        parts.seconds.checked_neg()?
+    } else {
+        parts.seconds
+    };
+    end = end.checked_add_signed(chrono::Duration::try_seconds(seconds)?)?;
+    Some(end)
 }
 
 fn parse_event_lines(
@@ -806,9 +851,13 @@ fn parse_event_lines(
                     fields.all_day = Some(true);
                 }
             }
-            k if k.starts_with("DURATION") => {
-                fields.duration = parse_duration_seconds(value);
-            }
+            k if k.starts_with("DURATION") => match parse_duration_parts(value) {
+                Some(parts) => {
+                    fields.duration = Some(parts);
+                    fields.duration_text = Some(value.trim().to_string());
+                }
+                None => fields.duration_invalid = true,
+            },
             k if k.starts_with("DTEND") => {
                 fields.dtend_present = true;
                 let tzid = parse_tzid_from_key(k);
@@ -918,7 +967,16 @@ struct CalendarEventFields {
     /// JSCalendar events carry `duration` (not `end`), and the calcard
     /// exporter renders it as `DURATION`, so a reader that only honours
     /// `DTEND` cannot read the gateway's own JMAP-derived events.
-    duration: Option<chrono::Duration>,
+    duration: Option<ical_parser::IcalDurationParts>,
+    /// The `DURATION` property text exactly as parsed, preserved so a
+    /// write-back can re-emit the NOMINAL form (RFC 5545 §3.8.5.3) instead of
+    /// pinning every recurrence instance to one exact `DTEND` span.
+    duration_text: Option<String>,
+    /// An explicit `DURATION` was present but unreadable. Tracked separately
+    /// from an OMITTED duration: when it would have supplied the end (no
+    /// `DTEND`), the event is rejected rather than silently shortened to
+    /// zero length and then written back.
+    duration_invalid: bool,
     all_day: Option<bool>,
     dtstamp: Option<chrono::DateTime<Utc>>,
     recurrence_id: Option<chrono::DateTime<Utc>>,
@@ -949,21 +1007,17 @@ struct CalendarEventFields {
 fn derive_component_end(
     start: Option<chrono::DateTime<Utc>>,
     end: Option<chrono::DateTime<Utc>>,
-    duration: Option<chrono::Duration>,
+    duration: Option<ical_parser::IcalDurationParts>,
     all_day: bool,
+    zone: Option<Tz>,
 ) -> Option<chrono::DateTime<Utc>> {
     match (end, start) {
         (Some(end), _) => Some(end),
-        (None, Some(start)) => Some(
-            start
-                + duration.unwrap_or_else(|| {
-                    if all_day {
-                        chrono::Duration::days(1)
-                    } else {
-                        chrono::Duration::zero()
-                    }
-                }),
-        ),
+        (None, Some(start)) => match duration {
+            Some(parts) => add_nominal_duration(start, parts, zone),
+            None if all_day => start.checked_add_signed(chrono::Duration::try_days(1)?),
+            None => Some(start),
+        },
         (None, None) => None,
     }
 }
@@ -992,6 +1046,13 @@ pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
     for block in split_ical_blocks(ics) {
         let mut fields = parse_event_lines(&block, &mut resolve);
         if let Some(recurrence_id) = fields.recurrence_id {
+            // The start's zone, resolved for the NOMINAL day/week part of a
+            // DURATION (RFC 5545 §3.3.6).
+            let exception_zone = fields
+                .timezone
+                .as_deref()
+                .and_then(&mut resolve)
+                .and_then(|iana| iana.parse::<Tz>().ok());
             let exception = CalendarException {
                 deleted: fields.deleted,
                 exception_start: recurrence_id,
@@ -999,12 +1060,20 @@ pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
                 description: fields.description,
                 location: fields.location,
                 start: fields.start,
-                end: derive_component_end(
-                    fields.start,
-                    fields.end,
-                    fields.duration,
-                    fields.all_day.unwrap_or(false),
-                ),
+                end: match (fields.start, fields.end) {
+                    // An unreadable DURATION that would have supplied this
+                    // instance's end leaves the override unusable: skipping it
+                    // keeps the master's instance (with its own duration)
+                    // instead of publishing a zero-length override.
+                    (Some(_), None) if fields.duration_invalid => continue,
+                    _ => derive_component_end(
+                        fields.start,
+                        fields.end,
+                        fields.duration,
+                        fields.all_day.unwrap_or(false),
+                        exception_zone,
+                    ),
+                },
                 all_day: fields.all_day,
                 busy_status: fields.busy_status,
                 sensitivity: fields.sensitivity,
@@ -1035,6 +1104,14 @@ pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
         {
             fields.timezone = Some(resolved);
         }
+        let start_zone = fields.timezone.as_deref().and_then(|iana| iana.parse::<Tz>().ok());
+        // An explicit but UNREADABLE DURATION that would have supplied the end
+        // (no DTEND) is a malformed event: fail closed rather than deliver a
+        // zero-length interval and advance the provider token as if it parsed.
+        if fields.duration_invalid && !fields.dtend_present {
+            tracing::warn!("calendar: rejecting an event whose explicit DURATION is unreadable");
+            return None;
+        }
         let mut item = CalendarItem {
             uid,
             subject: fields.subject.unwrap_or_default(),
@@ -1053,6 +1130,7 @@ pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
                     end,
                     fields.duration,
                     fields.all_day.unwrap_or(false),
+                    start_zone,
                 )?,
             },
             all_day: fields.all_day.unwrap_or(false),
@@ -1060,6 +1138,7 @@ pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
             timezone: fields.timezone,
             timezone_blob: timezone_blob.clone(),
             rrule: fields.rrule,
+            duration: fields.duration_text,
             exdates: fields.exdates.clone(),
             organizer_name: fields.organizer_name,
             organizer_email: fields.organizer_email,
@@ -1270,6 +1349,22 @@ pub fn render_ics(item: &CalendarItem) -> String {
     event.timestamp(dtstamp);
     event.summary(&item.subject);
 
+    // A preserved DURATION is re-emitted ONLY while it still describes the
+    // event: the nominal end it implies must equal the stored end. A client
+    // edit through the gateway moves `start`/`end` without touching the
+    // preserved text, and must get an exact DTEND instead of a stale span.
+    let preserved_duration = item.duration.as_deref().filter(|text| {
+        !item.all_day
+            && item.end > item.start
+            && parse_duration_parts(text).and_then(|parts| {
+                add_nominal_duration(
+                    item.start,
+                    parts,
+                    item.timezone.as_deref().and_then(|t| t.parse::<Tz>().ok()),
+                )
+            }) == Some(item.end)
+    });
+
     if item.all_day {
         event.starts(item.start.naive_utc().date());
         let end_date = item.end.naive_utc().date();
@@ -1289,7 +1384,9 @@ pub fn render_ics(item: &CalendarItem) -> String {
             // start/end as local wall-clock with a TZID referencing it.
             // RFC 5545 §3.8.2.2: DTEND MUST be later than DTSTART, so a
             // zero-length event is written with DTSTART alone (§3.6.1).
-            if item.end > item.start {
+            if let Some(text) = preserved_duration {
+                event.append_property(Property::new("DURATION", text.to_string()).done());
+            } else if item.end > item.start {
                 event.ends((item.end.with_timezone(&tz).naive_local(), tz));
             }
             event.starts((item.start.with_timezone(&tz).naive_local(), tz));
@@ -1299,13 +1396,17 @@ pub fn render_ics(item: &CalendarItem) -> String {
             // absolute UTC instant (with `Z`) so no orphan `DTSTART;TZID=...`
             // references a missing VTIMEZONE, keeping the iCalendar
             // RFC-5545-valid.
-            if item.end > item.start {
+            if let Some(text) = preserved_duration {
+                event.append_property(Property::new("DURATION", text.to_string()).done());
+            } else if item.end > item.start {
                 event.ends(item.end);
             }
             event.starts(item.start);
         }
     } else {
-        if item.end > item.start {
+        if let Some(text) = preserved_duration {
+            event.append_property(Property::new("DURATION", text.to_string()).done());
+        } else if item.end > item.start {
             event.ends(item.end);
         }
         event.starts(item.start);
@@ -2862,6 +2963,7 @@ pub fn parse_ews_calendar_item(xml: &str) -> Result<CalendarItem> {
         timezone,
         timezone_blob: extract_ews_timezone_field_doc(&doc, b"MeetingTimeZone"),
         rrule,
+        duration: None,
         exdates: Vec::new(),
         organizer_name,
         organizer_email,
@@ -3124,6 +3226,113 @@ mod scheduling_tests {
             ev.end.timestamp() - ev.start.timestamp(),
             30,
             "DURATION:PT30S is a 30-second event"
+        );
+    }
+
+    #[test]
+    fn nominal_day_duration_keeps_wall_clock_across_dst() {
+        // RFC 5545 §3.3.6: whole days are NOMINAL. A `P1D` event starting at
+        // 09:00 America/New_York the day before the spring-forward transition
+        // ends at 09:00 local the next day (23 elapsed hours), while `PT24H`
+        // stays exactly 24 elapsed hours.
+        let daily = "BEGIN:VCALENDAR\r\n\
+             VERSION:2.0\r\n\
+             BEGIN:VEVENT\r\n\
+             UID:nominal-day@example.com\r\n\
+             DTSTART;TZID=America/New_York:20250308T090000\r\n\
+             DURATION:P1D\r\n\
+             END:VEVENT\r\n\
+             END:VCALENDAR\r\n";
+        let ev = parse_ics_event(daily).expect("a P1D event parses");
+        let expected_local = chrono::NaiveDate::from_ymd_opt(2025, 3, 9)
+            .unwrap()
+            .and_hms_opt(9, 0, 0)
+            .unwrap();
+        let tz: Tz = "America/New_York".parse().unwrap();
+        let expected = expected_local
+            .and_local_timezone(tz)
+            .earliest()
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(ev.end, expected, "P1D must keep 09:00 local across DST");
+        assert_eq!(ev.end.timestamp() - ev.start.timestamp(), 23 * 3600);
+
+        let elapsed = daily.replace("DURATION:P1D", "DURATION:PT24H");
+        let ev = parse_ics_event(&elapsed).expect("a PT24H event parses");
+        assert_eq!(
+            ev.end.timestamp() - ev.start.timestamp(),
+            24 * 3600,
+            "PT24H is elapsed time, not a nominal day"
+        );
+    }
+
+    #[test]
+    fn unreadable_duration_fails_closed() {
+        // An explicit but unreadable DURATION that would supply the end must
+        // not become a zero-length event that is then written back.
+        let ics = "BEGIN:VCALENDAR\r\n\
+             VERSION:2.0\r\n\
+             BEGIN:VEVENT\r\n\
+             UID:bad-duration@example.com\r\n\
+             DTSTART:20260115T090000Z\r\n\
+             DURATION:not-a-duration\r\n\
+             END:VEVENT\r\n\
+             END:VCALENDAR\r\n";
+        assert!(
+            parse_ics_event(ics).is_none(),
+            "an explicit unreadable DURATION must be rejected"
+        );
+    }
+
+    #[test]
+    fn positive_duration_sign_parses() {
+        // RFC 5545 §3.3.6 dur-value allows an optional leading "+".
+        assert_eq!(
+            crate::ical_parser::parse_ical_duration_seconds("+PT30S").unwrap(),
+            30
+        );
+        assert_eq!(
+            crate::ical_parser::parse_ical_duration_seconds("PT30S").unwrap(),
+            30
+        );
+        assert!(
+            crate::ical_parser::parse_ical_duration_seconds("P99999999999Y").is_err(),
+            "an absurd duration is a parse error, never a panicking cast"
+        );
+    }
+
+    #[test]
+    fn render_ics_preserves_nominal_duration_for_recurring_master() {
+        // RFC 5545 §3.8.5.3: a DURATION-based master keeps its nominal length on
+        // write-back instead of being pinned to one exact DTEND span.
+        let ics = "BEGIN:VCALENDAR\r\n\
+             VERSION:2.0\r\n\
+             BEGIN:VEVENT\r\n\
+             UID:dur-master@example.com\r\n\
+             DTSTART;TZID=America/New_York:20250308T090000\r\n\
+             DURATION:P1D\r\n\
+             RRULE:FREQ=DAILY;COUNT=5\r\n\
+             END:VEVENT\r\n\
+             END:VCALENDAR\r\n";
+        let ev = parse_ics_event(ics).expect("parses");
+        let rendered = render_ics(&ev);
+        assert!(
+            rendered.contains("DURATION:P1D"),
+            "a preserved nominal duration must be re-emitted: {rendered}"
+        );
+        assert!(
+            !rendered.contains("DTEND"),
+            "no exact DTEND may replace a DURATION-based master: {rendered}"
+        );
+
+        // A client edit that moves the end invalidates the preserved text, so
+        // the exact DTEND is emitted instead of a stale span.
+        let mut edited = ev.clone();
+        edited.end += chrono::Duration::hours(1);
+        let rendered = render_ics(&edited);
+        assert!(
+            rendered.contains("DTEND") && !rendered.contains("DURATION:P1D"),
+            "a moved end must fall back to DTEND: {rendered}"
         );
     }
 

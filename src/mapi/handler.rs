@@ -2659,9 +2659,26 @@ async fn execute_one_rop(
                                                 if n == req.message_ids.len() { 0 } else { 1 };
                                         }
                                         Err(e) => {
-                                            tracing::warn!(error = %e, "JMAP move failed");
-                                            outcome = RopErrorCode::DiskError;
-                                            partial = 0;
+                                            // A move whose response left some ids
+                                            // unaccounted for still moved the
+                                            // confirmed ones: report partial
+                                            // completion so a retry does not move
+                                            // them twice.
+                                            if let Some(unresolved) =
+                                                e.downcast_ref::<crate::jmap::MoveUnresolved>()
+                                            {
+                                                tracing::warn!(
+                                                    error = %e,
+                                                    unresolved = ?unresolved.unresolved,
+                                                    "JMAP move left ids unaccounted for"
+                                                );
+                                                outcome = RopErrorCode::Success;
+                                                partial = 1;
+                                            } else {
+                                                tracing::warn!(error = %e, "JMAP move failed");
+                                                outcome = RopErrorCode::DiskError;
+                                                partial = 0;
+                                            }
                                         }
                                     }
                                 }
@@ -11252,6 +11269,7 @@ mod tests {
             updated: vec!["M-1".to_string()],
             not_updated: Vec::new(),
             method_error: None,
+            method_error_type: None,
         };
         assert_eq!(outcome_to_code(o, "test"), RopErrorCode::Success);
     }
@@ -11267,6 +11285,7 @@ mod tests {
             updated: Vec::new(),
             not_updated: vec![("M-2".to_string(), "notFound".to_string())],
             method_error: None,
+            method_error_type: None,
         };
         assert_eq!(outcome_to_code(o, "test"), RopErrorCode::DiskError);
     }
@@ -11277,6 +11296,7 @@ mod tests {
             updated: Vec::new(),
             not_updated: Vec::new(),
             method_error: Some("serverFail".to_string()),
+            method_error_type: None,
         };
         assert_eq!(outcome_to_code(o, "test"), RopErrorCode::DiskError);
     }

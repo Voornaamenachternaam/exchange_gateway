@@ -299,7 +299,7 @@ async fn eas_ping_times_out_cleanly_and_wakes_for_a_real_journaled_change() {
     // Ping had reached its wait loop.)
     let subscribed = tokio::time::timeout(Duration::from_secs(3), async {
         loop {
-            if gateway.state.subscription_manager.raw_receiver_count() > 0 {
+            if gateway.state.subscription_manager.receiver_count() > 0 {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(5)).await;

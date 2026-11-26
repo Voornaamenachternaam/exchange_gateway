@@ -1051,6 +1051,7 @@ mod tests {
             timezone: None,
             timezone_blob: None,
             rrule: None,
+            duration: None,
             exdates: Vec::new(),
             organizer_name: None,
             organizer_email: None,

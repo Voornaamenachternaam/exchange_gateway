@@ -296,6 +296,31 @@ pub struct JmapResponse {
 /// A message copy that stopped partway through: `created` messages were already
 /// copied before the failure. Reporting a bare error would make the caller treat
 /// the whole request as failed and re-copy those messages on retry (duplicating
+/// An `Email/set` move whose response left some patched ids UNACCOUNTED for
+/// (neither `updated` nor `notUpdated`): the confirmed moves stand, the
+/// unresolved ids may or may not have moved and must be reconciled before a
+/// retry.
+#[derive(Debug)]
+pub struct MoveUnresolved {
+    /// Ids the server confirmed as updated.
+    pub updated: usize,
+    /// Ids the response did not account for.
+    pub unresolved: Vec<String>,
+}
+
+impl std::fmt::Display for MoveUnresolved {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Email/set move left {} id(s) unaccounted for after {} confirmed",
+            self.unresolved.len(),
+            self.updated
+        )
+    }
+}
+
+impl std::error::Error for MoveUnresolved {}
+
 /// them), so the count travels with the error.
 #[derive(Debug)]
 pub struct CopyPartialFailure {
@@ -1485,6 +1510,10 @@ pub struct EmailSetOutcome {
     /// Non-empty when the server rejected the whole method (e.g. rate limit,
     /// `accountNotFound`). `None` means no method-level error.
     pub method_error: Option<String>,
+    /// The method error's RFC 8620 §3.6.2 `type` (e.g. `serverFail`,
+    /// `serverPartialFail`), when the server supplied a usable one. Callers use
+    /// it to tell a TRANSIENT whole-method failure from a permanent rejection.
+    pub method_error_type: Option<String>,
 }
 
 impl JmapClient {
@@ -2344,10 +2373,11 @@ impl JmapClient {
         let mut method_errors: Vec<Value> = Vec::new();
         let mut query_position: u64 = 0;
         let mut query_last_id: Option<String> = None;
-        // The `Email/query` page's id count. Compared with the `Email/get` list
-        // below to detect the "query returned ids but Email/get returned none"
-        // case (every id vanished between the two calls).
-        let mut query_ids_len: usize = 0;
+        let mut get_not_found: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // The `Email/query` page's ids, in query order. Every one must be
+        // accounted for by the `Email/get` below — either hydrated or listed in
+        // its `notFound` — or the page is a malformed/truncated response.
+        let mut query_ids: Vec<String> = Vec::new();
         // A response for each requested call is mandatory (RFC 8620 §3.6.2). A
         // missing `Email/query` entry would otherwise leave `query_ids_len` at 0
         // and report a successful EMPTY page with no query state — the caller
@@ -2377,11 +2407,16 @@ impl JmapClient {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                query_ids_len = data
+                query_ids = data
                     .get("ids")
                     .and_then(|v| v.as_array())
-                    .map(|a| a.len())
-                    .unwrap_or(0);
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str())
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 // RFC 8620 §5.5: the authoritative absolute index of the first
                 // returned id. Absent only on a malformed response; 0 is then a
                 // safe floor.
@@ -2397,6 +2432,11 @@ impl JmapClient {
                     .map(String::from);
             } else if method == "Email/get" {
                 saw_get = data.get("list").is_some_and(|v| v.is_array());
+                if let Some(missing) = data.get("notFound").and_then(|v| v.as_array()) {
+                    get_not_found.extend(
+                        missing.iter().filter_map(|v| v.as_str()).map(str::to_string),
+                    );
+                }
                 emails = data
                     .get("list")
                     .and_then(|v| serde_json::from_value(v.clone()).ok())
@@ -2449,10 +2489,24 @@ impl JmapClient {
         // undelivered tail that sits behind that state. Fail so the caller
         // answers a retryable error and re-queries. An `anchorNotFound` result
         // is genuinely empty and is excluded.
-        if !anchor_not_found && query_ids_len > 0 && emails.is_empty() {
-            return Err(anyhow!(
-                "Email/query returned {query_ids_len} ids but Email/get returned none; retrying"
-            ));
+        if !anchor_not_found && !query_ids.is_empty() {
+            // Every queried id must be accounted for: hydrated by `Email/get`
+            // or explicitly `notFound`. A partial/truncated get would otherwise
+            // look like "these messages no longer exist" and the caller would
+            // advance past them — losing them permanently.
+            let hydrated: std::collections::HashSet<&str> =
+                emails.iter().filter_map(|e| e.id.as_deref()).collect();
+            let unaccounted = query_ids
+                .iter()
+                .find(|id| !hydrated.contains(id.as_str()) && !get_not_found.contains(*id));
+            if let Some(id) = unaccounted {
+                return Err(anyhow!(
+                    "Email/get did not account for queried id {id} ({} queried, {} hydrated, {} notFound); retrying",
+                    query_ids.len(),
+                    hydrated.len(),
+                    get_not_found.len()
+                ));
+            }
         }
 
         Ok(EmailListResult {
@@ -2465,6 +2519,59 @@ impl JmapClient {
             query_position,
             query_last_id,
         })
+    }
+
+    /// Ids in `mailbox_id` whose raw `Message-ID` header contains
+    /// `message_id` (RFC 8621 §4.4.1 `header` filter: case-insensitive
+    /// substring match). Used to reconcile a SendMail retry whose earlier
+    /// attempt's outcome was lost, without fetching any message body.
+    pub async fn email_ids_matching_message_id(
+        &self,
+        account_id: &str,
+        mailbox_id: &str,
+        message_id: &str,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<Vec<String>> {
+        let session = self.get_session(username, password).await?;
+        let response = self
+            .api_call(
+                &session.api_url,
+                &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+                vec![(
+                    "Email/query",
+                    json!({
+                        "accountId": account_id,
+                        "filter": { "inMailbox": mailbox_id, "header": ["Message-ID", message_id] },
+                        "limit": 1,
+                    }),
+                    "q0",
+                )],
+                username,
+                password,
+            )
+            .await?;
+        for (method, data, _) in response.method_responses {
+            if method == "error" {
+                return Err(anyhow!("Email/query (Message-ID) failed: {}", data));
+            }
+            if method == "Email/query" {
+                let Some(ids) = data.get("ids").and_then(|v| v.as_array()) else {
+                    return Err(anyhow!(
+                        "Email/query (Message-ID) returned no usable ids: {}",
+                        data
+                    ));
+                };
+                return Ok(ids
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .map(str::to_string)
+                    .collect());
+            }
+        }
+        Err(anyhow!(
+            "Email/query (Message-ID) returned no method response"
+        ))
     }
 
     /// Query only the message ids in a mailbox (no `Email/get`).
@@ -2569,7 +2676,22 @@ impl JmapClient {
                     .iter()
                     .find(|t| t.get("id").and_then(|v| v.as_str()) == Some(thread_id))
                 else {
-                    return Ok(None);
+                    // Only an explicit `notFound` entry proves the thread is
+                    // gone; a list that merely omits it (or a truncated
+                    // response) must not be reported as "no such thread".
+                    let not_found = data
+                        .get("notFound")
+                        .and_then(|v| v.as_array())
+                        .is_some_and(|a| a.iter().any(|v| v.as_str() == Some(thread_id)));
+                    return if not_found {
+                        Ok(None)
+                    } else {
+                        Err(anyhow!(
+                            "Thread/get did not return thread {} nor report it as notFound: {}",
+                            thread_id,
+                            data
+                        ))
+                    };
                 };
                 let Some(ids) = thread.get("emailIds").and_then(|v| v.as_array()) else {
                     // A returned thread without `emailIds` is not an empty
@@ -3749,10 +3871,24 @@ impl JmapClient {
                     .unwrap_or_default();
                 out.push((jid, mids));
             }
+            if fetched == 0 {
+                // A zero-item page BEFORE the reported end means the walk
+                // stalled (the server ignored `position`): fail so the caller
+                // retries instead of reporting a truncated inventory as
+                // complete.
+                if position < list.total {
+                    return Err(anyhow!(
+                        "Email/query returned no ids at position {position} of {} while listing mailbox {mailbox_id}",
+                        list.total
+                    ));
+                }
+                break;
+            }
             position += fetched;
-            // Stop when the server returned a partial/empty page or we reached
-            // the reported total.
-            if fetched < PAGE || position >= list.total {
+            // Completion is decided by the reported TOTAL, never by a short
+            // page: a server that clamps `limit` below the requested page would
+            // otherwise end the walk early and drop the remainder.
+            if position >= list.total {
                 break;
             }
         }
@@ -3860,16 +3996,21 @@ impl JmapClient {
                     let Some(id) = item.get("id").and_then(|v| v.as_str()) else {
                         continue;
                     };
-                    let mut keywords: Vec<String> = item
-                        .get("keywords")
-                        .and_then(|v| v.as_object())
-                        .map(|m| {
-                            m.iter()
-                                .filter(|(_, v)| v.as_bool().unwrap_or(false))
-                                .map(|(n, _)| n.clone())
-                                .collect()
-                        })
-                        .unwrap_or_default();
+                    // A row whose `keywords` is missing or not an object is
+                    // NOT "no keywords": treating it as an empty set would make
+                    // the flag baseline record "unread" for a read message and
+                    // re-report a bogus `<Change>` forever. Reject the page so
+                    // the caller retries (or serves the mirror) instead.
+                    let Some(keyword_map) = item.get("keywords").and_then(|v| v.as_object()) else {
+                        return Err(anyhow!(
+                            "Email/get returned an email without a usable keywords map: {item}"
+                        ));
+                    };
+                    let mut keywords: Vec<String> = keyword_map
+                        .iter()
+                        .filter(|(_, v)| v.as_bool().unwrap_or(false))
+                        .map(|(n, _)| n.clone())
+                        .collect();
                     keywords.sort();
                     out.push((id.to_string(), keywords));
                 }
@@ -4089,14 +4230,21 @@ impl JmapClient {
         // explicitly rejected. An id in NEITHER place means the response was
         // truncated, and the caller would treat an unexamined message as a
         // partial success.
-        let unaccounted = patched
+        let unresolved: Vec<String> = patched
             .iter()
             .filter(|id| !updated_ids.contains(*id) && !not_updated_ids.contains(*id))
-            .count();
-        if unaccounted > 0 {
-            return Err(anyhow!(
-                "Email/set move response did not account for {unaccounted} id(s)"
-            ));
+            .cloned()
+            .collect();
+        if !unresolved.is_empty() {
+            // The ids the server CONFIRMED moved must not be lost: a bare error
+            // would make the caller retry the whole batch and move them a
+            // second time. Report the confirmed count with the unresolved ids
+            // so the caller can answer PartialCompletion and reconcile only the
+            // remainder.
+            return Err(anyhow::Error::new(MoveUnresolved {
+                updated,
+                unresolved,
+            }));
         }
         Ok(updated)
     }
@@ -4204,6 +4352,8 @@ impl JmapClient {
             .map_err(ChunkCopyError::BeforeImport)?;
         let mut sources: std::collections::HashMap<String, Value> =
             std::collections::HashMap::new();
+        let mut not_found: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut saw_get = false;
         for (method, data, _) in &resp.method_responses {
             if method == "error" {
                 return Err(ChunkCopyError::BeforeImport(anyhow!(
@@ -4214,6 +4364,7 @@ impl JmapClient {
             if method != "Email/get" {
                 continue;
             }
+            saw_get = true;
             let Some(list) = data.get("list").and_then(|v| v.as_array()) else {
                 return Err(ChunkCopyError::BeforeImport(anyhow!(
                     "Email copy source lookup returned no usable list"
@@ -4224,16 +4375,33 @@ impl JmapClient {
                     sources.insert(id.to_string(), row.clone());
                 }
             }
+            if let Some(missing) = data.get("notFound").and_then(|v| v.as_array()) {
+                not_found.extend(missing.iter().filter_map(|v| v.as_str()).map(str::to_string));
+            }
+        }
+        // RFC 8620 §3.6.2: an invocation always answers. A batch with no
+        // `Email/get` is a failed lookup, not an empty one.
+        if !saw_get {
+            return Err(ChunkCopyError::BeforeImport(anyhow!(
+                "Email copy source lookup returned no Email/get response"
+            )));
         }
 
         let mut imports = serde_json::Map::new();
         for (i, src) in chunk.iter().enumerate() {
             let Some(source) = sources.get(src) else {
-                // A source that vanished between the caller's read and the
-                // copy is partial completion (reported by the caller as a
-                // non-copy), never a silent success.
-                tracing::warn!(email_id = %src, "Email copy source was not found");
-                continue;
+                // A source the server EXPLICITLY reported as `notFound`
+                // vanished between the caller's read and the copy: partial
+                // completion, never a silent success. An id that is in NEITHER
+                // the list nor `notFound` is an unaccounted response — the copy
+                // must not proceed as if that message did not exist.
+                if not_found.contains(src) {
+                    tracing::warn!(email_id = %src, "Email copy source was not found");
+                    continue;
+                }
+                return Err(ChunkCopyError::BeforeImport(anyhow!(
+                    "Email copy source lookup did not account for {src}"
+                )));
             };
             let entry = copy_import_entry(source, json!({ (target_mailbox_id): true }))
                 .map_err(ChunkCopyError::BeforeImport)?;
@@ -4280,7 +4448,19 @@ impl JmapClient {
             }
             if method == "Email/import" {
                 if let Some(c) = data.get("created").and_then(|v| v.as_object()) {
-                    created_ids.extend(c.keys().cloned());
+                    // An entry without a usable id is NOT a confirmed copy: it
+                    // must fall through to the unconfirmed path rather than
+                    // inflate the confirmed count (a retry would then skip a
+                    // message that was never copied).
+                    for (creation_id, created) in c {
+                        if created
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .is_some_and(|id| !id.is_empty())
+                        {
+                            created_ids.insert(creation_id.clone());
+                        }
+                    }
                 }
                 if let Some(nc) = data.get("notCreated").and_then(|v| v.as_object()) {
                     not_created_ids.extend(nc.keys().cloned());
@@ -5132,9 +5312,12 @@ impl JmapClient {
             return Err(anyhow!("JMAP invocation {call_id} failed: {data}"));
         }
         if email_id.is_empty() {
-            return Err(anyhow!(
-                "JMAP Email/set reported no created email for the submission"
-            ));
+            // The batch produced no created id and no explicit rejection: the
+            // submission may still have been accepted. A plain error would make
+            // `send_email` fall back to SMTP and deliver the message twice.
+            return Err(anyhow::Error::new(SubmissionUnconfirmed(
+                "JMAP Email/set reported no created email for the submission".to_string(),
+            )));
         }
         // The response arrived but carries no confirmation for this submission:
         // the message may still have been accepted, so the outcome is UNKNOWN.
@@ -6674,15 +6857,46 @@ impl JmapClient {
                 ));
             }
             if method == "CalendarEvent/query" {
-                saw_query = true;
-                total = data.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
-                query_state = data
+                // RFC 8620 §5.5: `ids`, `total` and `queryState` are the
+                // authoritative result of a `calculateTotal` query. A missing
+                // one is a malformed response — treating a missing `total` as 0
+                // would report an EMPTY calendar and the prime would tombstone
+                // every stored event.
+                let Some(ids) = data.get("ids").and_then(|v| v.as_array()) else {
+                    return Err(anyhow!(
+                        "CalendarEvent/query returned no usable ids array: {data}"
+                    ));
+                };
+                let Some(reported_total) = data.get("total").and_then(|v| v.as_u64()) else {
+                    return Err(anyhow!(
+                        "CalendarEvent/query returned no usable total: {data}"
+                    ));
+                };
+                let Some(reported_state) = data
                     .get("queryState")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
+                    .filter(|s| !s.is_empty())
+                else {
+                    return Err(anyhow!(
+                        "CalendarEvent/query returned no usable queryState: {data}"
+                    ));
+                };
+                if reported_total == 0 && !ids.is_empty() {
+                    return Err(anyhow!(
+                        "CalendarEvent/query reported total 0 with {} ids: {data}",
+                        ids.len()
+                    ));
+                }
+                saw_query = true;
+                total = reported_total;
+                query_state = reported_state.to_string();
             }
             if method == "CalendarEvent/get" {
+                let Some(list) = data.get("list").and_then(|v| v.as_array()) else {
+                    return Err(anyhow!(
+                        "CalendarEvent/get returned no usable list: {data}"
+                    ));
+                };
                 saw_get = true;
                 state = data
                     .get("state")
@@ -6690,6 +6904,14 @@ impl JmapClient {
                     .unwrap_or("")
                     .to_string();
                 let (parsed, skipped) = parse_calendar_event_list(&data);
+                if parsed.len() + skipped != list.len() {
+                    return Err(anyhow!(
+                        "CalendarEvent/get list of {} yielded {} events and {} skips",
+                        list.len(),
+                        parsed.len(),
+                        skipped
+                    ));
+                }
                 events = parsed;
                 unparseable = skipped;
             }
@@ -6976,6 +7198,18 @@ impl JmapClient {
     /// For updates (event_id is Some), the existing event is replaced.
     ///
     /// Returns (jmap_event_id, uid, etag) on success.
+    /// Whether a JMAP method-level `error` for a `CalendarEvent/set` call
+    /// PROVES nothing was applied. Only a valid error type other than
+    /// `serverPartialFail` does: a missing or malformed type, and
+    /// `serverPartialFail` (RFC 8620 §3.6.6), leave the outcome unknown — the
+    /// server may have created the event before failing, so a CalDAV fallback
+    /// would duplicate it.
+    fn is_definitive_set_error(err: &Value) -> bool {
+        err.get("type")
+            .and_then(|v| v.as_str())
+            .is_some_and(|t| !t.is_empty() && t != "serverPartialFail")
+    }
+
     pub async fn set_calendar_event(
         &self,
         params: SetCalendarEventParams<'_>,
@@ -7152,7 +7386,7 @@ impl JmapClient {
                 // batch carries a definitive error for this call.
                 None => {
                     if let Some(err) = set_method_error
-                        && err.get("type").and_then(|v| v.as_str()) != Some("serverPartialFail")
+                        && Self::is_definitive_set_error(err)
                     {
                         return Err(anyhow!("CalendarEvent/set failed: {}", err).into());
                     }
@@ -7180,7 +7414,7 @@ impl JmapClient {
                 // A success claim with no created id: ambiguous, unless the batch
                 // also carries a definitive method error for this call.
                 if let Some(err) = set_method_error
-                    && err.get("type").and_then(|v| v.as_str()) != Some("serverPartialFail")
+                    && Self::is_definitive_set_error(err)
                 {
                     return Err(anyhow!("CalendarEvent/set failed: {}", err).into());
                 }
@@ -8073,6 +8307,11 @@ pub fn parse_email_set_outcome(
                 .or_else(|| err.as_str())
                 .unwrap_or("Email/set method rejected")
                 .to_string();
+            out.method_error_type = err
+                .get("type")
+                .and_then(|v| v.as_str())
+                .filter(|t| !t.is_empty())
+                .map(str::to_string);
             out.method_error = Some(desc);
         }
     }
@@ -10957,7 +11196,10 @@ mod tests {
             .expect_err(
                 "a query whose ids all vanished before Email/get must fail, not answer empty",
             );
-        assert!(err.to_string().contains("returned 2 ids"), "{err}");
+        assert!(
+            err.to_string().contains("did not account for queried id"),
+            "{err}"
+        );
     }
 
     /// A query that genuinely returns NO ids (an empty mailbox) is a legitimate

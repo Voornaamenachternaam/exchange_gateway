@@ -861,14 +861,14 @@ pub async fn delete_folder(
     if is_system_folder_id(server_id) {
         return FolderMutationResult::status(3);
     }
-    match state.storage.get_folder(owner, server_id).await {
-        Ok(Some(_)) => {}
+    let initial_row = match state.storage.get_folder(owner, server_id).await {
+        Ok(Some(row)) => row,
         Ok(None) => return FolderMutationResult::status(4),
         Err(e) => {
             tracing::warn!(error = %e, "FolderDelete: folder lookup failed");
             return FolderMutationResult::status(6);
         }
-    }
+    };
 
     // Order the whole walk against every REPARENT: a move changes an
     // ANCESTOR's `parent_id`, which the per-folder lock below does not cover,
@@ -877,6 +877,30 @@ pub async fn delete_folder(
     // destroyed. Held until the last destroy, and released before the mirror
     // prune (which takes no folder locks).
     let _tree_guard = state.storage.lock_folder_tree(owner).await;
+
+    // The mapping observed BEFORE the lock may have been replaced in the
+    // window: a CalDAV folder's EAS ServerId is its DETERMINISTIC collection
+    // href, so a concurrent delete-then-recreate under the same display name
+    // yields the SAME ServerId for a DIFFERENT collection. Destroying "the
+    // folder with this ServerId" would then delete the replacement. Re-read
+    // under the lock and require the same resource identity; a changed mapping
+    // fails retryably (the retry re-reads the new state) and a vanished one is
+    // an honest Status 4.
+    match state.storage.get_folder(owner, server_id).await {
+        Ok(Some(row)) if same_folder_resource(&row, &initial_row) => {}
+        Ok(None) => return FolderMutationResult::status(4),
+        Ok(Some(_)) => {
+            tracing::warn!(
+                server_id = %server_id,
+                "FolderDelete: folder mapping changed before the tree lock; retrying"
+            );
+            return FolderMutationResult::status(6);
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "FolderDelete: folder re-lookup failed");
+            return FolderMutationResult::status(6);
+        }
+    }
 
     // Collect the folder and every descendant, deepest-first, so a parent is
     // never destroyed while it still has children (JMAP rejects that with
@@ -1182,6 +1206,18 @@ async fn prune_destroyed_folder_ids(state: &Arc<AppState>, owner: &str, destroye
     }
 }
 
+/// Whether two reads of a folder mapping describe the SAME backend resource.
+/// The EAS ServerId alone is not enough: a CalDAV folder's ServerId is its
+/// deterministic collection href, so a delete-and-recreate with the same
+/// display name reuses the ServerId for a different collection.
+fn same_folder_resource(a: &FolderRow, b: &FolderRow) -> bool {
+    a.backend_kind == b.backend_kind
+        && a.backend_id == b.backend_id
+        && a.folder_type == b.folder_type
+        && a.display_name == b.display_name
+        && a.parent_id == b.parent_id
+}
+
 /// True when `server_id` is still a descendant of `root_server_id` in the
 /// CURRENT folder map. A concurrent move (which updates `folder_map` under the
 /// target folder's mutation lock) may have reparented a folder OUT of the
@@ -1265,18 +1301,33 @@ pub(crate) async fn reconcile_deferred_folder_prunes(
 
     let mut jmap_pending: Vec<String> = Vec::new();
     let mut caldav_pending: Vec<String> = Vec::new();
+    let mut unmapped: Vec<String> = Vec::new();
     for id in &pending {
         match by_id.get(id.as_str()) {
             Some(row) if row.backend_kind == "caldav" => caldav_pending.push(id.clone()),
             Some(_) => jmap_pending.push(id.clone()),
-            None => {
-                // No mapping row means this intent was already pruned or never
-                // had one; drop it silently.
-                tracing::debug!(
-                    server_id = %id,
-                    "folder prune reconcile: no folder_map row; dropping intent"
-                );
-            }
+            // No mapping row means the prune this intent was waiting on already
+            // happened (or never had a mapping): there is nothing to reconcile
+            // and — with no mapping — no `folder-delete` to journal. DRAIN the
+            // record under the tree lock so it is not re-read on every
+            // FolderSync forever.
+            None => unmapped.push(id.clone()),
+        }
+    }
+    if !unmapped.is_empty() {
+        tracing::debug!(
+            count = unmapped.len(),
+            "folder prune reconcile: draining intents whose mapping is already gone"
+        );
+        if let Err(e) = state
+            .storage
+            .clear_pending_folder_prunes(owner, &unmapped)
+            .await
+        {
+            tracing::warn!(
+                error = %e,
+                "folder prune reconcile: failed to drain unmapped intents"
+            );
         }
     }
 
@@ -1981,29 +2032,58 @@ pub async fn current_hierarchy_sync_key(
 /// (the `FolderSync` prime path). A device that ALREADY holds a key (it primed,
 /// or made an earlier mutation) that supplies `"0"` is a STALE client — the
 /// value does not match its stored key, so it is rejected with Status 9 rather
-/// than applied against an out-of-date hierarchy view. A storage read failure is
-/// treated as a MISMATCH (fail closed): the client re-primes rather than mutate
-/// against a key the server cannot verify.
+/// than applied against an out-of-date hierarchy view.
+///
+/// A storage READ failure is NOT a mismatch: answering Status 9 would tell the
+/// client to re-prime AND drop the mutation it just issued. It is reported as
+/// [`FolderSyncKeyVerdict::Unavailable`] so the caller answers a RETRYABLE
+/// server error and the client repeats the command.
 pub async fn folder_sync_key_matches(
     state: &Arc<AppState>,
     owner: &str,
     device_id: &str,
     supplied: &str,
-) -> bool {
+) -> FolderSyncKeyVerdict {
     let supplied = supplied.trim();
     let collection_id = crate::eas::scoped_collection_id("folderhierarchy", device_id);
     match state.storage.get_sync_key(owner, &collection_id).await {
         // A primed device: the supplied key must match the stored one, INCLUDING
         // `"0"` — a stale client re-sending `"0"` is a mismatch (Status 9).
-        Ok(Some((stored, _))) => stored.as_bytes().ct_eq(supplied.as_bytes()).into(),
+        Ok(Some((stored, _))) => {
+            if stored.as_bytes().ct_eq(supplied.as_bytes()).into() {
+                FolderSyncKeyVerdict::Match
+            } else {
+                FolderSyncKeyVerdict::Mismatch
+            }
+        }
         // No stored hierarchy key: the device has never synced. The prime key
         // `"0"` is accepted; any other key is unknown and rejected.
-        Ok(None) => supplied == "0",
+        Ok(None) => {
+            if supplied == "0" {
+                FolderSyncKeyVerdict::Match
+            } else {
+                FolderSyncKeyVerdict::Mismatch
+            }
+        }
         Err(e) => {
             tracing::warn!(error = %e, "folder mutation: failed to read hierarchy sync key");
-            false
+            FolderSyncKeyVerdict::Unavailable
         }
     }
+}
+
+/// Outcome of the folder-mutation `SyncKey` check (see
+/// [`folder_sync_key_matches`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FolderSyncKeyVerdict {
+    /// The supplied key is the device's current hierarchy key (or the device has
+    /// never synced and supplied the prime key `"0"`).
+    Match,
+    /// The supplied key is obsolete: Status 9, the client re-primes.
+    Mismatch,
+    /// The stored key could not be read: a retryable server error, never a
+    /// mismatch.
+    Unavailable,
 }
 
 /// The `FolderHierarchy` status-code response for a folder-mutation command
@@ -2017,6 +2097,16 @@ pub async fn folder_sync_key_matches(
 pub fn invalid_folder_sync_key_response(root: &str) -> String {
     format!(
         r#"<?xml version="1.0" encoding="utf-8"?><{root} xmlns="FolderHierarchy:"><Status>9</Status></{root}>"#
+    )
+}
+
+/// The retryable server-error response for a folder-mutation command whose
+/// stored hierarchy key could not be read (Status 6). Like the Status 9 form it
+/// carries NO `SyncKey` element: §2.2.3.181.1 forbids one on an unsuccessful
+/// command, and the client must simply repeat the request.
+pub fn folder_mutation_server_error_response(root: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="utf-8"?><{root} xmlns="FolderHierarchy:"><Status>6</Status></{root}>"#
     )
 }
 
@@ -3615,6 +3705,46 @@ mod tests {
         );
     }
 
+    /// A pending prune whose mapping row is already gone must be DRAINED by the
+    /// production reconcile wrapper (not retried on every FolderSync) and must
+    /// not fabricate a `folder-delete` journal row for a folder the client never
+    /// had a mapping for.
+    #[tokio::test]
+    async fn reconcile_deferred_folder_prunes_drains_unmapped_intents() {
+        let (state, jmap_calls, _) = spawn_backend_stub().await;
+        state
+            .storage
+            .record_pending_folder_prunes("u@example.com", &["mb-ghost".to_string()])
+            .await
+            .unwrap();
+
+        reconcile_deferred_folder_prunes(&state, "u@example.com", &pw()).await;
+
+        assert!(
+            state
+                .storage
+                .list_pending_folder_prunes("u@example.com")
+                .await
+                .unwrap()
+                .is_empty(),
+            "an unmapped intent must be drained, not re-read forever"
+        );
+        assert!(
+            state
+                .storage
+                .list_folder_journal_since("u@example.com", 0, i64::MAX)
+                .await
+                .unwrap()
+                .iter()
+                .all(|r| r.op != "folder-delete"),
+            "an unmapped intent must not journal a folder-delete"
+        );
+        assert!(
+            jmap_methods(&jmap_calls).await.is_empty(),
+            "an unmapped intent needs no backend call"
+        );
+    }
+
     /// A display name that sanitizes to a system collection (`Tasks.` →
     /// `Tasks`) must be rejected, not created or adopted: a later FolderDelete
     /// would otherwise DELETE the gateway's shared Tasks/Notes collection.
@@ -3787,13 +3917,15 @@ mod tests {
         let collection_id = crate::eas::scoped_collection_id("folderhierarchy", "dev-x");
 
         // Never-primed device: "0" is the valid prime key.
-        assert!(
+        assert_eq!(
             folder_sync_key_matches(&state, owner, "dev-x", "0").await,
+            FolderSyncKeyVerdict::Match,
             "a never-primed device may mutate with the prime key 0"
         );
         // Any non-zero key is unknown for a never-primed device.
-        assert!(
-            !folder_sync_key_matches(&state, owner, "dev-x", "abc").await,
+        assert_eq!(
+            folder_sync_key_matches(&state, owner, "dev-x", "abc").await,
+            FolderSyncKeyVerdict::Mismatch,
             "an unknown key for a never-primed device must be rejected"
         );
 
@@ -3804,17 +3936,37 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(
+        assert_eq!(
             folder_sync_key_matches(&state, owner, "dev-x", "key-1").await,
+            FolderSyncKeyVerdict::Match,
             "the stored key must match"
         );
-        assert!(
-            !folder_sync_key_matches(&state, owner, "dev-x", "0").await,
+        assert_eq!(
+            folder_sync_key_matches(&state, owner, "dev-x", "0").await,
+            FolderSyncKeyVerdict::Mismatch,
             "a primed device supplying 0 is stale and must be rejected (Status 9)"
         );
-        assert!(
-            !folder_sync_key_matches(&state, owner, "dev-x", "key-2").await,
+        assert_eq!(
+            folder_sync_key_matches(&state, owner, "dev-x", "key-2").await,
+            FolderSyncKeyVerdict::Mismatch,
             "a different key must be rejected"
+        );
+
+        // A storage read failure is NOT a mismatch: Status 9 would tell the
+        // client to re-prime and DROP the mutation it just issued.
+        state.storage.pool().close().await;
+        assert_eq!(
+            folder_sync_key_matches(&state, owner, "dev-x", "key-1").await,
+            FolderSyncKeyVerdict::Unavailable,
+            "an unreadable stored key must be retryable, not a mismatch"
+        );
+        assert!(
+            !invalid_folder_sync_key_response("FolderCreate").contains("SyncKey"),
+            "§2.2.3.181.1: a failed command carries no SyncKey element"
+        );
+        assert!(
+            folder_mutation_server_error_response("FolderCreate").contains("<Status>6</Status>"),
+            "an unreadable key answers a retryable Status 6"
         );
     }
 

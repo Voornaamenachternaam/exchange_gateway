@@ -15,17 +15,25 @@ pub struct CaldavClient {
     client: reqwest::Client,
 }
 
-/// Whether `body`'s document element is `DAV:multistatus` (prefix-agnostic).
+/// Whether `body`'s document element is `DAV:multistatus`.
+///
+/// Both the LOCAL name and the RESOLVED namespace are checked: a foreign
+/// namespace that happens to use the local name `multistatus` is not a WebDAV
+/// report, and accepting it would let a non-CalDAV document drive the
+/// collection inventory. The prefix is irrelevant (`D:`, `d:`, or a default
+/// declaration all resolve to `DAV:`).
 fn body_has_multistatus_root(body: &str) -> bool {
-    let mut reader = quick_xml::Reader::from_str(body);
+    use quick_xml::name::{Namespace, ResolveResult};
+    const DAV: ResolveResult<'_> = ResolveResult::Bound(Namespace("DAV:"));
+    let mut reader = quick_xml::NsReader::from_str(body);
     let mut buf = Vec::new();
     let mut depth = 0usize;
     let mut root_seen = false;
     loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(quick_xml::events::Event::Start(ref e)) => {
+        match reader.read_resolved_event_into(&mut buf) {
+            Ok((ns, quick_xml::events::Event::Start(ref e))) => {
                 if !root_seen {
-                    if e.name().local_name().as_ref() != "multistatus" {
+                    if e.local_name().as_ref() != "multistatus" || ns != DAV {
                         return false;
                     }
                     root_seen = true;
@@ -33,12 +41,12 @@ fn body_has_multistatus_root(body: &str) -> bool {
                 depth += 1;
             }
             // `<multistatus/>` is a CLOSED, empty root.
-            Ok(quick_xml::events::Event::Empty(ref e)) => {
+            Ok((ns, quick_xml::events::Event::Empty(ref e))) => {
                 if !root_seen {
-                    return e.name().local_name().as_ref() == "multistatus";
+                    return e.local_name().as_ref() == "multistatus" && ns == DAV;
                 }
             }
-            Ok(quick_xml::events::Event::End(_)) => {
+            Ok((_, quick_xml::events::Event::End(_))) => {
                 if root_seen {
                     depth = depth.saturating_sub(1);
                     // Only a CLOSED root is a complete snapshot: a truncated
@@ -50,7 +58,7 @@ fn body_has_multistatus_root(body: &str) -> bool {
                     }
                 }
             }
-            Ok(quick_xml::events::Event::Eof) => return false,
+            Ok((_, quick_xml::events::Event::Eof)) => return false,
             Ok(_) => {}
             Err(_) => return false,
         }
@@ -1341,12 +1349,11 @@ impl Propstat {
     /// caller only needs to detect an EXPLICIT per-property failure).
     fn is_success(&self) -> bool {
         match self.status.as_deref().map(str::trim) {
-            None => true,
-            Some(line) => line
-                .split_whitespace()
-                .nth(1)
-                .and_then(|code| code.parse::<u16>().ok())
-                .is_none_or(|code| (200..300).contains(&code)),
+            None | Some("") => true,
+            // Accepts both `HTTP/1.1 200 OK` and a bare `200`; anything that is
+            // not a parseable 2xx — including a malformed status line — is NOT
+            // authoritative evidence, so the href cannot become `confirmed`.
+            Some(line) => dav_status_code(line).is_some_and(|code| (200..300).contains(&code)),
         }
     }
 }

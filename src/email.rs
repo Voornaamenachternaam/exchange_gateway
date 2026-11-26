@@ -1693,25 +1693,28 @@ pub async fn move_email_to_mailbox_via_jmap(
     // clobber a concurrent edit to an UNRELATED membership: it names exactly
     // the two keys it changes, so no read-modify-write window (and no
     // `ifInState` + retry loop) is needed.
-    let mut mailbox_ids_patch = serde_json::Map::new();
-    match source_mailbox_id {
+    // Two DIFFERENT request shapes (RFC 8621 §4.6):
+    //  * a known source is a per-key PATCH (`mailboxIds/<src>: null`,
+    //    `mailboxIds/<dst>: true`) that names exactly the two memberships it
+    //    changes;
+    //  * no source is a full `mailboxIds` REPLACEMENT (a whole-value object)
+    //    that drops every unrelated membership, per Exchange single-folder
+    //    semantics. The replacement MUST be nested under `mailboxIds` — top
+    //    level keys would be written as unrelated Email properties.
+    let patch = match source_mailbox_id {
         Some(src) => {
+            let mut mailbox_ids_patch = serde_json::Map::new();
             mailbox_ids_patch.insert(format!("mailboxIds/{src}"), serde_json::Value::Null);
+            mailbox_ids_patch.insert(
+                format!("mailboxIds/{target_mb_id}"),
+                serde_json::Value::Bool(true),
+            );
+            serde_json::Value::Object(mailbox_ids_patch)
         }
-        // No source named: the caller wants a replacement that drops every
-        // unrelated membership, expressed from the read above.
-        None => {
-            if let Some(ids) = current_mailboxes {
-                for (k, v) in ids {
-                    mailbox_ids_patch.insert(k.clone(), serde_json::Value::Bool(*v));
-                }
-            }
-        }
-    }
-    mailbox_ids_patch.insert(
-        format!("mailboxIds/{target_mb_id}"),
-        serde_json::Value::Bool(true),
-    );
+        None => serde_json::json!({
+            "mailboxIds": { (target_mb_id): true },
+        }),
+    };
 
     // Clone jmap_id: the `json!` macro below moves it into the `Value`,
     // but we still need it afterward to verify the `updated` collection.
@@ -1721,7 +1724,7 @@ pub async fn move_email_to_mailbox_via_jmap(
         .update_email_checked(
             account_id,
             &json!({
-                (jmap_id): mailbox_ids_patch,
+                (jmap_id): patch,
             }),
             username,
             password,
@@ -1740,6 +1743,43 @@ pub async fn move_email_to_mailbox_via_jmap(
 
     // Return a new change key; could be same as server_id for simplicity
     Ok(server_id.to_string())
+}
+
+/// The `Message-ID` header value of a raw MIME message (angle brackets kept),
+/// or `None` when the message carries no usable one. A client retry re-sends
+/// the SAME MIME bytes, so this value identifies the earlier attempt.
+pub fn mime_message_id(mime: &[u8]) -> Option<String> {
+    let parsed = mail_parser::MessageParser::default().parse(mime)?;
+    parsed
+        .message_id()
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+}
+
+/// Whether an earlier SendMail attempt with this `Message-ID` actually reached
+/// the backend: the Sent copy the gateway imports on success is the evidence.
+/// `Ok(false)` means no copy was found (a resend is safe); an `Err` means the
+/// check could not be made and the caller must NOT resend yet.
+pub async fn reconcile_sent_copy(
+    state: &Arc<AppState>,
+    username: &str,
+    password: &SecretString,
+    message_id: &str,
+) -> anyhow::Result<bool> {
+    let Some(jmap) = state.jmap_client.as_ref() else {
+        return Err(anyhow!("no JMAP client to reconcile a SendMail retry"));
+    };
+    let account_id = jmap.get_account_id(username, password).await?;
+    let sent = jmap
+        .get_mailbox_ids_for_role(&account_id, "sent", username, password)
+        .await?;
+    let Some(sent_id) = sent.first() else {
+        return Err(anyhow!("no Sent mailbox to reconcile a SendMail retry"));
+    };
+    let ids = jmap
+        .email_ids_matching_message_id(&account_id, sent_id, message_id, username, password)
+        .await?;
+    Ok(!ids.is_empty())
 }
 
 /// Copy an email to another folder by re-importing its raw blob through JMAP
@@ -2434,11 +2474,14 @@ pub async fn apply_eas_email_mutations(
     source_mailbox_id: Option<&str>,
     xml: &str,
     deletes_as_moves: bool,
-) -> Vec<EasEmailMutationResult> {
+) -> anyhow::Result<Vec<EasEmailMutationResult>> {
     let mutations = parse_eas_email_mutations(xml, deletes_as_moves);
     if mutations.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
+    // A whole-method `serverFail` is TRANSIENT: it must reach the collection-
+    // level retry path, not be answered as a permanent per-item failure (8).
+    let mut server_fail = false;
 
     // Resolve the Deleted Items mailbox lazily (only when a move-style Delete
     // is actually present) so a flag-only Sync never pays for the lookup.
@@ -2571,6 +2614,13 @@ pub async fn apply_eas_email_mutations(
                                         {
                                             "1"
                                         }
+                                        Ok(outcome)
+                                            if outcome.method_error_type.as_deref()
+                                                == Some("serverFail") =>
+                                        {
+                                            server_fail = true;
+                                            "6"
+                                        }
                                         Ok(_) => "8",
                                         Err(e) => {
                                             tracing::warn!(
@@ -2613,7 +2663,15 @@ pub async fn apply_eas_email_mutations(
             }
         }
     }
-    results
+    if server_fail {
+        // The per-item responses are dropped: the client re-sends the batch and
+        // every mutation here is idempotent (flag patches, moves, destroys of
+        // the same ids), so a collection-level retry is safe.
+        return Err(anyhow::anyhow!(
+            "Email/set reported serverFail for a Delete-as-move; retrying the collection"
+        ));
+    }
+    Ok(results)
 }
 
 /// Apply one flag `<Change>` to a JMAP email; returns the per-item Sync status.
@@ -4332,7 +4390,9 @@ Body\r\n";
         let xml = r#"<Commands>
           <Change><ServerId>em-abc</ServerId><ApplicationData><Email:Read>1</Email:Read><Email:Flag><Email:Status>2</Email:Status></Email:Flag></ApplicationData></Change>
         </Commands>"#;
-        let results = apply_eas_email_mutations(&client, "a", "u", &pw, Some("1"), xml, true).await;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, Some("1"), xml, true)
+            .await
+            .expect("apply mutations");
         assert_eq!(results.len(), 1);
         assert!(matches!(
             &results[0],
@@ -4354,7 +4414,9 @@ Body\r\n";
         let client = std::sync::Arc::new(crate::jmap::JmapClient::new(&base).unwrap());
         let pw = secrecy::SecretString::from("pw");
         let xml = r#"<Commands><Change><ServerId>em-1</ServerId><ApplicationData><Email:Read>0</Email:Read></ApplicationData></Change></Commands>"#;
-        let results = apply_eas_email_mutations(&client, "a", "u", &pw, Some("1"), xml, true).await;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, Some("1"), xml, true)
+            .await
+            .expect("apply mutations");
         assert!(matches!(
             &results[0],
             EasEmailMutationResult::Change { status: "1", .. }
@@ -4378,7 +4440,9 @@ Body\r\n";
         let client = std::sync::Arc::new(crate::jmap::JmapClient::new(&base).unwrap());
         let pw = secrecy::SecretString::from("pw");
         let xml = r#"<Commands><Change><ServerId>2:999</ServerId><ApplicationData><Email:Read>1</Email:Read></ApplicationData></Change></Commands>"#;
-        let results = apply_eas_email_mutations(&client, "a", "u", &pw, Some("1"), xml, true).await;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, Some("1"), xml, true)
+            .await
+            .expect("apply mutations");
         assert!(matches!(
             &results[0],
             EasEmailMutationResult::Change { status: "8", .. }
@@ -4391,7 +4455,9 @@ Body\r\n";
         let client = std::sync::Arc::new(crate::jmap::JmapClient::new(&base).unwrap());
         let pw = secrecy::SecretString::from("pw");
         let xml = r#"<Commands><Change><ServerId>em-1</ServerId><ApplicationData><Email:Read>1</Email:Read></ApplicationData></Change></Commands>"#;
-        let results = apply_eas_email_mutations(&client, "a", "u", &pw, Some("1"), xml, true).await;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, Some("1"), xml, true)
+            .await
+            .expect("apply mutations");
         assert!(matches!(
             &results[0],
             EasEmailMutationResult::Change { status: "6", .. }
@@ -4405,7 +4471,9 @@ Body\r\n";
         let pw = secrecy::SecretString::from("pw");
         let xml = r#"<Commands><Delete><ServerId>em-7</ServerId></Delete></Commands>"#;
         let results =
-            apply_eas_email_mutations(&client, "a", "u", &pw, Some("inbox1"), xml, true).await;
+            apply_eas_email_mutations(&client, "a", "u", &pw, Some("inbox1"), xml, true)
+            .await
+            .expect("apply mutations");
         assert!(matches!(
             &results[0],
             EasEmailMutationResult::Delete { status: "1", .. }
@@ -4448,7 +4516,9 @@ Body\r\n";
         let pw = secrecy::SecretString::from("pw");
         let xml = r#"<Commands><Delete><ServerId>em-7</ServerId></Delete></Commands>"#;
         let results =
-            apply_eas_email_mutations(&client, "a", "u", &pw, Some("inbox1"), xml, false).await;
+            apply_eas_email_mutations(&client, "a", "u", &pw, Some("inbox1"), xml, false)
+            .await
+            .expect("apply mutations");
         assert!(matches!(
             &results[0],
             EasEmailMutationResult::Delete { status: "1", .. }
@@ -4470,7 +4540,9 @@ Body\r\n";
           <Change><ServerId>em-1</ServerId><ApplicationData><Email:Read>1</Email:Read></ApplicationData></Change>
           <Delete><ServerId>em-7</ServerId></Delete>
         </Commands>"#;
-        let results = apply_eas_email_mutations(&client, "a", "u", &pw, None, xml, true).await;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, None, xml, true)
+            .await
+            .expect("apply mutations");
         assert_eq!(results.len(), 2);
         assert!(matches!(
             &results[0],
@@ -4520,7 +4592,9 @@ Body\r\n";
         let client = std::sync::Arc::new(crate::jmap::JmapClient::new(&base).unwrap());
         let pw = secrecy::SecretString::from("pw");
         let xml = r#"<Sync><Collections><Collection><SyncKey>1</SyncKey></Collection></Collections></Sync>"#;
-        let results = apply_eas_email_mutations(&client, "a", "u", &pw, Some("1"), xml, true).await;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, Some("1"), xml, true)
+            .await
+            .expect("apply mutations");
         assert!(results.is_empty());
         assert!(
             seen.lock().await.is_empty(),

@@ -272,8 +272,10 @@ gateway restarts and surface in `FolderSync`/`GetHierarchy`.
   `folder_map`. For a user-created folder the mapping is read ONCE and reused;
   a transient READ failure is NOT flattened to "no mapping" (which would answer
   Status 4 and never sync the folder) — the collection fails closed with a
-  retryable Status 6 so the next Sync re-reads the mapping, matching the
-  class-specific handlers' own fail-closed resolution.
+  retryable Sync Status 5 (server error) so the next Sync re-reads the mapping,
+  matching the class-specific handlers' own fail-closed resolution. Pinned by
+  `test_sync_collection_class_omitted_folder_read_failure_fails_closed`, which
+  asserts Status 5 (not 4 and not 6).
 
 - **Email delta SyncKey validation + deferred flag scan.** On the DELTA path a
   non-zero incoming `SyncKey` MUST match the key the collection last issued
@@ -552,8 +554,12 @@ collection it created instead of answering a permanent name collision. No other
 from a collection the user created outside EAS, so adopting would silently link
 a new EAS folder to a collection whose events it does not own. The intent is
 dropped when the collection is verifiably ABSENT (a stale intent must never
-adopt a later user-created collection) and is otherwise consumed only by a
-SUCCESSFUL reconciliation. A display name that sanitizes to a system
+adopt a later user-created collection) and is otherwise RETAINED by a
+SUCCESSFUL reconciliation — refreshed, never consumed — so that a second lost
+EAS response still replays instead of answering a permanent Status 2 name
+collision, provided the retry passes the hierarchy-key validation (the durable
+mapping's display name matches the intent's). Only the retention window's
+expiry ends the replay, and creating a different collection replaces the row. A display name that sanitizes to a system
 collection (`Tasks.`/`.Tasks` → `Tasks`, `Notes.` → `Notes`) is rejected before
 `MKCALENDAR`, so a later `FolderDelete` can never destroy the shared
 Tasks/Notes store (`is_reserved_collection_name`). (e) A MAPI mirror-write

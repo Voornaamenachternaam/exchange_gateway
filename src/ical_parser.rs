@@ -343,34 +343,83 @@ pub fn unescape_ical_text(input: &str) -> String {
     result
 }
 
+/// RFC 5545 §3.3.6 `DURATION` split into the two parts the spec gives
+/// DIFFERENT meanings: whole days/weeks are NOMINAL (a `P1D` event keeps its
+/// wall-clock end across a DST transition — the day is one calendar day in the
+/// start's zone), while hours/minutes/seconds are ELAPSED time (`PT24H` is
+/// always 86 400 seconds).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct IcalDurationParts {
+    pub negative: bool,
+    /// NOMINAL calendar days (`P1W` = 7). Years/months are not permitted by the
+    /// RFC 5545 grammar but the ISO parser accepts them; they fold in with the
+    /// same nominal approximation the minute parser uses.
+    pub days: i64,
+    /// ELAPSED seconds from the time part (`PT24H` = 86 400).
+    pub seconds: i64,
+}
+
+impl IcalDurationParts {
+    /// The whole duration as elapsed seconds, or `None` when it does not fit in
+    /// an `i64` (a `chrono::Duration` built from such a value panics).
+    pub fn total_seconds(&self) -> Option<i64> {
+        let secs = self.days.checked_mul(86_400)?.checked_add(self.seconds)?;
+        if self.negative { secs.checked_neg() } else { Some(secs) }
+    }
+}
+
+/// Split `input` into its nominal (days/weeks) and elapsed (h/m/s) parts.
+///
+/// Accepts one optional leading `+` or `-` (RFC 5545 §3.3.6 `dur-value`
+/// allows `["+"] / "-"`). Every arithmetic step is checked: an absurd duration
+/// (`P99999999999Y`) is a parse ERROR, never a saturating cast that later
+/// panics when turned into a `chrono::Duration`.
+pub fn parse_ical_duration_parts(
+    input: &str,
+) -> Result<IcalDurationParts, nom::Err<nom::error::Error<&str>>> {
+    let (negative, to_parse) = match input.as_bytes().first() {
+        Some(b'-') => (true, &input[1..]),
+        Some(b'+') => (false, &input[1..]),
+        _ => (false, input),
+    };
+    let parse_error = || nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Verify));
+
+    let duration: IsoDuration = to_parse.parse().map_err(|_| parse_error())?;
+
+    // The ISO parser folds weeks into `day` (P1W = 7 days).
+    let days_f = f64::from(duration.year) * 365.2425
+        + f64::from(duration.month) * 30.436_875
+        + f64::from(duration.day);
+    // Chrono's calendar spans years ±262 143, so no duration longer than that
+    // can ever be added to a timestamp: reject it here (a parse error) instead
+    // of letting the VEVENT end derivation overflow later. This bound is far
+    // below i64's exact f64 range, so the casts below stay exact.
+    const MAX_DURATION_DAYS: f64 = 262_143.0 * 366.0;
+    if !days_f.is_finite() || days_f.abs() > MAX_DURATION_DAYS {
+        return Err(parse_error());
+    }
+    let seconds_f =
+        f64::from(duration.hour) * 3_600.0 + f64::from(duration.minute) * 60.0 + f64::from(duration.second);
+    if !seconds_f.is_finite() || seconds_f.abs() > MAX_DURATION_DAYS * 86_400.0 {
+        return Err(parse_error());
+    }
+    Ok(IcalDurationParts {
+        negative,
+        days: days_f.round() as i64,
+        seconds: seconds_f.round() as i64,
+    })
+}
+
 /// RFC 5545 §3.3.6 `DURATION` as whole SECONDS, keeping the second-level
 /// precision a VEVENT needs (`PT30S` is a 30-second event; the minute-based
 /// parser truncates it to zero). [`parse_ical_duration_minutes`] stays for
-/// VALARM triggers, whose precision is minutes.
+/// VALARM triggers, whose precision is minutes. Callers that must preserve
+/// nominal day/week semantics use [`parse_ical_duration_parts`] instead.
 pub fn parse_ical_duration_seconds(input: &str) -> Result<i64, nom::Err<nom::error::Error<&str>>> {
-    let negative = input.starts_with('-');
-    let to_parse = if negative { &input[1..] } else { input };
-
-    let duration: IsoDuration = to_parse.parse().map_err(|_| {
+    let parts = parse_ical_duration_parts(input)?;
+    parts.total_seconds().ok_or_else(|| {
         nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Verify))
-    })?;
-
-    let seconds = iso_duration_to_seconds(&duration);
-
-    Ok(if negative { -seconds } else { seconds })
-}
-
-fn iso_duration_to_seconds(d: &IsoDuration) -> i64 {
-    // Same nominal-length approximation the minute parser uses for years and
-    // months (RFC 5545 §3.3.6: a nominal duration cannot be resolved to an
-    // exact instant without a reference date).
-    let seconds = f64::from(d.year) * 31_556_952.0
-        + f64::from(d.month) * 2_629_746.0
-        + f64::from(d.day) * 86_400.0
-        + f64::from(d.hour) * 3_600.0
-        + f64::from(d.minute) * 60.0
-        + f64::from(d.second);
-    seconds.round() as i64
+    })
 }
 
 pub fn parse_ical_duration_minutes(input: &str) -> Result<i32, nom::Err<nom::error::Error<&str>>> {

@@ -5135,6 +5135,61 @@ impl Storage {
         retry_after_secs: i64,
     ) -> Result<EmailSubmissionClaim> {
         let now = chrono::Utc::now().timestamp();
+        if self
+            .try_claim_email_submission(owner, client_id, now, retry_after_secs)
+            .await?
+        {
+            // Retention pruning is BEST-EFFORT: a failed DELETE must not fail
+            // the claim we just wrote (the caller would answer retryably while
+            // the fresh `pending` row stays behind, blocking the resend).
+            if let Err(e) =
+                sqlx::query("DELETE FROM email_submission_log WHERE owner = ?1 AND updated_at < ?2")
+                    .bind(owner)
+                    .bind(now - 7 * 24 * 3600)
+                    .execute(self.pool.as_ref())
+                    .await
+            {
+                tracing::warn!(error = %e, "Failed to prune old email submission records");
+            }
+            return Ok(EmailSubmissionClaim::Claimed);
+        }
+        let existing: Option<(String,)> = sqlx::query_as(
+            "SELECT state FROM email_submission_log WHERE owner = ?1 AND client_id = ?2",
+        )
+        .bind(owner)
+        .bind(client_id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(match existing.as_ref().map(|(state,)| state.as_str()) {
+            Some("submitted") => EmailSubmissionClaim::AlreadySubmitted,
+            // The row vanished between the conditional upsert and this read (a
+            // prune raced the claim): retry the upsert so `Claimed` is only
+            // ever returned after THIS request wrote the claim.
+            None => {
+                if self
+                    .try_claim_email_submission(owner, client_id, now, retry_after_secs)
+                    .await?
+                {
+                    EmailSubmissionClaim::Claimed
+                } else {
+                    EmailSubmissionClaim::InFlight
+                }
+            }
+            Some(_) => EmailSubmissionClaim::InFlight,
+        })
+    }
+
+    /// The conditional claim upsert: `true` when THIS call wrote the `pending`
+    /// row (a first attempt, a retry after a definitive rejection, or a retry
+    /// after the unknown-outcome cool-down expired).
+    async fn try_claim_email_submission(
+        &self,
+        owner: &str,
+        client_id: &str,
+        now: i64,
+        retry_after_secs: i64,
+    ) -> Result<bool> {
         let claimed: Option<(String,)> = sqlx::query_as(
             "INSERT INTO email_submission_log (owner, client_id, state, updated_at)
              VALUES (?1, ?2, 'pending', ?3)
@@ -5151,29 +5206,7 @@ impl Storage {
         .fetch_optional(self.pool.as_ref())
         .await
         .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
-        if claimed.is_some() {
-            sqlx::query("DELETE FROM email_submission_log WHERE owner = ?1 AND updated_at < ?2")
-                .bind(owner)
-                .bind(now - 7 * 24 * 3600)
-                .execute(self.pool.as_ref())
-                .await
-                .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
-            return Ok(EmailSubmissionClaim::Claimed);
-        }
-        let existing: Option<(String,)> = sqlx::query_as(
-            "SELECT state FROM email_submission_log WHERE owner = ?1 AND client_id = ?2",
-        )
-        .bind(owner)
-        .bind(client_id)
-        .fetch_optional(self.pool.as_ref())
-        .await
-        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
-        Ok(match existing.as_ref().map(|(state,)| state.as_str()) {
-            Some("submitted") => EmailSubmissionClaim::AlreadySubmitted,
-            // A vanished row (a prune raced the claim) is not a duplicate.
-            None => EmailSubmissionClaim::Claimed,
-            Some(_) => EmailSubmissionClaim::InFlight,
-        })
+        Ok(claimed.is_some())
     }
 
     /// The recorded SendMail state for `client_id`, with the age in seconds.
@@ -5283,6 +5316,40 @@ impl Storage {
     /// [`JmapClient::query_all_mailboxes`](crate::jmap::JmapClient::query_all_mailboxes),
     /// which pages). A caller that cannot obtain it must NOT call this: an
     /// incomplete set would treat a live folder as absent and prune it.
+    /// Clear deferred-prune records for ids whose `folder_map` row no longer
+    /// exists. The prune they were waiting on has already happened (the mapping
+    /// is gone), so there is nothing left to reconcile — and, with no mapping,
+    /// no `folder-delete` may be journaled. Idempotent; returns the number of
+    /// rows removed.
+    pub async fn clear_pending_folder_prunes(
+        &self,
+        owner: &str,
+        server_ids: &[String],
+    ) -> Result<u64> {
+        if server_ids.is_empty() {
+            return Ok(0);
+        }
+        let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
+        let mut removed = 0u64;
+        for server_id in server_ids {
+            removed += sqlx::query(
+                "DELETE FROM pending_folder_prune WHERE owner = ?1 AND server_id = ?2",
+            )
+            .bind(owner)
+            .bind(server_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?
+            .rows_affected();
+        }
+        tx.commit()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
+        Ok(removed)
+    }
+
     pub async fn reconcile_pending_folder_prunes(
         &self,
         owner: &str,

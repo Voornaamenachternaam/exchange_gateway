@@ -822,7 +822,7 @@ CREATE TABLE IF NOT EXISTS pending_calendar_create (
 CREATE INDEX IF NOT EXISTS idx_pending_calendar_create_owner ON pending_calendar_create(owner);
 
 INSERT OR IGNORE INTO schema_version (version, description)
-VALUES (14, 'v14: pending_calendar_create records intent before MKCALENDAR so a lost-response retry can reconcile instead of returning Status 2 for an orphan');
+VALUES (14, 'v14: pending_calendar_create records the create intent AFTER MKCALENDAR succeeds, so a retry whose EAS response was lost reconciles instead of returning Status 2 for an orphan (it cannot recover a lost CalDAV reply, where the gateway never learned MKCALENDAR succeeded)');
 
 -- Per-user reminder action state ([MS-OXRWSMTGS] §3.1.4.7.4.1): a Dismiss or
 -- Snooze targets one reminder OCCURRENCE (the reminder-due instant the gateway

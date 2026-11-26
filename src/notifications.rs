@@ -854,12 +854,14 @@ impl SubscriptionManager {
         let _ = self.sender.send(event);
     }
 
-    /// Number of live RAW receivers on the notification feed
-    /// (observability/tests). An EAS Ping subscribes through
-    /// [`Self::subscribe_raw`] before it starts waiting, so a test can wait for
-    /// a nonzero count instead of sleeping a fixed interval and hoping the Ping
-    /// has reached its wait loop.
-    pub fn raw_receiver_count(&self) -> usize {
+    /// Number of live receivers on the notification feed
+    /// (observability/tests). It counts EVERY active receiver — EWS
+    /// `subscribe`/`subscribe_push` subscriptions and raw `subscribe_raw`
+    /// receivers alike — without identifying any specific subscriber. An EAS
+    /// Ping subscribes through [`Self::subscribe_raw`] before it starts
+    /// waiting, so a test can wait for a nonzero count instead of sleeping a
+    /// fixed interval and hoping the Ping has reached its wait loop.
+    pub fn receiver_count(&self) -> usize {
         self.sender.receiver_count()
     }
 

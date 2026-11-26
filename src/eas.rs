@@ -2248,6 +2248,45 @@ async fn resolve_email_mailbox_id(
     Ok(ids.into_iter().next())
 }
 
+/// Run one Ping's per-folder email probe under the SAME heartbeat and
+/// supersession bounds as the Tasks/Notes backend probes: a slow
+/// `Email/queryChanges` must never push the response past the heartbeat
+/// deadline, and a newer Ping for the same device must be able to cancel the
+/// in-flight work. `None` means the Ping was superseded (the caller answers the
+/// superseded response immediately); a probe that ran out of budget reports no
+/// change and the next tick (or the journal check) retries it.
+#[allow(clippy::too_many_arguments)]
+async fn probe_email_folder_changes_bounded(
+    deadline: Instant,
+    supersede_token: &CancellationToken,
+    state: &Arc<AppState>,
+    owner: &str,
+    password: &SecretString,
+    device_id: &str,
+    email_folder_ids: &[String],
+    jmap_account: &Option<(Arc<JmapClient>, String)>,
+    request_id: &str,
+) -> Option<Vec<String>> {
+    let budget = deadline.saturating_duration_since(Instant::now());
+    let outcome = tokio::select! {
+        biased;
+        _ = supersede_token.cancelled() => return None,
+        r = tokio::time::timeout(
+            budget,
+            probe_email_folder_changes(
+                state,
+                owner,
+                password,
+                device_id,
+                email_folder_ids,
+                jmap_account,
+                request_id,
+            ),
+        ) => r,
+    };
+    Some(outcome.unwrap_or_default())
+}
+
 /// Per-folder mailbox-scoped `Email/queryChanges` probe: returns the pinged
 /// email folders whose stored JMAP query state no longer matches the server's.
 /// Run at Ping start (to catch changes that landed while no Ping was in
@@ -2854,7 +2893,9 @@ async fn handle_ping(
                 // checks on the next loop pass instead of forcing an
                 // over-broad Status 2.
                 let changed = if jmap_account.is_some() {
-                    probe_email_folder_changes(
+                    match probe_email_folder_changes_bounded(
+                        deadline,
+                        &supersede_token,
                         state,
                         owner,
                         password,
@@ -2864,6 +2905,10 @@ async fn handle_ping(
                         request_id,
                     )
                     .await
+                    {
+                        Some(changed) => changed,
+                        None => return ping_superseded_response(wbxml, as_wbxml, request_id),
+                    }
                 } else if matches!(ev, crate::notifications::NotificationEvent::NewMail { .. }) {
                     // No JMAP session to verify against. NewMail is an
                     // unambiguous email event, and the push monitor is then
@@ -2883,7 +2928,9 @@ async fn handle_ping(
                 // folder; without a live JMAP session, conservatively report
                 // the email folders rather than risk sleeping through mail.
                 let changed = if jmap_account.is_some() {
-                    probe_email_folder_changes(
+                    match probe_email_folder_changes_bounded(
+                        deadline,
+                        &supersede_token,
                         state,
                         owner,
                         password,
@@ -2893,6 +2940,10 @@ async fn handle_ping(
                         request_id,
                     )
                     .await
+                    {
+                        Some(changed) => changed,
+                        None => return ping_superseded_response(wbxml, as_wbxml, request_id),
+                    }
                 } else {
                     email_folder_ids.clone()
                 };
@@ -4709,13 +4760,42 @@ async fn handle_move_items(
             // the wire string: a system alias ("2", "inbox") and the backend id
             // name the same folder, and JMAP ids are opaque (case-SENSITIVE), so
             // a raw string comparison is both too lenient and too strict.
+            // The destination role is resolved HERE so its two failure modes are
+            // distinct: a role the account does not have is an invalid
+            // destination (status 2, permanent), while a failed lookup is a
+            // transient server condition (status 7, retry). Flattening the error
+            // to `None` would let a backend outage be reported as a bad request.
             let dest_mailbox: Option<String> = match &target {
                 MoveDest::Mailbox(mb) => Some(mb.clone()),
-                MoveDest::Role(role) => jmap
-                    .get_mailbox_ids_for_role(&account_id, role, username, password)
-                    .await
-                    .ok()
-                    .and_then(|ids| ids.into_iter().next()),
+                MoveDest::Role(role) => {
+                    match jmap
+                        .get_mailbox_ids_for_role(&account_id, role, username, password)
+                        .await
+                    {
+                        Ok(ids) => match ids.into_iter().next() {
+                            Some(id) => Some(id),
+                            None => {
+                                responses.push_str(&format!(
+                                    r#"<Response><SrcMsgId>{}</SrcMsgId><Status>2</Status></Response>"#,
+                                    xml_escape(&src_msg_id)
+                                ));
+                                continue;
+                            }
+                        },
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                role = %role,
+                                "MoveItems: destination role resolution failed"
+                            );
+                            responses.push_str(&format!(
+                                r#"<Response><SrcMsgId>{}</SrcMsgId><Status>7</Status></Response>"#,
+                                xml_escape(&src_msg_id)
+                            ));
+                            continue;
+                        }
+                    }
+                }
             };
             if let (Some(src_mb), Some(dst_mb)) =
                 (source_mailbox.as_deref(), dest_mailbox.as_deref())
@@ -5582,13 +5662,21 @@ async fn handle_folder_create(ctx: &FolderCmdCtx<'_>) -> Response {
         request_id,
     } = *ctx;
     // [MS-ASCMD] §2.2.3.181.1: validate the supplied SyncKey against this
-    // device's stored hierarchy key BEFORE any mutation. A mismatch is Status 9
-    // (with SyncKey 0), so an obsolete key can never create a folder or rotate
-    // the device's current key.
+    // device's stored hierarchy key BEFORE any mutation. A mismatch answers a
+    // bare Status 9 (no `SyncKey` element on a failed command), so an obsolete
+    // key can never create a folder or rotate the device's current key. An
+    // unreadable stored key is a retryable Status 6, never a mismatch.
     let supplied_key = extract_first_tag_text(xml, b"SyncKey").unwrap_or_default();
-    if !crate::eas_folders::folder_sync_key_matches(state, owner, device_id, &supplied_key).await {
-        let body = crate::eas_folders::invalid_folder_sync_key_response("FolderCreate");
-        return wbxml_response(&body, as_wbxml, wbxml, request_id);
+    match crate::eas_folders::folder_sync_key_matches(state, owner, device_id, &supplied_key).await {
+        crate::eas_folders::FolderSyncKeyVerdict::Match => {}
+        crate::eas_folders::FolderSyncKeyVerdict::Mismatch => {
+            let body = crate::eas_folders::invalid_folder_sync_key_response("FolderCreate");
+            return wbxml_response(&body, as_wbxml, wbxml, request_id);
+        }
+        crate::eas_folders::FolderSyncKeyVerdict::Unavailable => {
+            let body = crate::eas_folders::folder_mutation_server_error_response("FolderCreate");
+            return wbxml_response(&body, as_wbxml, wbxml, request_id);
+        }
     }
     let parent_id = extract_first_tag_text(xml, b"ParentId")
         .map(|s| s.trim().to_string())
@@ -5646,11 +5734,20 @@ async fn handle_folder_delete(ctx: &FolderCmdCtx<'_>) -> Response {
         request_id,
     } = *ctx;
     // [MS-ASCMD] §2.2.3.181.1: validate the SyncKey before deleting. A mismatch
-    // is Status 9 + SyncKey 0; an obsolete key must never delete a folder.
+    // answers a bare Status 9 (no `SyncKey` on a failed command); an obsolete
+    // key must never delete a folder. An unreadable stored key is a retryable
+    // Status 6, never a mismatch.
     let supplied_key = extract_first_tag_text(xml, b"SyncKey").unwrap_or_default();
-    if !crate::eas_folders::folder_sync_key_matches(state, owner, device_id, &supplied_key).await {
-        let body = crate::eas_folders::invalid_folder_sync_key_response("FolderDelete");
-        return wbxml_response(&body, as_wbxml, wbxml, request_id);
+    match crate::eas_folders::folder_sync_key_matches(state, owner, device_id, &supplied_key).await {
+        crate::eas_folders::FolderSyncKeyVerdict::Match => {}
+        crate::eas_folders::FolderSyncKeyVerdict::Mismatch => {
+            let body = crate::eas_folders::invalid_folder_sync_key_response("FolderDelete");
+            return wbxml_response(&body, as_wbxml, wbxml, request_id);
+        }
+        crate::eas_folders::FolderSyncKeyVerdict::Unavailable => {
+            let body = crate::eas_folders::folder_mutation_server_error_response("FolderDelete");
+            return wbxml_response(&body, as_wbxml, wbxml, request_id);
+        }
     }
     let server_id = extract_first_tag_text(xml, b"ServerId")
         .map(|s| s.trim().to_string())
@@ -5679,11 +5776,20 @@ async fn handle_folder_update(ctx: &FolderCmdCtx<'_>) -> Response {
         request_id,
     } = *ctx;
     // [MS-ASCMD] §2.2.3.181.1: validate the SyncKey before updating. A mismatch
-    // is Status 9 + SyncKey 0; an obsolete key must never rename/move a folder.
+    // answers a bare Status 9 (no `SyncKey` on a failed command); an obsolete
+    // key must never rename/move a folder. An unreadable stored key is a
+    // retryable Status 6, never a mismatch.
     let supplied_key = extract_first_tag_text(xml, b"SyncKey").unwrap_or_default();
-    if !crate::eas_folders::folder_sync_key_matches(state, owner, device_id, &supplied_key).await {
-        let body = crate::eas_folders::invalid_folder_sync_key_response("FolderUpdate");
-        return wbxml_response(&body, as_wbxml, wbxml, request_id);
+    match crate::eas_folders::folder_sync_key_matches(state, owner, device_id, &supplied_key).await {
+        crate::eas_folders::FolderSyncKeyVerdict::Match => {}
+        crate::eas_folders::FolderSyncKeyVerdict::Mismatch => {
+            let body = crate::eas_folders::invalid_folder_sync_key_response("FolderUpdate");
+            return wbxml_response(&body, as_wbxml, wbxml, request_id);
+        }
+        crate::eas_folders::FolderSyncKeyVerdict::Unavailable => {
+            let body = crate::eas_folders::folder_mutation_server_error_response("FolderUpdate");
+            return wbxml_response(&body, as_wbxml, wbxml, request_id);
+        }
     }
     let server_id = extract_first_tag_text(xml, b"ServerId")
         .map(|s| s.trim().to_string())
@@ -6296,6 +6402,64 @@ async fn handle_send_mail(
         .map(str::trim)
         .filter(|id| !id.is_empty());
     if let Some(client_id) = client_id {
+        // A pending ClientId whose cool-down expired is NOT released on elapsed
+        // time alone: the earlier attempt's outcome is unknown, so reconcile it
+        // against the backend first. A Sent copy carrying this message's
+        // `Message-ID` proves the send happened → 118. No copy → resend.
+        if let Ok(Some((state_name, age))) = state
+            .storage
+            .get_email_submission_state(username, client_id)
+            .await
+            && state_name == "pending"
+            && age as u64 >= SENDMAIL_UNKNOWN_RETRY_AFTER_SECS
+        {
+            // No Message-ID to reconcile by means the claim's cool-down expiry
+            // below is the only release path; the ledger still prevents a
+            // concurrent double submit.
+            if let Some(message_id) = crate::email::mime_message_id(&mime_data) {
+                {
+                    match crate::email::reconcile_sent_copy(state, username, password, &message_id)
+                        .await
+                    {
+                        Ok(true) => {
+                            tracing::info!(
+                                client_id,
+                                "SendMail: the earlier attempt did reach the backend; reporting MessagePreviouslySent"
+                            );
+                            if let Err(e) = state
+                                .storage
+                                .set_email_submission_state(username, client_id, "submitted")
+                                .await
+                            {
+                                tracing::error!(error = %e, "SendMail: failed to record the reconciled submission");
+                            }
+                            return xml_or_wbxml_response(
+                                wbxml,
+                                as_wbxml,
+                                r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="ComposeMail:">118</Status>"#,
+                                request_id,
+                            );
+                        }
+                        Ok(false) => {}
+                        Err(e) => {
+                            // The outcome cannot be established: keep the
+                            // ClientId blocked rather than risk a duplicate.
+                            tracing::warn!(
+                                error = %e,
+                                client_id,
+                                "SendMail: could not reconcile the earlier attempt; keeping it blocked"
+                            );
+                            return xml_or_wbxml_response(
+                                wbxml,
+                                as_wbxml,
+                                r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="ComposeMail:">4</Status>"#,
+                                request_id,
+                            );
+                        }
+                    }
+                }
+            }
+        }
         // ONE atomic claim decides the whole race ([MS-ASCMD] §2.2.3.28): a
         // confirmed submission answers 118 without resending, an unresolved
         // earlier attempt inside its cool-down answers retryably, and two
@@ -7978,11 +8142,16 @@ const KEYWORD_SCAN_PAGE: u64 = 500;
 
 /// Classify one `Email/queryChanges` page into EAS operations.
 ///
-/// `added` ids are `<Add>` (newly in this mailbox); `removed` ids are
-/// `<Delete>` (left this mailbox) — EXCEPT an id present in BOTH lists, which
-/// Stalwart emits when the message merely moved within the mailbox (a keyword
-/// edit re-sorts a keyword-sorted query): that is an in-place update, so it is
-/// delivered as a `<Change>`.
+/// An `added` id is an `<Add>` ONLY when this collection has not delivered it
+/// yet. An id this device already holds is an in-place `<Change>`: it may have
+/// left and re-entered the mailbox across two `queryChanges` pages (a
+/// per-page classifier cannot see the other page), or merely re-sorted within
+/// the mailbox (Stalwart reports a keyword edit as an add, and often also as a
+/// remove). Re-sending `<Add>` for a delivered item makes the client treat an
+/// update as a new arrival in strict implementations.
+///
+/// `removed` ids are `<Delete>` (left this mailbox) unless the id is also
+/// `added` — that pair is the in-place update described above.
 ///
 /// `updated` ids are messages whose position within the fixed
 /// `inMailbox`/`receivedAt` query changed without leaving it — e.g. a draft's
@@ -7995,17 +8164,10 @@ fn classify_query_change_ops(
     delivered: &HashSet<String>,
 ) -> Vec<PendingEmailOp> {
     let added_set: HashSet<&str> = added.iter().map(String::as_str).collect();
-    let removed_set: HashSet<&str> = removed.iter().map(String::as_str).collect();
     let mut ops = Vec::with_capacity(added.len() + removed.len() + updated.len());
     for id in added {
-        if removed_set.contains(id.as_str()) {
-            // Overlap: an in-place update ONLY if previously delivered;
-            // otherwise this mailbox newly matches and it is an `<Add>`.
-            if delivered.contains(id.as_str()) {
-                ops.push(PendingEmailOp::change(id.clone()));
-            } else {
-                ops.push(PendingEmailOp::add(id.clone()));
-            }
+        if delivered.contains(id.as_str()) {
+            ops.push(PendingEmailOp::change(id.clone()));
         } else {
             ops.push(PendingEmailOp::add(id.clone()));
         }
@@ -8053,13 +8215,12 @@ struct AccumulateEmailChangesCtx<'a> {
 /// collection. `Email/queryChanges` with an `inMailbox` filter (immutable per
 /// RFC 8620 §5.6) reports only the ids that entered or left *this* mailbox:
 ///
-/// * an id in `added` is an EAS `<Add>` — a message newly in this mailbox
-///   (delivered here, or moved in from another folder).
+/// * an id in `added` is an EAS `<Add>` when this collection never delivered
+///   it, and an in-place `<Change>` when it did (the message re-entered the
+///   mailbox, possibly across two pages, or re-sorted inside it).
 /// * an id in `removed` is an EAS `<Delete>` — the message left this mailbox
-///   (deleted, or moved elsewhere). Stalwart also lists an id in *both* lists
-///   when its position within the mailbox changed (a flag edit re-sorts a
-///   keyword-sorted query), so a `removed` id that also appears in `added` is
-///   an in-place update, delivered as an EAS `<Change>`.
+///   (deleted, or moved elsewhere) — unless it is also in `added`, which is the
+///   in-place update above.
 ///
 /// Returns the ordered operation list plus the query state that follows the
 /// last delivered page (`base_state`). Callers that do not advance their
@@ -8783,7 +8944,12 @@ async fn apply_email_client_mutations(
     // UNRESOLVED collection therefore stays `None` and never supplies the raw
     // EAS id to the Delete membership check; `Change` commands do not use the
     // source mailbox, so a flag-only batch still applies.
-    let resolved_mailbox_id =
+    // Only a Delete needs the source mailbox (membership check / move-out);
+    // a Change-only batch applies without the lookup. The literal-tag test is
+    // the SAME shape `parse_eas_email_mutations` matches (`<Delete>` or a
+    // prefixed `<Email:Delete>`; never the `</Delete>` close tag).
+    let has_delete = collection_xml.contains("<Delete>") || collection_xml.contains(":Delete>");
+    let resolved_mailbox_id = if has_delete {
         match resolve_email_mailbox_id(state, jmap, &account_id, username, password, collection_id)
             .await
         {
@@ -8793,7 +8959,10 @@ async fn apply_email_client_mutations(
                     "failed to resolve source mailbox id for collection {collection_id}: {e}"
                 ));
             }
-        };
+        }
+    } else {
+        None
+    };
 
     let results = crate::email::apply_eas_email_mutations(
         jmap,
@@ -8804,7 +8973,7 @@ async fn apply_email_client_mutations(
         collection_xml,
         deletes_as_moves,
     )
-    .await;
+    .await?;
     if results.is_empty() {
         return Ok(String::new());
     }
@@ -12502,12 +12671,13 @@ mod tests {
     }
 
     /// A pending folder-map prune whose backend mailbox is STILL PRESENT must be
-    /// withdrawn, not replayed: a destroy that was refused (or is still in
-    /// flight) recorded an intent before the attempt, and pruning blindly would
-    /// strand a LIVE folder's mapping — EAS would stop advertising a folder that
-    /// still exists.
+    /// RETAINED for the initiating destroy operation, not replayed: a destroy
+    /// that was refused (or is still in flight) recorded an intent before the
+    /// attempt, and pruning blindly would strand a LIVE folder's mapping — EAS
+    /// would stop advertising a folder that still exists. The intent is kept so
+    /// the destroy's own retry can still reconcile its outcome.
     #[tokio::test]
-    async fn test_folder_sync_withdraws_prune_for_live_folder() {
+    async fn test_folder_sync_retains_prune_for_live_folder() {
         use crate::models::AppState;
         use axum::routing::{get, post};
         use serde_json::{Value, json};
@@ -13347,6 +13517,41 @@ mod tests {
                 // c: first op is add, last is delete — dropped.
                 P::delete(id("d")),
             ]
+        );
+    }
+
+    /// A previously delivered message that left the mailbox on one
+    /// `queryChanges` page and re-entered it on a LATER page must reach the
+    /// client as an in-place `<Change>`, never a second `<Add>`: the per-page
+    /// classifier cannot see the other page, so the decision is made on the
+    /// delivered ledger alone.
+    #[test]
+    fn test_classify_query_change_ops_cross_page_readd_is_change() {
+        use PendingEmailOp as P;
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        let delivered = HashSet::from([String::from("m9")]);
+
+        let page_one = classify_query_change_ops(&[], &s(&["m9"]), &[], &delivered);
+        assert_eq!(page_one, vec![P::delete("m9".into())]);
+        let page_two = classify_query_change_ops(&s(&["m9"]), &[], &[], &delivered);
+        assert_eq!(
+            page_two,
+            vec![P::change("m9".into())],
+            "a re-added delivered id is an in-place update"
+        );
+        let mut both = page_one;
+        both.extend(page_two);
+        assert_eq!(
+            collapse_email_ops(both),
+            vec![P::change("m9".into())],
+            "the collapsed window reports one Change, not Delete+Add"
+        );
+
+        // A message the collection never delivered stays an `<Add>` even when
+        // the server reports it as both added and removed.
+        assert_eq!(
+            classify_query_change_ops(&s(&["new"]), &s(&["new"]), &[], &delivered),
+            vec![P::add("new".into())]
         );
     }
 
