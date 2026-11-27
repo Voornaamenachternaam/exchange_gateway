@@ -5992,6 +5992,18 @@ impl JmapClient {
         }
     }
 
+    /// Drop the cached probe outcome for exactly ONE credential.
+    ///
+    /// Used when a verification is superseded by a newer one for the same user:
+    /// the losing probe inserts its outcome into this cache inside
+    /// [`Self::probe_auth`], i.e. BEFORE the verifier's generation check runs,
+    /// so a still-fresh positive here would shadow the newer login even though
+    /// the verifier correctly refused to cache it (AUDIT.md §17).
+    pub fn invalidate_session_auth(&self, username: &str, password: &SecretString) {
+        self.session_auth
+            .invalidate(&Self::session_auth_key(username, password));
+    }
+
     /// Drop every cached session-auth outcome for `username` (all passwords).
     ///
     /// Used by `AuthVerifier::invalidate_user` so an explicit invalidation —

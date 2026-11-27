@@ -156,6 +156,11 @@ pub struct MapiState {
     /// Shared CalDAV client, used by the MAPI calendar contents table
     /// (`fetch_calendar_rows`). Same rationale as [`MapiState::jmap`].
     pub caldav: Option<std::sync::Arc<crate::caldav::CaldavClient>>,
+    /// Shared CardDAV client, used by the MAPI contacts contents table
+    /// (`fetch_contact_rows`) and by the contact read path. Same rationale as
+    /// [`MapiState::jmap`]: the table was rebuilding a client — and therefore
+    /// a connection pool — on every read.
+    pub carddav: Option<std::sync::Arc<crate::carddav::CarddavClient>>,
 }
 
 /// The JMAP client a bare `MapiState` fixture gets from its config: the same
@@ -180,10 +185,29 @@ fn default_caldav_client(cfg: &Config) -> Option<std::sync::Arc<crate::caldav::C
         .map(std::sync::Arc::new)
 }
 
+/// The CardDAV client a bare `MapiState` fixture gets from its config. Matches
+/// the old per-call rule: an explicitly configured `carddav_base` wins, and a
+/// CalDAV-only config derives the `/dav/card` base (the same derivation
+/// `Config::load` applies, kept here so a hand-built `Config` behaves the same).
+fn default_carddav_client(cfg: &Config) -> Option<std::sync::Arc<crate::carddav::CarddavClient>> {
+    if !cfg.carddav_base.is_empty() {
+        crate::carddav::CarddavClient::new(cfg)
+            .ok()
+            .map(std::sync::Arc::new)
+    } else if !cfg.caldav_base.is_empty() {
+        Some(std::sync::Arc::new(
+            crate::carddav::CarddavClient::from_caldav_base(&cfg.caldav_base),
+        ))
+    } else {
+        None
+    }
+}
+
 impl MapiState {
     pub fn new(cfg: Config, auth: std::sync::Arc<AuthVerifier>) -> Self {
         let jmap = default_jmap_client(&cfg);
         let caldav = default_caldav_client(&cfg);
+        let carddav = default_carddav_client(&cfg);
         Self {
             cfg,
             auth,
@@ -196,6 +220,7 @@ impl MapiState {
             storage: None,
             jmap,
             caldav,
+            carddav,
         }
     }
 
@@ -209,6 +234,7 @@ impl MapiState {
     ) -> Self {
         let jmap = default_jmap_client(&cfg);
         let caldav = default_caldav_client(&cfg);
+        let carddav = default_carddav_client(&cfg);
         Self {
             cfg,
             auth,
@@ -221,6 +247,7 @@ impl MapiState {
             storage: None,
             jmap,
             caldav,
+            carddav,
         }
     }
 
@@ -238,6 +265,14 @@ impl MapiState {
     /// same connection pool as the EAS/EWS calendar paths.
     pub fn with_caldav(mut self, caldav: std::sync::Arc<crate::caldav::CaldavClient>) -> Self {
         self.caldav = Some(caldav);
+        self
+    }
+
+    /// Share the process-wide CardDAV client with the MAPI state. Called by the
+    /// production `AppState` builder so the contacts contents table reuses the
+    /// same connection pool as the EWS contact paths.
+    pub fn with_carddav(mut self, carddav: std::sync::Arc<crate::carddav::CarddavClient>) -> Self {
+        self.carddav = Some(carddav);
         self
     }
 
@@ -800,6 +835,7 @@ async fn handle_execute(req: MapiRequest, state: &MapiState) -> MapiResponse {
         snap: &snap,
         jmap,
         caldav: state.caldav.as_deref(),
+        carddav: state.carddav.as_deref(),
         cfg: &state.cfg,
         username: &username,
         password: password_secret.as_ref(),
@@ -870,6 +906,7 @@ struct RopContext<'a> {
     snap: &'a crate::mapi::session::SessionSnapshot,
     jmap: Option<&'a crate::jmap::JmapClient>,
     caldav: Option<&'a crate::caldav::CaldavClient>,
+    carddav: Option<&'a crate::carddav::CarddavClient>,
     cfg: &'a Config,
     username: &'a str,
     password: Option<&'a secrecy::SecretString>,
@@ -1331,6 +1368,7 @@ async fn execute_one_rop(
         snap,
         jmap,
         caldav,
+        carddav,
         cfg,
         username,
         password,
@@ -1549,7 +1587,8 @@ async fn execute_one_rop(
                             fetch_calendar_rows(cfg, caldav, username, pw, &parent_backend).await
                         }
                         FolderKind::Contacts => {
-                            fetch_contact_rows(cfg, jmap, username, pw, &parent_backend).await
+                            fetch_contact_rows(cfg, jmap, carddav, username, pw, &parent_backend)
+                                .await
                         }
                         _ => {
                             if let Some(jc) = jmap {
@@ -7631,6 +7670,7 @@ async fn materialize_handle_properties(
         sessions,
         jmap,
         caldav,
+        carddav,
         cfg,
         username,
         password,
@@ -7796,24 +7836,31 @@ async fn materialize_handle_properties(
         {
             let target = u64::from_str_radix(&backend_id, 16)
                 .unwrap_or_else(|_| store::folder_id_from_backend(&backend_id));
-            fetch_contact_rows(cfg, Some(jc), username, pw, store::CONTACTS_BACKEND_ID)
-                .await
-                .into_iter()
-                .find_map(|r| {
-                    if r.row_id == target
-                        && let Some(src) = r.source
-                        && let Some(v) = src.downcast_ref::<String>()
-                    {
-                        Some(crate::mapi::converters::contact_to_cells(
-                            v,
-                            tags,
-                            store::CONTACTS_BACKEND_ID,
-                        ))
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or_else(|| store::typed_null_cells(tags))
+            fetch_contact_rows(
+                cfg,
+                Some(jc),
+                carddav,
+                username,
+                pw,
+                store::CONTACTS_BACKEND_ID,
+            )
+            .await
+            .into_iter()
+            .find_map(|r| {
+                if r.row_id == target
+                    && let Some(src) = r.source
+                    && let Some(v) = src.downcast_ref::<String>()
+                {
+                    Some(crate::mapi::converters::contact_to_cells(
+                        v,
+                        tags,
+                        store::CONTACTS_BACKEND_ID,
+                    ))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| store::typed_null_cells(tags))
         }
         (HandleShape::Folder, _, _)
             if (kind == FolderKind::Calendar || kind == FolderKind::Contacts)
@@ -8137,6 +8184,7 @@ async fn fetch_calendar_rows(
 async fn fetch_contact_rows(
     cfg: &Config,
     jmap: Option<&crate::jmap::JmapClient>,
+    carddav: Option<&crate::carddav::CarddavClient>,
     username: &str,
     password: &secrecy::SecretString,
     mailbox_id: &str,
@@ -8173,20 +8221,32 @@ async fn fetch_contact_rows(
         }
     }
 
-    if cfg.carddav_base.is_empty() && cfg.caldav_base.is_empty() {
-        tracing::debug!("mapi contacts contents: no carddav_base configured");
-        return Vec::new();
-    }
-    let carddav = if !cfg.carddav_base.is_empty() {
-        match crate::carddav::CarddavClient::new(cfg) {
-            Ok(c) => c,
+    // The shared client is built once at startup. The `None` arms keep the old
+    // per-call contract for a caller that has no shared client (a hand-built
+    // `RopContext` in a fixture): an explicitly configured `carddav_base` wins,
+    // otherwise the `/dav/card` base is derived from `caldav_base`.
+    let derived;
+    let carddav = match carddav {
+        Some(client) => Some(client),
+        None if !cfg.carddav_base.is_empty() => match crate::carddav::CarddavClient::new(cfg) {
+            Ok(c) => {
+                derived = c;
+                Some(&derived)
+            }
             Err(e) => {
                 tracing::warn!("mapi contacts contents: carddav client build failed: {}", e);
                 return Vec::new();
             }
+        },
+        None if !cfg.caldav_base.is_empty() => {
+            derived = crate::carddav::CarddavClient::from_caldav_base(&cfg.caldav_base);
+            Some(&derived)
         }
-    } else {
-        crate::carddav::CarddavClient::from_caldav_base(&cfg.caldav_base)
+        None => None,
+    };
+    let Some(carddav) = carddav else {
+        tracing::debug!("mapi contacts contents: no carddav_base configured");
+        return Vec::new();
     };
     let (contacts, _token) = match carddav
         .list_contacts(username, password.expose_secret(), None)
@@ -10442,6 +10502,7 @@ mod tests {
             snap: &snap,
             jmap: None,
             caldav: None,
+            carddav: None,
             cfg: &Config::default(),
             username: "u@example.com",
             password: None,
@@ -10477,6 +10538,7 @@ mod tests {
                 snap: &snap2,
                 jmap: None,
                 caldav: None,
+                carddav: None,
                 cfg: &Config::default(),
                 username: "u@example.com",
                 password: None,
@@ -10588,6 +10650,7 @@ mod tests {
                 snap: &snap,
                 jmap: None,
                 caldav: None,
+                carddav: None,
                 cfg: &Config::default(),
                 username: "u@example.com",
                 password: None,
@@ -10742,6 +10805,7 @@ mod tests {
                 snap: &snap,
                 jmap: Some(&jmap),
                 caldav: None,
+                carddav: None,
                 cfg: &Config::default(),
                 username: "u@example.com",
                 password: Some(&password),
@@ -10793,6 +10857,7 @@ mod tests {
                 snap: &snap3,
                 jmap: Some(&jmap),
                 caldav: None,
+                carddav: None,
                 cfg: &Config::default(),
                 username: "u@example.com",
                 password: Some(&password),
@@ -11464,6 +11529,7 @@ mod tests {
                 snap: &snap,
                 jmap: None,
                 caldav: None,
+                carddav: None,
                 cfg: &Config::default(),
                 username: "u@example.com",
                 password: None,
@@ -13791,6 +13857,117 @@ mod tests {
             1,
             "the shared client must cache the JMAP session across Executes; a \
              per-Execute client would fetch it once per RPC"
+        );
+    }
+    /// The MAPI contacts contents table must use the process-wide CardDAV
+    /// client, not build one per read.
+    ///
+    /// Proof: the shared client points at a counting stub while the `Config`
+    /// points at a dead port. If `fetch_contact_rows` still constructed its own
+    /// client from `cfg` it would talk to the dead port (no stub hit, empty
+    /// result); because it uses the injected client, the stub is hit and its
+    /// keep-alive connection is reused for the second call. The control arm
+    /// passes `None` with `cfg` pointing at the stub: the on-demand
+    /// construction is still available (hand-built configs / fixtures) and
+    /// opens a fresh connection per call, which is exactly the cost the shared
+    /// client removes.
+    #[tokio::test]
+    async fn fetch_contact_rows_uses_the_shared_carddav_client() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+            haystack.windows(needle.len()).position(|w| w == needle)
+        }
+        fn content_length(head: &str) -> usize {
+            head.lines()
+                .find_map(|l| {
+                    let (k, v) = l.split_once(':')?;
+                    k.trim()
+                        .eq_ignore_ascii_case("content-length")
+                        .then(|| v.trim().parse::<usize>().ok())?
+                })
+                .unwrap_or(0)
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accepts = std::sync::Arc::new(AtomicUsize::new(0));
+        let counter = accepts.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                counter.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let mut buf: Vec<u8> = Vec::new();
+                    let mut chunk = [0u8; 4096];
+                    loop {
+                        let n = match sock.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => n,
+                        };
+                        buf.extend_from_slice(&chunk[..n]);
+                        while let Some(end) = find(&buf, b"\r\n\r\n") {
+                            let head = String::from_utf8_lossy(&buf[..end]).to_string();
+                            let total = end + 4 + content_length(&head);
+                            if buf.len() < total {
+                                break;
+                            }
+                            buf.drain(..total);
+                            // 404 makes `list_contacts` fail fast; the test
+                            // asserts on sockets, not rows.
+                            let resp = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+                            if sock.write_all(resp.as_bytes()).await.is_err() {
+                                return;
+                            }
+                        }
+                    }
+                });
+            }
+        });
+
+        let stub_base = format!("http://{addr}/dav/card");
+        let shared = crate::carddav::CarddavClient::new(&Config {
+            carddav_base: stub_base.clone(),
+            ..Config::default()
+        })
+        .unwrap();
+
+        // `cfg` deliberately points somewhere unreachable: only the injected
+        // client can reach the stub.
+        let cfg = Config {
+            carddav_base: "http://127.0.0.1:1/dav/card".to_string(),
+            prefer_jmap_contacts: false,
+            ..Config::default()
+        };
+        let pw = secrecy::SecretString::from("pw");
+        for _ in 0..2 {
+            let rows = fetch_contact_rows(&cfg, None, Some(&shared), "u", &pw, "contacts").await;
+            assert!(rows.is_empty(), "a 404 addressbook yields no rows");
+        }
+        assert_eq!(
+            accepts.load(Ordering::SeqCst),
+            1,
+            "the injected client must be used and its connection reused; a \
+             per-call construction would never reach this stub at all"
+        );
+
+        // Control: with no injected client the function builds one from `cfg`,
+        // one fresh connection per call — the pre-fix cost.
+        let cfg = Config {
+            carddav_base: stub_base,
+            prefer_jmap_contacts: false,
+            ..Config::default()
+        };
+        for _ in 0..2 {
+            let _ = fetch_contact_rows(&cfg, None, None, "u", &pw, "contacts").await;
+        }
+        assert_eq!(
+            accepts.load(Ordering::SeqCst),
+            3,
+            "each on-demand construction opens its own connection"
         );
     }
 }

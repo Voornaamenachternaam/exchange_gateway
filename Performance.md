@@ -727,3 +727,94 @@ configured" keep testing `cfg.caldav_base`, unchanged.
   per-call by design (admin-credential probes with their own lifecycle); P0-1 named the MAPI
   `Execute` path specifically.
 - `src/main.rs`'s startup capability probe keeps its one-shot client: it runs once at boot.
+
+---
+
+# Follow-up: the three "Deliberately NOT changed" items (delivered)
+
+This section supersedes the three bullets immediately above that describe
+`fetch_contact_rows`, `directory.rs`/`oof.rs` and `AuthVerifier::new`'s fallback.
+Two of them were real and are fixed here; the third was a misreading on my part
+and is corrected.
+
+## 1. MAPI contacts table: one shared `CarddavClient` (was: one client per read)
+
+`mapi/handler.rs::fetch_contact_rows` built `CarddavClient::new(cfg)` on every
+contacts contents-table read, so each read opened a fresh TCP+TLS connection to
+Stalwart and dropped the pool afterwards. `MapiState` now carries
+`carddav: Option<Arc<CarddavClient>>` (field, `with_carddav` builder and
+`default_carddav_client` for fixtures — mirroring the CalDAV field), `RopContext`
+carries `carddav`, and `AppState::new` wires `state.carddav_client`: the same
+`Arc` the EWS contact paths use.
+
+The `None` arms keep the old contract exactly: an explicitly configured
+`carddav_base` still builds one on demand, otherwise the `/dav/card` base is
+derived from `caldav_base`. Production never reaches them (`Config::load` derives
+`carddav_base` from `caldav_base`, and `default_carddav_client` covers
+hand-built configs).
+
+Evidence — `mapi::handler::tests::fetch_contact_rows_uses_the_shared_carddav_client`:
+the shared client points at a counting stub while `cfg.carddav_base` points at a
+dead port, so only the injected client can reach the stub. Two reads accept
+**1** socket; the control arm (no injected client) adds **2** more, one per
+on-demand construction.
+
+## 2. `AuthVerifier::new` no longer builds a client per probe
+
+`verify_backend`'s `None` arm constructed `JmapClient::new(&self.jmap_base)` on
+every probe for a verifier that had not been handed the application client (unit
+tests, MAPI harnesses): a connection pool and a credential cache discarded per
+probe, and the client-level cache could not honour the verifier's knobs.
+
+`from_parts` now builds exactly ONE client per verifier, via
+`JmapClient::with_session_auth` with the verifier's own positive/negative TTLs and
+capacity, so `GATEWAY_AUTH_CACHE_NEGATIVE_TTL_SECS=0` disables negative caching on
+BOTH layers. The `None` arm of `verify_backend` now answers a retryable
+`BackendError` (reachable only if the client could not be built at all).
+
+Sharing the client exposed a real staleness hole that the per-probe construction
+had been hiding: `probe_auth` inserts its outcome into the client cache BEFORE
+`verify_outcome`'s generation check runs, so a superseded probe could leave a
+fresh positive that shadows the newer login — the failure §17's ticket prevents
+one layer up. Fixed with `JmapClient::invalidate_session_auth(username, password)`
+(per-credential) called from the new `AuthVerifier::discard_superseded_result` on
+both superseded paths (valid and invalid). The same hole existed in production,
+where the client is already shared with the verifier.
+
+Evidence — `auth::tests::standalone_verifier_reuses_one_jmap_connection_across_probes`:
+two cold probes for different users accept **1** socket; the control (two
+throwaway clients, the pre-fix shape) adds **2**. Restoring the old per-probe
+construction makes the test fail with `2 != 1`.
+`auth::tests::slow_older_verification_cannot_repopulate_cache_after_newer_login`
+now also pins the client-layer purge (it failed before the fix).
+
+## 3. Correction: `directory.rs` / `oof.rs` are startup singletons
+
+The bullet above claims their `JmapClient::new` calls are "per-call by design".
+That is wrong. `JmapDirectory::create` and `JmapOofManager::create` are each
+called ONCE from `AppState::new`, the client is stored in the manager, and the
+per-call `self.jmap_client.clone()` is a shallow clone (`#[derive(Clone)]` on
+`JmapClient` shares the `reqwest::Client`, the session cache and the probe
+cache). There is no per-request construction and therefore nothing to fix.
+Documented on both struct fields so a later "optimisation" cannot reintroduce one.
+
+## 4. Test-harness flake: `concurrent_same_credential_probes_collapse`
+
+The probe counter was incremented AFTER `write_all`, so under CPU pressure the
+acceptor thread could be descheduled between the write and the increment while
+the client (which already held the response) returned `Verified` and the test read
+0 — a load-dependent `hits >= 1` failure. The counter is now taken when the
+request is READ, i.e. before any client can observe success; each connection is
+served on its own thread; and `read_request` parses `Content-Length` instead of
+waiting for a buffer that ends with `\r\n\r\n` (which never happens for a
+body-carrying request and used to block until the 30 s read timeout). The test
+also asserts `hits < 5`, the dedup property its name claims. 20/20 isolated runs
+and 24/24 under 8-way parallel load, all green.
+
+## Gate
+
+1620 tests green (1514 lib + 36 + 3 + 10 + 6 + 5 + 10 + 15 + 11 + 1 + 8 + 1),
+`cargo clippy --all-targets` 0 warnings, `rustfmt --edition 2024` clean on every
+touched file (`auth.rs`, `jmap.rs`, `models.rs`, `mapi/handler.rs`,
+`directory.rs`, `oof.rs`, `tests/transport_fault_injection.rs`), release build
+warning-free.

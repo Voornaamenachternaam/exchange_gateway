@@ -195,6 +195,9 @@ impl<T: DirectoryLookup + Clone + Send + Sync + 'static> DirectoryLookupAsync fo
 /// the server-wide directory via `x:Account/*` and `x:MailingList/*` under the
 /// `urn:stalwart:jmap` capability.
 pub struct JmapDirectory {
+    /// Built once, in [`JmapDirectory::create`] (called from `AppState::new`),
+    /// and reused for every lookup: `JmapClient` clones share their connection
+    /// pool and caches, so a lookup never constructs a client.
     jmap_client: JmapClient,
     username: String,
     password: SecretString,

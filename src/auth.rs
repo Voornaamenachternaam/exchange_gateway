@@ -159,10 +159,11 @@ pub struct AuthVerifier {
 
 impl AuthVerifier {
     pub fn new(cfg: &Config) -> Self {
-        // Standalone constructor (unit tests, MAPI test harnesses): no shared
-        // JMAP client, so the probe path builds a throwaway one per call.
-        // Production uses `new_from_topology` so the client's session-auth
-        // cache and the app-wide HTTP pool are shared.
+        // Standalone constructor (unit tests, MAPI test harnesses). It is not
+        // handed the application client, but `from_parts` still builds ONE
+        // client per verifier when `jmap_base` is set, so the probe path never
+        // constructs a client per call. Production uses `new_from_topology` so
+        // the client is additionally shared with the email/MAPI paths.
         Self::from_parts(cfg, None)
     }
 
@@ -199,6 +200,40 @@ impl AuthVerifier {
                 negative_jitter,
             })
             .build();
+
+        // A verifier that was not handed the application client still needs one
+        // for the probe path. Build exactly ONE per verifier — with the same
+        // cache TTLs and capacity the application client uses — instead of one
+        // per probe: a per-probe client throws away its connection pool and its
+        // credential-probe cache on every call, so each cold probe paid a fresh
+        // TCP+TLS handshake, and the client-level cache could not honour the
+        // same `GATEWAY_AUTH_CACHE_*_TTL_SECS` contract the verifier enforces
+        // (`negative` = 0 must disable negative caching on BOTH layers).
+        let jmap_client = match jmap_client {
+            Some(client) => Some(client),
+            None if !cfg.jmap_base.is_empty() => {
+                match JmapClient::with_session_auth(
+                    &cfg.jmap_base,
+                    positive,
+                    negative,
+                    max_entries as u64,
+                ) {
+                    Ok(client) => Some(Arc::new(client)),
+                    Err(e) => {
+                        warn!(
+                            target: "auth",
+                            jmap_base = %cfg.jmap_base,
+                            error = %e,
+                            "Failed to build the credential-probe JMAP client; \
+                             JMAP authentication will report the backend as unavailable"
+                        );
+                        None
+                    }
+                }
+            }
+            None => None,
+        };
+
         Self {
             cache,
             caldav_base: cfg.caldav_base.clone(),
@@ -305,6 +340,7 @@ impl AuthVerifier {
                         "Authentication result cached (valid)"
                     );
                 } else {
+                    self.discard_superseded_result(username, password);
                     debug!(
                         target: "auth",
                         username = %username,
@@ -329,6 +365,7 @@ impl AuthVerifier {
                         "Authentication result cached (invalid)"
                     );
                 } else {
+                    self.discard_superseded_result(username, password);
                     debug!(
                         target: "auth",
                         username = %username,
@@ -607,6 +644,20 @@ impl AuthVerifier {
         self.probe_gate.invalidate(username);
     }
 
+    /// Drop a result the generation check refused to commit from BOTH cache
+    /// layers.
+    ///
+    /// The losing probe has already inserted its outcome into the shared
+    /// client's per-credential cache — that insert happens inside
+    /// [`JmapClient::probe_auth`], before `commit_result` runs — so clearing
+    /// only the verifier cache would let a still-fresh positive there shadow
+    /// the newer login the ticket exists to protect.
+    fn discard_superseded_result(&self, username: &str, password: &str) {
+        if let Some(client) = &self.jmap_client {
+            client.invalidate_session_auth(username, &SecretString::from(password.to_string()));
+        }
+    }
+
     /// Probe the configured backends, collapsing their tri-state results into
     /// an [`AuthOutcome`].
     async fn verify_backend(&self, username: &str, password: &str) -> AuthOutcome {
@@ -615,18 +666,18 @@ impl AuthVerifier {
 
         if jmap_configured {
             let secret = SecretString::from(password.to_string());
-            // Prefer the shared application JMAP client so its session-auth
-            // cache and connection pool serve every request; fall back to a
-            // throwaway client for standalone (test) constructions.
+            // Every constructor installs a JMAP client when `jmap_base` is
+            // set — the application's own in production, one per verifier
+            // otherwise — so the session-auth cache and connection pool serve
+            // every probe.
             let check = match &self.jmap_client {
                 Some(client) => client.probe_auth(username, &secret).await,
-                None => match JmapClient::new(&self.jmap_base) {
-                    Ok(client) => client.probe_auth(username, &secret).await,
-                    Err(e) => CredentialCheck::BackendError(format!(
-                        "Failed to create JMAP client: {}",
-                        e
-                    )),
-                },
+                // Only reachable when the client could not be built at
+                // construction (a TLS-stack failure). Answer a retryable
+                // backend error instead of constructing one per probe.
+                None => CredentialCheck::BackendError(
+                    "no JMAP client is available for the credential probe".to_string(),
+                ),
             };
             match check {
                 CredentialCheck::Valid => {
@@ -1470,6 +1521,129 @@ mod tests {
             stub.jmap_hits.load(Ordering::SeqCst),
             2,
             "invalidate_user must purge the shared session-auth cache too"
+        );
+    }
+    /// A standalone verifier (one that was not handed the application client)
+    /// must still build exactly ONE JMAP client, not one per probe.
+    ///
+    /// Proof by socket count: two cold probes for DIFFERENT users both reach
+    /// the backend, so neither the verifier cache nor the client's
+    /// per-credential cache can absorb the second one. A client shared across
+    /// probes reuses its keep-alive connection (1 accept); the old
+    /// per-probe construction opened one connection per probe (2 accepts).
+    #[tokio::test]
+    async fn standalone_verifier_reuses_one_jmap_connection_across_probes() {
+        use std::sync::atomic::AtomicUsize;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+            haystack.windows(needle.len()).position(|w| w == needle)
+        }
+        fn content_length(head: &str) -> usize {
+            head.lines()
+                .find_map(|l| {
+                    let (k, v) = l.split_once(':')?;
+                    k.trim()
+                        .eq_ignore_ascii_case("content-length")
+                        .then(|| v.trim().parse::<usize>().ok())?
+                })
+                .unwrap_or(0)
+        }
+
+        let body = serde_json::json!({
+            "apiUrl": "http://stub/api",
+            "downloadUrl": "http://stub/d/{accountId}/{blobId}",
+            "uploadUrl": "http://stub/u/{accountId}",
+            "eventSourceUrl": "http://stub/e",
+            "state": "s",
+            "username": "u",
+            "accounts": {},
+            "primaryAccounts": {},
+            "capabilities": {}
+        })
+        .to_string();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let accepts = Arc::new(AtomicUsize::new(0));
+        let counter = accepts.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                counter.fetch_add(1, Ordering::SeqCst);
+                let body = body.clone();
+                tokio::spawn(async move {
+                    let mut buf: Vec<u8> = Vec::new();
+                    let mut chunk = [0u8; 4096];
+                    loop {
+                        let n = match sock.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => n,
+                        };
+                        buf.extend_from_slice(&chunk[..n]);
+                        while let Some(end) = find(&buf, b"\r\n\r\n") {
+                            let head = String::from_utf8_lossy(&buf[..end]).to_string();
+                            let total = end + 4 + content_length(&head);
+                            if buf.len() < total {
+                                break;
+                            }
+                            buf.drain(..total);
+                            let resp = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                                body.len(),
+                                body
+                            );
+                            if sock.write_all(resp.as_bytes()).await.is_err() {
+                                return;
+                            }
+                        }
+                    }
+                });
+            }
+        });
+
+        let base = format!("http://127.0.0.1:{port}");
+        let cfg = Config {
+            jmap_base: base.clone(),
+            caldav_base: String::new(),
+            auth_probe_min_interval_ms: 0,
+            auth_backend_failure_threshold: 50,
+            ..Config::default()
+        };
+
+        let verifier = AuthVerifier::new(&cfg);
+        assert_eq!(
+            verifier.verify_outcome("u1@example.com", "pw1").await,
+            AuthOutcome::Verified
+        );
+        assert_eq!(
+            verifier.verify_outcome("u2@example.com", "pw2").await,
+            AuthOutcome::Verified
+        );
+        assert_eq!(
+            accepts.load(Ordering::SeqCst),
+            1,
+            "one client per verifier must reuse its pooled connection across \
+             probes; a per-probe construction opens one per probe"
+        );
+
+        // Control: the pre-fix shape — a fresh client per probe — opens its own
+        // connection each time, so the counter is genuinely observing sockets.
+        for pw in ["pw3", "pw4"] {
+            let client = JmapClient::new(&base).unwrap();
+            assert_eq!(
+                client
+                    .probe_auth("u3@example.com", &SecretString::from(pw))
+                    .await,
+                CredentialCheck::Valid
+            );
+        }
+        assert_eq!(
+            accepts.load(Ordering::SeqCst),
+            3,
+            "each throwaway client must open its own connection"
         );
     }
 }

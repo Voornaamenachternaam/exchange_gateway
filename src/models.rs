@@ -356,6 +356,10 @@ impl AppState {
             if let Some(client) = &caldav_client {
                 mapi_state = mapi_state.with_caldav(client.clone());
             }
+            // Share the CardDAV client with the MAPI contacts contents table.
+            if let Some(client) = &carddav_client {
+                mapi_state = mapi_state.with_carddav(client.clone());
+            }
             // Wire the operator-configured directory so the NSPI address-book
             // surface (`/mapi/nspi`) serves a real GAL rather than the
             // caller-only minimal stub (audit gap §2d). When no JMAP-backed
@@ -575,6 +579,7 @@ mod tests {
         let cfg = Config {
             jmap_base: "http://127.0.0.1:1".to_string(),
             caldav_base: "http://127.0.0.1:1/dav/cal".to_string(),
+            carddav_base: "http://127.0.0.1:1/dav/card".to_string(),
             email_enabled: false,
             mapi_enabled: true,
             mail_domain: "example.com".to_string(),
@@ -602,6 +607,20 @@ mod tests {
         assert!(
             Arc::ptr_eq(mapi_caldav, shared_caldav),
             "MAPI must reuse the process-wide CalDAV client"
+        );
+
+        let shared_carddav = state
+            .carddav_client
+            .as_ref()
+            .expect("carddav client must build when a base is configured");
+        let mapi_carddav = mapi
+            .carddav
+            .as_ref()
+            .expect("MAPI must carry the shared CardDAV client");
+        assert!(
+            Arc::ptr_eq(mapi_carddav, shared_carddav),
+            "MAPI must reuse the process-wide CardDAV client, not build one \
+             per contacts read"
         );
     }
 

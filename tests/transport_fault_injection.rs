@@ -77,24 +77,48 @@ fn spawn_scripted(listener: TcpListener, actions: Vec<ScriptAction>) -> thread::
     })
 }
 
-/// Read the client's request bytes (blocking) from `stream`.
+/// Read ONE complete HTTP request (blocking) from `stream`: the header block,
+/// then exactly `Content-Length` body bytes.
+///
+/// The previous implementation stopped only when the accumulated buffer ENDED
+/// with `\r\n\r\n`, which never happens for a request that carries a body
+/// (the buffer ends with the body), so such a request blocked until the 30 s
+/// read timeout fired. Parsing the length makes the helper return as soon as
+/// the request is complete. EOF or a timeout still returns whatever arrived, so
+/// the fault scenarios keep working.
 fn read_request(stream: &mut std::net::TcpStream, max_bytes: usize) -> Vec<u8> {
+    fn header_end(buf: &[u8]) -> Option<usize> {
+        buf.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4)
+    }
+    fn content_length(head: &[u8]) -> usize {
+        String::from_utf8_lossy(head)
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.trim()
+                    .eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().ok())?
+            })
+            .unwrap_or(0)
+    }
+
     let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
     let mut buf = Vec::new();
     let mut tmp = [0u8; 4096];
     loop {
-        match stream.read(&mut tmp) {
-            Ok(0) => break,
-            Ok(n) => {
-                buf.extend_from_slice(&tmp[..n]);
-                if buf.len() >= max_bytes || buf.ends_with(b"\r\n\r\n") {
-                    break;
-                }
+        if let Some(end) = header_end(&buf) {
+            let complete = end + content_length(&buf[..end]);
+            if buf.len() >= complete || buf.len() >= max_bytes {
+                return buf;
             }
-            Err(_) => break,
+        } else if buf.len() >= max_bytes {
+            return buf;
+        }
+        match stream.read(&mut tmp) {
+            Ok(0) | Err(_) => return buf,
+            Ok(n) => buf.extend_from_slice(&tmp[..n]),
         }
     }
-    buf
 }
 
 fn session_json(base: &str) -> Value {
@@ -388,6 +412,15 @@ async fn concurrent_same_credential_probes_collapse() {
     // The dedup under test can collapse the burst into FEWER connections than
     // attempts, so the loop must be stoppable and the thread joined: a fixed
     // accept count would block forever on the surplus iterations.
+    //
+    // Two details make the probe counter deterministic:
+    //  * the count is taken when the request has been READ, not after the
+    //    response is written — otherwise the acceptor thread can be descheduled
+    //    between `write_all` and the increment while the client, which already
+    //    has the response, returns `Verified` and the test reads 0 (the
+    //    load-dependent flake this test used to exhibit);
+    //  * each connection is served on its own thread, so a connection that is
+    //    slow to deliver its request cannot serialize the burst behind it.
     let stop = Arc::new(AtomicBool::new(false));
     let stop_accept = stop.clone();
     listener.set_nonblocking(true).unwrap();
@@ -395,18 +428,25 @@ async fn concurrent_same_credential_probes_collapse() {
         while !stop_accept.load(Ordering::SeqCst) {
             match listener.accept() {
                 Ok((stream, _)) => {
-                    let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
-                    let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
-                    let mut stream = stream;
-                    let _req = read_request(&mut stream, 65536);
-                    let _response = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                        session_str.len(),
-                        session_str
-                    );
-                    let _ = stream.write_all(_response.as_bytes());
-                    probe_count2.fetch_add(1, Ordering::SeqCst);
-                    let _ = stream.shutdown(Shutdown::Both);
+                    let counter = probe_count2.clone();
+                    let session = session_str.clone();
+                    thread::spawn(move || {
+                        let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
+                        let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
+                        let mut stream = stream;
+                        let _req = read_request(&mut stream, 65536);
+                        // Count BEFORE answering: "reached the backend" is true
+                        // the moment the request arrives, and the client can
+                        // only observe success after this line.
+                        counter.fetch_add(1, Ordering::SeqCst);
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                            session.len(),
+                            session
+                        );
+                        let _ = stream.write_all(response.as_bytes());
+                        let _ = stream.shutdown(Shutdown::Both);
+                    });
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     thread::sleep(Duration::from_millis(5));
@@ -431,6 +471,11 @@ async fn concurrent_same_credential_probes_collapse() {
 
     let hits = probe_count.load(Ordering::SeqCst);
     assert!(hits >= 1, "at least one probe must reach the backend");
+    assert!(
+        hits < 5,
+        "the in-flight dedup must collapse the burst: 5 concurrent probes with \
+         the same credential must not each reach the backend (got {hits})"
+    );
     stop.store(true, Ordering::SeqCst);
     acceptor.join().unwrap();
 }

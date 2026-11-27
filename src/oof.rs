@@ -451,6 +451,9 @@ fn last_string_literal_before_terminator(script: &str, start: usize) -> Option<S
 /// JMAP‑based OOF manager using Stalwart's JMAP Sieve extension.
 /// Stores vacation scripts via the `SieveScript` JMAP methods.
 pub struct JmapOofManager {
+    /// Built once, in [`JmapOofManager::create`] (called from `AppState::new`),
+    /// and reused for every call: `JmapClient` clones share their connection
+    /// pool and caches, so a call never constructs a client.
     jmap_client: JmapClient,
     username: String,
     password: SecretString,
