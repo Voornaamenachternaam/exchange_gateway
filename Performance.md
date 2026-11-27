@@ -818,3 +818,166 @@ and 24/24 under 8-way parallel load, all green.
 touched file (`auth.rs`, `jmap.rs`, `models.rs`, `mapi/handler.rs`,
 `directory.rs`, `oof.rs`, `tests/transport_fault_injection.rs`), release build
 warning-free.
+
+
+---
+
+# C1–C4 delivered — request batching and bounded concurrency (implementation record)
+
+Scope implemented: **C1, C2, C3 and C4** from `## Rewritten changes`, in the form written there.
+Nothing else in this document was touched: C5–C13 remain open.
+
+## C1 — one `Email/get` per phase in the EWS email delta (`src/ews.rs`)
+
+`handle_sync_email_folder_items` fetched its messages one id at a time
+(`jmap.get_email` in a loop), so a delta capped at `MaxChangesReturned` = 512
+([MS-OXWSSYNC] §3.1.4.2.4.1) cost up to 512 sequential round trips in the
+Create arm and the same again in the Delete and flag arms.
+
+Every arm now fetches its phase in ONE batched `Email/get`:
+
+| arm | ids fetched |
+| --- | --- |
+| Create / Update | `changes.created` (de-duplicated) |
+| Delete vs Update decision | the `overlap_all ∩ overlap_held` subset — the only destroyed ids that need a body |
+| flag `<t:Update>` | `flag_ops` minus the deletes (already bounded by the remaining budget) |
+
+`fetch_emails_by_id` (`ews.rs`) calls `JmapClient::get_emails` — which chunks at
+the session's `maxObjectsInGet` (500 on Stalwart) — with
+`Some(json!(JmapClient::mail_properties()))`, the exact property list
+`JmapClient::get_email` passes (`jmap.rs`), so the rendered `<t:Message>` is
+byte-identical to the per-id version. `mail_properties` moved from private to
+`pub(crate)` for that; passing `None` would have produced the same request
+(`get_emails` defaults to the same list), but pinning the list at the call site
+keeps the render path from silently following a future default change.
+
+The response is indexed **by `Email.id`** (RFC 8621 §4.1 makes no ordering
+promise for `Email/get`), and every rendering loop still walks the ORIGINAL id
+list, so the emitted `<t:Create>`/`<t:Update>`/`<t:Delete>` sequence — which
+`MaxChangesReturned` truncates as a prefix — is unchanged, as is the per-id
+decision logic (`email_lives_in_mailbox` → `undelivered_ids`, absent id → the
+old `Ok(None)` branch, staged flag-baseline seeds). A batch-level `Err` fails the
+whole call closed (`ErrorInternalServerError`, `SyncState` untouched) exactly as
+a per-id `Err` did.
+
+The test stub in the pre-existing `sync_email_folder_items_*` tests was
+corrected while here: its `Email/queryChanges` `added` entries were bare id
+strings, but RFC 8620 §5.6 defines them as `{id, index}` objects.
+
+Evidence:
+- `ews::tests::sync_email_folder_items_batches_one_get_per_phase` — three
+  changed ids; the stub returns the `Email/get` list in REVERSE order and
+  records every requested id list. Asserts **zero** single-id `Email/get` calls
+  and exactly **one** call carrying all three ids (a positional implementation
+  would also emit the Creates backwards, which the assertion on the rendered
+  order catches).
+- `ews::tests::sync_email_folder_items_batch_partial_absence_is_undelivered` —
+  `m1` is absent from the batch (`notFound`): it renders no command and gets NO
+  flag-baseline row, `m0` renders and seeds, and the window is still
+  acknowledged (`SyncState` → `S1`).
+
+## C2 — one baseline read per scan page (`src/storage.rs`, `src/eas.rs`)
+
+`scan_email_keyword_changes` read its per-collection flag baseline with one
+`get_email_keyword` query per message it swept, so a full sweep of
+`KEYWORD_SCAN_PAGE` (500) messages per delta cost 500 queries.
+
+New `Storage::get_email_keywords(owner, collection_id, &[id])` reads a whole page
+in ONE statement (`... AND email_id IN (?, ?, …)`), chunked at
+`KEYWORD_BASELINE_QUERY_CHUNK` = 500 ids — the page size, so one query per page.
+The scan iterates the page in its original order and looks each id up in the
+returned map, so the `<Change>` sequence, the overflow-queue order and the
+`deferred`/position accounting are unchanged.
+
+Semantics are the single-row form's, per id: an id with no row is ABSENT from
+the map (the caller's "no baseline yet" path), and a decode failure fails the
+WHOLE batch, so a page-level read error still sets `KeywordScanOutcome.deferred`
+and holds the rotating position — it is never mistaken for "no row".
+
+Deviation, with evidence: this document specifies `QueryBuilder::push_tuples`.
+For a single column it emits `((?), (?), …)`, a one-column ROW VALUE, which
+SQLite rejects when compared against a scalar column — verified on the bundled
+SQLite 3.46.0 (`Query error: (code: 1) row value misused`) before the change and
+green after it. The bind list is therefore built with
+`QueryBuilder::separated(", ")`, which produces the same `IN (...)` statement the
+document shows. The one-query-per-page property the item asks for is unaffected.
+
+Evidence:
+- `storage::tests::get_email_keywords_batches_rows_chunks_and_fails_closed` —
+  present/absent ids, owner+collection isolation, a 525-id batch (crosses the
+  chunk boundary, every row returned), and a corrupted `keywords_json` row that
+  fails the batch with `Decode error`.
+- The pre-existing `eas::tests::test_email_keyword_scan_*` matrix (bounded
+  rotation, deferred page-cap exit, excess-change deferral) is unchanged and
+  green.
+
+## C3 — one mailbox listing per `CopyFolder` (`src/ews_folder_ops.rs`)
+
+`copy_folder_recursive` called `query_mailboxes` at EVERY recursion level, and
+each distinguished folder reference cost its own `get_mailbox_ids_for_role`
+`Mailbox/query`. A request naming a distinguished destination plus N sources
+paid 1 + (number of nodes in the copied subtrees) listings.
+
+`handle_copy_folder` now lists the account's mailboxes ONCE and passes
+`&[JmapMailbox]` through `FolderCopyCtx`; the new `resolve_mailbox_target_in`
+resolves distinguished ids from that listing's `role` field with the same
+outcomes as `resolve_mailbox_target` (root / not-a-mail-folder / not-found /
+explicit id). This is safe for the reason recorded in the audit: the recursion
+reads the list only for the SOURCE's display name and the
+`parent_id == Some(src_mailbox_id)` children filter, and the copy creates
+mailboxes under the DESTINATION, so a newly created id can never satisfy a
+filter on a source id — the list cannot go stale inside one operation.
+Recursion stays bounded by `MAX_DEPTH`.
+
+Kept exactly: one `FolderId` per requested folder in REQUEST order, and the
+all-or-nothing `rollback_copied_subtree` on any failure. A request that names no
+folder and no distinguished destination still needs no listing at all, so it
+cannot fail on a backend it never used (the listing is fetched only when a
+source must be copied or a distinguished reference must be resolved). A listing
+failure is now reported as an internal error, which is what the recursion
+already answered for the same call.
+
+Evidence: `ews_folder_ops::tests::copy_folder_lists_mailboxes_once_per_operation`
+— destination `DistinguishedFolderId inbox`, sources `src-2` then `src-1` (with
+a child). Asserts exactly **one** `Mailbox/query` for the whole request (the
+per-level form issued four: one role lookup plus one listing per recursion
+level), the `FolderId`s in request order, and one `Mailbox/set` create per
+copied folder.
+
+## C4 — contact photos downloaded concurrently (`src/contacts.rs`)
+
+`list_contacts_jmap` downloaded each contact's photo blob serially, one round
+trip per contact, so a large address book paid them one after another.
+
+The cards are now rendered through
+`futures_util::stream::iter(...).map(...).buffer_unordered(8)`, with the input
+index captured and the result re-sorted by it before returning, so the returned
+`Vec<CarddavContact>` order is exactly the backend's card order. The PHOTO is
+still pushed INSIDE the vCard before `to_string()` — deferring it to render time
+would change `sha256(vcard)`, which IS the contact `ChangeKey` (Stalwart exposes
+no `@etag`), and make the next `SyncFolderItems` report the whole address book
+as modified. Failure semantics are unchanged: a failed blob download logs a
+warning and omits PHOTO, and the contact is still listed.
+
+Evidence: `contacts::contact_test_support::list_contacts_jmap_downloads_photos_concurrently_in_input_order`
+— eight cards whose blobs finish in REVERSE card order (so a serial
+implementation returns them reversed), one blob answering 500. Asserts the
+returned order is the card order, that at least four downloads were in flight
+simultaneously (serial would peak at 1), that each card carries ITS OWN photo
+bytes, that the failing card omits PHOTO, and that all eight contacts are still
+returned.
+
+## Gate
+
+1625 tests green (1519 lib + 36 + 3 + 10 + 6 + 5 + 10 + 15 + 11 + 1 + 8 + 1),
+`cargo clippy --all-targets` 0 warnings, `rustfmt --edition 2024 --check` clean on
+every touched file (`ews.rs`, `jmap.rs`, `storage.rs`, `eas.rs`,
+`ews_folder_ops.rs`, `contacts.rs`), release build warning-free.
+
+Note: the pre-existing §19 load test
+`storage::tests::concurrent_sync_writes_and_ping_reads_never_fail_or_stall`
+reported one `database is locked` failure during a run that overlapped a full
+recompile; it passes 3/3 in isolation and 3/3 in three subsequent full-suite
+runs, and nothing in C1–C4 writes to SQLite on that path (C2 adds one READ per
+scan page). It is the documented timing sensitivity of that test, not a
+regression.

@@ -21,6 +21,12 @@ pub trait SafeDebug {
 /// window into a permanent Status 2 name collision.
 pub const PENDING_CALENDAR_CREATE_TTL_SECS: i64 = 7 * 24 * 3600;
 
+/// Ids per `IN (...)` batch in [`Storage::get_email_keywords`]. SQLite's
+/// default bound-variable limit is 999 on old builds and 32766 on current
+/// ones; 500 keeps the statement comfortably under both and bounds the
+/// statement cache's key length.
+const KEYWORD_BASELINE_QUERY_CHUNK: usize = 500;
+
 /// Result of [`Storage::claim_email_submission`]: whether THIS request owns the
 /// submission of a ClientId, or a previous attempt already decided it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2787,6 +2793,65 @@ impl Storage {
         serde_json::from_str(&s)
             .map(Some)
             .map_err(|e| GatewayError::Storage(format!("Decode error: {}", e)))
+    }
+
+    /// Batched [`Storage::get_email_keyword`]: the baseline rows for a whole
+    /// page of ids in one collection.
+    ///
+    /// The EAS/EWS flag scan walks `KEYWORD_SCAN_PAGE` ids per delta, so the
+    /// per-id form cost one query per message. This reads them in chunks of
+    /// [`KEYWORD_BASELINE_QUERY_CHUNK`] (well under SQLite's bound-variable
+    /// limit).
+    ///
+    /// Semantics are the single-row form's, per id: an id with no row is
+    /// ABSENT from the map (not an error — the caller treats "absent" as "no
+    /// baseline yet"), while a decode failure fails the WHOLE batch so the
+    /// caller holds its scan position instead of mistaking a read error for a
+    /// missing baseline.
+    pub async fn get_email_keywords(
+        &self,
+        owner: &str,
+        collection_id: &str,
+        email_ids: &[String],
+    ) -> Result<HashMap<String, Vec<String>>> {
+        let mut out = HashMap::with_capacity(email_ids.len());
+        for chunk in email_ids.chunks(KEYWORD_BASELINE_QUERY_CHUNK) {
+            let mut qb = sqlx::QueryBuilder::new(
+                "SELECT email_id, keywords_json FROM email_keyword_baseline \
+                 WHERE owner = ",
+            );
+            qb.push_bind(owner);
+            qb.push(" AND collection_id = ");
+            qb.push_bind(collection_id);
+            // A plain `IN (?, ?, …)` list. `QueryBuilder::push_tuples` would
+            // emit `((?), (?), …)` — a one-column ROW VALUE, which SQLite
+            // rejects with "row value misused" when compared against a scalar
+            // column (verified on the bundled SQLite 3.46.0), so the bind list
+            // is built with `separated` instead.
+            qb.push(" AND email_id IN (");
+            let mut sep = qb.separated(", ");
+            for id in chunk {
+                sep.push_bind(id.as_str());
+            }
+            sep.push_unseparated(")");
+            let rows = qb
+                .build()
+                .fetch_all(self.pool.as_ref())
+                .await
+                .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+            for r in rows {
+                let id: String = r
+                    .try_get(0)
+                    .map_err(|e| GatewayError::Storage(format!("Decode error: {}", e)))?;
+                let s: String = r
+                    .try_get(1)
+                    .map_err(|e| GatewayError::Storage(format!("Decode error: {}", e)))?;
+                let keywords: Vec<String> = serde_json::from_str(&s)
+                    .map_err(|e| GatewayError::Storage(format!("Decode error: {}", e)))?;
+                out.insert(id, keywords);
+            }
+        }
+        Ok(out)
     }
 
     /// Whether a message has a recorded baseline row in a collection's flag
@@ -8735,5 +8800,64 @@ mod tests {
                 .is_none(),
             "an explicit empty map clears the baseline"
         );
+    }
+    #[tokio::test]
+    async fn get_email_keywords_batches_rows_chunks_and_fails_closed() {
+        let storage = Storage::new("sqlite::memory:").await.unwrap();
+        storage.init_schema().await.unwrap();
+
+        // Present ids come back; absent ones are simply not in the map.
+        storage
+            .upsert_email_keyword("o", "c", "a", &["$seen".to_string()])
+            .await
+            .unwrap();
+        storage
+            .upsert_email_keyword("o", "c", "b", &[])
+            .await
+            .unwrap();
+        // Another collection / owner must never leak into the batch.
+        storage
+            .upsert_email_keyword("o", "other", "c", &["$flagged".to_string()])
+            .await
+            .unwrap();
+        storage
+            .upsert_email_keyword("other", "c", "c", &["$flagged".to_string()])
+            .await
+            .unwrap();
+
+        let ids = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let rows = storage.get_email_keywords("o", "c", &ids).await.unwrap();
+        assert_eq!(rows.len(), 2, "only this collection's rows: {rows:?}");
+        assert_eq!(rows.get("a").unwrap(), &vec!["$seen".to_string()]);
+        assert_eq!(rows.get("b").unwrap(), &Vec::<String>::new());
+        assert!(!rows.contains_key("c"), "other owners/collections excluded");
+
+        // Chunking: more ids than one `IN (...)` batch still reads every row.
+        let mut many = Vec::new();
+        for i in 0..(KEYWORD_BASELINE_QUERY_CHUNK + 25) {
+            let id = format!("m{i}");
+            storage
+                .upsert_email_keyword("o", "big", &id, &[format!("k{i}")])
+                .await
+                .unwrap();
+            many.push(id);
+        }
+        let rows = storage.get_email_keywords("o", "big", &many).await.unwrap();
+        assert_eq!(rows.len(), many.len(), "every chunk must be read");
+        let last = many.len() - 1;
+        assert_eq!(rows.get(&many[last]).unwrap(), &vec![format!("k{last}")]);
+
+        // A corrupt row is a READ ERROR for the batch, never "no baseline".
+        sqlx::query(
+            "UPDATE email_keyword_baseline SET keywords_json = 'not json' WHERE email_id = 'a'",
+        )
+        .execute(storage.pool.as_ref())
+        .await
+        .unwrap();
+        let err = storage
+            .get_email_keywords("o", "c", &ids)
+            .await
+            .expect_err("a decode failure must fail the batch");
+        assert!(format!("{err}").contains("Decode error"), "{err}");
     }
 }

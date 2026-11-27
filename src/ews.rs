@@ -5265,6 +5265,64 @@ fn email_lives_in_mailbox(email: &crate::jmap::JmapEmail, mailbox_id: &str) -> b
     }
 }
 
+/// De-duplicate ids while preserving first-occurrence order.
+///
+/// A `queryChanges` result may list an id in both `created` and `destroyed`
+/// (an in-place move) and, in principle, twice in one list. The batched fetch
+/// wants each id once; the render loops still walk the ORIGINAL list so their
+/// output order is untouched.
+fn unique_ids(ids: &[String]) -> Vec<String> {
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut out = Vec::with_capacity(ids.len());
+    for id in ids {
+        if seen.insert(id.as_str()) {
+            out.push(id.clone());
+        }
+    }
+    out
+}
+
+/// Fetch one phase's messages in a single batched `Email/get` and index the
+/// result by `Email.id`.
+///
+/// `Email/get` makes no ordering promise (RFC 8621 §4.1), so the caller must
+/// look each id up in the map rather than index the response by position.
+/// `get_emails` chunks the id list at the session's `maxObjectsInGet`, so a
+/// `MaxChangesReturned`-bounded delta costs at most two requests. The property
+/// list is [`JmapClient::mail_properties`] — exactly what
+/// [`JmapClient::get_email`] requests — so the rendered `<t:Message>` is
+/// byte-identical to the per-id version.
+async fn fetch_emails_by_id(
+    jmap: &JmapClient,
+    account_id: &str,
+    ids: &[String],
+    username: &str,
+    password: &secrecy::SecretString,
+) -> anyhow::Result<std::collections::HashMap<String, crate::jmap::JmapEmail>> {
+    let mut by_id = std::collections::HashMap::with_capacity(ids.len());
+    if ids.is_empty() {
+        return Ok(by_id);
+    }
+    let properties = serde_json::json!(JmapClient::mail_properties());
+    for email in jmap
+        .get_emails(account_id, ids, Some(properties), username, password, true)
+        .await?
+    {
+        match email.id.clone() {
+            Some(id) => {
+                by_id.insert(id, email);
+            }
+            // `id` is a core `Email/get` property; a row without it cannot be
+            // attributed to a requested id, so it is treated as absent.
+            None => tracing::debug!(
+                target: "ews",
+                "JMAP Email/get returned a message without an id; ignoring it"
+            ),
+        }
+    }
+    Ok(by_id)
+}
+
 async fn handle_sync_email_folder_items(
     state: &Arc<AppState>,
     auth: &AuthContext,
@@ -5649,100 +5707,80 @@ async fn handle_sync_email_folder_items(
     // flag scan must not record a baseline row — a later edit would then emit an
     // `<t:Update>` for an item the client does not hold.
     let mut undelivered_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // One batched `Email/get` per phase (Performance.md C1). Each phase used to
+    // fetch its messages one id at a time, so a 512-item delta cost up to 512
+    // sequential round trips; the batch costs at most two (`get_emails` chunks
+    // the id list at the session's `maxObjectsInGet`). The per-id DECISION logic
+    // below is unchanged and still runs in the original id order, so the emitted
+    // `<t:Create>`/`<t:Update>`/`<t:Delete>` sequence — which `MaxChangesReturned`
+    // truncates as a prefix — is byte-identical to the per-id version.
+    let created_ids = unique_ids(&changes.created);
+    let fetched_created = match fetch_emails_by_id(
+        jmap,
+        &account_id,
+        &created_ids,
+        &auth.username,
+        &auth.password,
+    )
+    .await
+    {
+        Ok(map) => map,
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                count = created_ids.len(),
+                "JMAP Email/get failed rendering EWS email Create/Update changes; failing closed"
+            );
+            return operation_error_response(
+                &EwsAction::SyncFolderItems,
+                "ErrorInternalServerError",
+                "Failed to fetch a changed message",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    };
     for email_id in &changes.created {
-        if delivered_created.contains(email_id.as_str()) {
-            // The client ALREADY holds this message in this folder (the prime or
-            // an earlier delta delivered it), so re-send it as an Update — never
-            // a second Create — and refresh the flag baseline with its current
-            // keywords. That keeps a flag edit made since delivery reportable
-            // even when the bounded scan has not reached the message yet.
-            // Skip if already rendered (an id may appear in both lists).
-            if rendered_ids.contains(email_id) {
-                continue;
-            }
-            match jmap
-                .get_email(&account_id, email_id, &auth.username, &auth.password, true)
-                .await
-            {
-                Ok(Some(email)) if !email_lives_in_mailbox(&email, &mailbox_id) => {
-                    // The message left this folder between the membership feed
-                    // and this fetch: an Update here would describe an item that
-                    // no longer belongs to it (its departure is reported by the
-                    // destroyed walk as a Delete).
-                    undelivered_ids.insert(email_id.clone());
-                }
-                Ok(Some(email)) => {
-                    let server_id = email_server_id_from_jmap_id(email_id);
-                    let change_key = server_id.clone();
-                    changes_xml.push_str(&format!(
-                        r#"<t:Update>{}</t:Update>"#,
-                        render_jmap_email_as_ews_message(&email, &server_id, &change_key)
-                    ));
-                    rendered_ids.insert(email_id.clone());
-                    let keywords = email.sorted_active_keywords();
-                    pending_seeds.push((email_id.clone(), keywords));
-                    seeded_ids.insert(email_id.clone());
-                }
-                Ok(None) => {
-                    undelivered_ids.insert(email_id.clone());
-                }
-                Err(e) => {
-                    tracing::error!(
-                        error = %e,
-                        email_id = %email_id,
-                        "JMAP Email/get failed rendering an EWS email Update for held overlap; failing closed"
-                    );
-                    return operation_error_response(
-                        &EwsAction::SyncFolderItems,
-                        "ErrorInternalServerError",
-                        "Failed to fetch a changed message",
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                    );
-                }
-            }
+        // The client ALREADY holds this message in this folder (the prime or an
+        // earlier delta delivered it) → re-send it as an Update, never a second
+        // Create. That keeps a flag edit made since delivery reportable even when
+        // the bounded scan has not reached the message yet. An id may appear in
+        // both lists, so a held id already rendered is skipped.
+        let is_update = delivered_created.contains(email_id.as_str());
+        if is_update && rendered_ids.contains(email_id) {
             continue;
         }
-        match jmap
-            .get_email(&account_id, email_id, &auth.username, &auth.password, true)
-            .await
-        {
-            Ok(Some(email)) if !email_lives_in_mailbox(&email, &mailbox_id) => {
-                // Arrived and left again before this fetch: a Create would
-                // advertise an item the folder does not hold.
+        match fetched_created.get(email_id) {
+            Some(email) if !email_lives_in_mailbox(email, &mailbox_id) => {
+                // The message left this folder between the membership feed and
+                // this fetch: a command here would describe an item that no
+                // longer belongs to it (its departure is reported by the
+                // destroyed walk as a Delete).
                 undelivered_ids.insert(email_id.clone());
             }
-            Ok(Some(email)) => {
+            Some(email) => {
                 let server_id = email_server_id_from_jmap_id(email_id);
                 let change_key = server_id.clone();
+                let tag = if is_update { "Update" } else { "Create" };
                 changes_xml.push_str(&format!(
-                    r#"<t:Create>{}</t:Create>"#,
-                    render_jmap_email_as_ews_message(&email, &server_id, &change_key)
+                    "<t:{tag}>{}</t:{tag}>",
+                    render_jmap_email_as_ews_message(email, &server_id, &change_key)
                 ));
                 rendered_ids.insert(email_id.clone());
-                // Stage the flag baseline for a delivered Create, exactly as the
-                // EAS delta seeds a delivered `<Add>`: the bounded scan may not
-                // reach this message before its flags change, and a missing
+                // Stage the flag baseline for a delivered Create/Update, exactly
+                // as the EAS delta seeds a delivered `<Add>`: the bounded scan may
+                // not reach this message before its flags change, and a missing
                 // baseline row would record the new keywords as a first
                 // observation (no `<Change>`) instead of reporting the edit.
                 let keywords = email.sorted_active_keywords();
                 pending_seeds.push((email_id.clone(), keywords));
                 seeded_ids.insert(email_id.clone());
             }
-            Ok(None) => {
+            // Not in the response: the message vanished between the membership
+            // feed and this fetch. A later delta reports its destruction, so it
+            // must not get a baseline row.
+            None => {
                 undelivered_ids.insert(email_id.clone());
-            }
-            Err(e) => {
-                tracing::error!(
-                    error = %e,
-                    email_id = %email_id,
-                    "JMAP Email/get failed rendering an EWS email Create; failing closed"
-                );
-                return operation_error_response(
-                    &EwsAction::SyncFolderItems,
-                    "ErrorInternalServerError",
-                    "Failed to fetch a changed message",
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                );
             }
         }
     }
@@ -5755,6 +5793,42 @@ async fn handle_sync_email_folder_items(
     // was handled by the created loop. An overlap id whose LIVE membership says
     // the message left the folder is a genuine departure (Delete + membership
     // prune), not a reorder.
+    //
+    // Only those held overlap ids need a fetch (Delete vs Update); the remaining
+    // departures render a Delete without one. Batched here for the same reason as
+    // the created phase.
+    let overlap_fetch_ids = unique_ids(
+        &changes
+            .destroyed
+            .iter()
+            .filter(|id| overlap_all.contains(id.as_str()) && overlap_held.contains(id.as_str()))
+            .cloned()
+            .collect::<Vec<_>>(),
+    );
+    let fetched_overlap = match fetch_emails_by_id(
+        jmap,
+        &account_id,
+        &overlap_fetch_ids,
+        &auth.username,
+        &auth.password,
+    )
+    .await
+    {
+        Ok(map) => map,
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                count = overlap_fetch_ids.len(),
+                "JMAP Email/get failed rendering an EWS email overlap Update; failing closed"
+            );
+            return operation_error_response(
+                &EwsAction::SyncFolderItems,
+                "ErrorInternalServerError",
+                "Failed to fetch a changed message",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    };
     let mut left_ids: Vec<String> = Vec::new();
     for email_id in &changes.destroyed {
         let server_id = email_server_id_from_jmap_id(email_id);
@@ -5767,11 +5841,8 @@ async fn handle_sync_email_folder_items(
             if rendered_ids.contains(email_id) {
                 continue;
             }
-            match jmap
-                .get_email(&account_id, email_id, &auth.username, &auth.password, true)
-                .await
-            {
-                Ok(Some(email)) if !email_lives_in_mailbox(&email, &mailbox_id) => {
+            match fetched_overlap.get(email_id) {
+                Some(email) if !email_lives_in_mailbox(email, &mailbox_id) => {
                     rendered_ids.insert(email_id.clone());
                     changes_xml.push_str(&format!(
                         r#"<t:Delete><t:ItemId Id="{}" /></t:Delete>"#,
@@ -5779,12 +5850,12 @@ async fn handle_sync_email_folder_items(
                     ));
                     left_ids.push(email_id.clone());
                 }
-                Ok(Some(email)) => {
+                Some(email) => {
                     rendered_ids.insert(email_id.clone());
                     let change_key = server_id.clone();
                     changes_xml.push_str(&format!(
                         r#"<t:Update>{}</t:Update>"#,
-                        render_jmap_email_as_ews_message(&email, &server_id, &change_key)
+                        render_jmap_email_as_ews_message(email, &server_id, &change_key)
                     ));
                     // Stage this delivered Update's flag baseline too. An overlap
                     // id is queued, so the scan never emits an op for it — but the
@@ -5797,21 +5868,8 @@ async fn handle_sync_email_folder_items(
                     pending_seeds.push((email_id.clone(), keywords));
                     seeded_ids.insert(email_id.clone());
                 }
-                Ok(None) => {
+                None => {
                     undelivered_ids.insert(email_id.clone());
-                }
-                Err(e) => {
-                    tracing::error!(
-                        error = %e,
-                        email_id = %email_id,
-                        "JMAP Email/get failed rendering an EWS email Update; failing closed"
-                    );
-                    return operation_error_response(
-                        &EwsAction::SyncFolderItems,
-                        "ErrorInternalServerError",
-                        "Failed to fetch a changed message",
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                    );
                 }
             }
         } else {
@@ -5828,43 +5886,59 @@ async fn handle_sync_email_folder_items(
     // baseline/position are persisted only after the state commit below, so a
     // failed fetch that still advanced the state would drop the flag edit
     // forever. An id that genuinely vanished (`Ok(None)`) is skipped — a later
-    // delta reports its destruction.
+    // delta reports its destruction. Batched: `flag_ops` is bounded by the
+    // remaining `MaxChangesReturned` budget, so this is at most two requests.
+    let flag_fetch_ids = unique_ids(
+        &flag_ops
+            .iter()
+            .filter(|op| !op.is_delete())
+            .map(|op| op.id.clone())
+            .collect::<Vec<_>>(),
+    );
+    let fetched_flags = match fetch_emails_by_id(
+        jmap,
+        &account_id,
+        &flag_fetch_ids,
+        &auth.username,
+        &auth.password,
+    )
+    .await
+    {
+        Ok(map) => map,
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                count = flag_fetch_ids.len(),
+                "JMAP Email/get failed rendering EWS email flag updates; failing closed"
+            );
+            return operation_error_response(
+                &EwsAction::SyncFolderItems,
+                "ErrorInternalServerError",
+                "Failed to fetch a changed message",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    };
     for op in &flag_ops {
         if op.is_delete() {
             continue;
         }
-        match jmap
-            .get_email(&account_id, &op.id, &auth.username, &auth.password, true)
-            .await
-        {
-            Ok(Some(email)) if !email_lives_in_mailbox(&email, &mailbox_id) => {
+        match fetched_flags.get(&op.id) {
+            Some(email) if !email_lives_in_mailbox(email, &mailbox_id) => {
                 // Left the folder since the scan observed it: the membership feed
                 // reports the departure, so a flag Update here would be a stray.
                 undelivered_ids.insert(op.id.clone());
             }
-            Ok(Some(email)) => {
+            Some(email) => {
                 let server_id = email_server_id_from_jmap_id(&op.id);
                 let change_key = server_id.clone();
                 changes_xml.push_str(&format!(
                     r#"<t:Update>{}</t:Update>"#,
-                    render_jmap_email_as_ews_message(&email, &server_id, &change_key)
+                    render_jmap_email_as_ews_message(email, &server_id, &change_key)
                 ));
             }
-            Ok(None) => {
+            None => {
                 undelivered_ids.insert(op.id.clone());
-            }
-            Err(e) => {
-                tracing::error!(
-                    error = %e,
-                    email_id = %op.id,
-                    "JMAP Email/get failed rendering an EWS email flag Update; failing closed"
-                );
-                return operation_error_response(
-                    &EwsAction::SyncFolderItems,
-                    "ErrorInternalServerError",
-                    "Failed to fetch a changed message",
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                );
             }
         }
     }
@@ -19273,6 +19347,373 @@ mod tests {
         assert!(
             text.contains("ErrorServerBusy"),
             "an unreadable prune floor must fail the prime retryably: {text}"
+        );
+    }
+    /// C1: the delta fetches a phase's messages in ONE batched `Email/get`
+    /// instead of one per message, indexes the response by `Email.id` (never by
+    /// position) and still renders in the ORIGINAL id order.
+    ///
+    /// The stub deliberately returns the list REVERSED, so a positional
+    /// implementation would emit the Creates backwards.
+    #[tokio::test]
+    async fn sync_email_folder_items_batches_one_get_per_phase() {
+        use axum::routing::{get, post};
+        use serde_json::{Value, json};
+        use std::sync::Arc as StdArc;
+
+        #[derive(Clone)]
+        struct Ctl {
+            base: String,
+            reverse: bool,
+            calls: StdArc<std::sync::Mutex<Vec<Vec<String>>>>,
+        }
+
+        async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
+            axum::Json(json!({
+                "apiUrl": ctl.base,
+                "downloadUrl": format!("{}/download/{{accountId}}/{{blobId}}", ctl.base),
+                "uploadUrl": format!("{}/upload/{{accountId}}", ctl.base),
+                "eventSourceUrl": format!("{}/eventsource", ctl.base),
+                "state": "s",
+                "username": "u",
+                "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                "capabilities": {"urn:ietf:params:jmap:core": {"maxObjectsInGet": 500}}
+            }))
+        }
+
+        async fn api(
+            axum::Extension(ctl): axum::Extension<Ctl>,
+            body: String,
+        ) -> axum::response::Response {
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let mut responses = Vec::new();
+            for call in req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                let args = call.get(1).cloned().unwrap_or(Value::Null);
+                let result = match name {
+                    "Mailbox/query" => json!({"accountId":"a","ids":["mbx-inbox"],"total":1}),
+                    "Email/queryChanges" => json!({
+                        "accountId": "a",
+                        "oldQueryState": "S0",
+                        "newQueryState": "S1",
+                        "added": [
+                            {"id": "m0", "index": 0},
+                            {"id": "m1", "index": 1},
+                            {"id": "m2", "index": 2},
+                        ],
+                        "removed": [],
+                    }),
+                    // The bounded flag scan sees an empty mailbox, so the only
+                    // `Email/get` calls in this test are the phase fetches.
+                    "Email/query" => json!({
+                        "accountId": "a",
+                        "queryState": "S1",
+                        "ids": [],
+                        "total": 0,
+                        "position": 0,
+                    }),
+                    "Email/get" => {
+                        let mut ids: Vec<String> = args
+                            .get("ids")
+                            .and_then(|v| v.as_array())
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|v| v.as_str().map(str::to_string))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        ctl.calls.lock().unwrap().push(ids.clone());
+                        if ctl.reverse {
+                            ids.reverse();
+                        }
+                        let list: Vec<Value> = ids
+                            .iter()
+                            .map(|id| {
+                                json!({
+                                    "id": id,
+                                    "blobId": "b1",
+                                    "threadId": "t1",
+                                    "mailboxIds": {"mbx-inbox": true},
+                                    "keywords": {},
+                                    "subject": format!("s-{id}"),
+                                    "from": [{"name": "S", "email": "s@example.com"}],
+                                    "to": [{"name": "R", "email": "r@example.com"}],
+                                    "receivedAt": "2026-11-10T12:00:00Z",
+                                    "sentAt": "2026-11-10T12:00:00Z",
+                                    "size": 10,
+                                    "preview": "hi",
+                                    "hasAttachment": false
+                                })
+                            })
+                            .collect();
+                        json!({"accountId": "a", "state": "S1", "list": list})
+                    }
+                    _ => json!({"accountId": "a"}),
+                };
+                responses.push(json!([name, result, cid]));
+            }
+            let resp = json!({"methodResponses": responses, "sessionState": "s"});
+            axum::response::Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                .unwrap()
+        }
+
+        let calls = StdArc::new(std::sync::Mutex::new(Vec::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let ctl = Ctl {
+            base: base.clone(),
+            reverse: true,
+            calls: calls.clone(),
+        };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base,
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(crate::models::AppState::new(cfg, StdArc::new(storage)));
+        let owner = owner_from_username("user@example.com");
+        let folder_id = folder_id_for(owner, DistinguishedFolder::Inbox);
+        state
+            .storage
+            .set_ews_sync_state(owner, &folder_id, "S0")
+            .await
+            .expect("persist delta state");
+
+        let body = r#"<m:SyncFolderItems><m:ItemShape/><m:SyncFolderId><t:DistinguishedFolderId Id="inbox"/></m:SyncFolderId><m:SyncState>S0</m:SyncState><m:MaxChangesReturned>100</m:MaxChangesReturned></m:SyncFolderItems>"#;
+        let resp = handle_sync_folder_items(&state, &meeting_auth(), body).await;
+        let text = response_body(resp).await;
+
+        let calls = calls.lock().unwrap().clone();
+        assert_eq!(
+            calls.iter().filter(|ids| ids.len() == 1).count(),
+            0,
+            "no per-message Email/get may remain: {calls:?}"
+        );
+        assert_eq!(
+            calls.iter().filter(|ids| ids.len() == 3).count(),
+            1,
+            "the three changed ids must arrive in ONE batched Email/get: {calls:?}"
+        );
+        assert_eq!(
+            text.matches("<t:Create>").count(),
+            3,
+            "every added id must render a Create: {text}"
+        );
+        let p0 = text.find("s-m0").expect("m0 rendered");
+        let p1 = text.find("s-m1").expect("m1 rendered");
+        let p2 = text.find("s-m2").expect("m2 rendered");
+        assert!(
+            p0 < p1 && p1 < p2,
+            "Creates must follow the ORIGINAL id order even though the backend \
+             returned the list reversed: {text}"
+        );
+        assert_eq!(
+            state
+                .storage
+                .get_ews_sync_state(owner, &folder_id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("S1"),
+            "the delivered delta must advance the stored SyncState"
+        );
+    }
+
+    /// C1: an id missing from a batched `Email/get` response is treated exactly
+    /// as the per-id `Ok(None)` branch did — no command for it, no flag-baseline
+    /// row (the client never received it) — while the ids the batch DID return
+    /// render normally and seed their baselines.
+    #[tokio::test]
+    async fn sync_email_folder_items_batch_partial_absence_is_undelivered() {
+        use axum::routing::{get, post};
+        use serde_json::{Value, json};
+        use std::sync::Arc as StdArc;
+
+        #[derive(Clone)]
+        struct Ctl {
+            base: String,
+        }
+
+        async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
+            axum::Json(json!({
+                "apiUrl": ctl.base,
+                "downloadUrl": format!("{}/download/{{accountId}}/{{blobId}}", ctl.base),
+                "uploadUrl": format!("{}/upload/{{accountId}}", ctl.base),
+                "eventSourceUrl": format!("{}/eventsource", ctl.base),
+                "state": "s",
+                "username": "u",
+                "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                "capabilities": {"urn:ietf:params:jmap:core": {"maxObjectsInGet": 500}}
+            }))
+        }
+
+        async fn api(
+            axum::Extension(_ctl): axum::Extension<Ctl>,
+            body: String,
+        ) -> axum::response::Response {
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let mut responses = Vec::new();
+            for call in req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                let result = match name {
+                    "Mailbox/query" => json!({"accountId":"a","ids":["mbx-inbox"],"total":1}),
+                    "Email/queryChanges" => json!({
+                        "accountId": "a",
+                        "oldQueryState": "S0",
+                        "newQueryState": "S1",
+                        "added": [
+                            {"id": "m0", "index": 0},
+                            {"id": "m1", "index": 1},
+                        ],
+                        "removed": [],
+                    }),
+                    "Email/query" => json!({
+                        "accountId": "a",
+                        "queryState": "S1",
+                        "ids": [],
+                        "total": 0,
+                        "position": 0,
+                    }),
+                    // m1 vanished between the membership feed and the fetch.
+                    "Email/get" => json!({
+                        "accountId": "a",
+                        "state": "S1",
+                        "list": [{
+                            "id": "m0",
+                            "blobId": "b1",
+                            "threadId": "t1",
+                            "mailboxIds": {"mbx-inbox": true},
+                            "keywords": {"$seen": true},
+                            "subject": "s-m0",
+                            "from": [{"name": "S", "email": "s@example.com"}],
+                            "to": [{"name": "R", "email": "r@example.com"}],
+                            "receivedAt": "2026-11-10T12:00:00Z",
+                            "sentAt": "2026-11-10T12:00:00Z",
+                            "size": 10,
+                            "preview": "hi",
+                            "hasAttachment": false
+                        }],
+                        "notFound": ["m1"]
+                    }),
+                    _ => json!({"accountId": "a"}),
+                };
+                responses.push(json!([name, result, cid]));
+            }
+            let resp = json!({"methodResponses": responses, "sessionState": "s"});
+            axum::response::Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                .unwrap()
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let ctl = Ctl { base: base.clone() };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base,
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(crate::models::AppState::new(cfg, StdArc::new(storage)));
+        let owner = owner_from_username("user@example.com");
+        let folder_id = folder_id_for(owner, DistinguishedFolder::Inbox);
+        state
+            .storage
+            .set_ews_sync_state(owner, &folder_id, "S0")
+            .await
+            .expect("persist delta state");
+
+        let body = r#"<m:SyncFolderItems><m:ItemShape/><m:SyncFolderId><t:DistinguishedFolderId Id="inbox"/></m:SyncFolderId><m:SyncState>S0</m:SyncState><m:MaxChangesReturned>100</m:MaxChangesReturned></m:SyncFolderItems>"#;
+        let resp = handle_sync_folder_items(&state, &meeting_auth(), body).await;
+        let text = response_body(resp).await;
+
+        assert!(
+            text.contains("ResponseClass=\"Success\""),
+            "a vanished id is not an error: {text}"
+        );
+        assert_eq!(
+            text.matches("<t:Create>").count(),
+            1,
+            "only the id the batch returned may render: {text}"
+        );
+        assert!(text.contains("s-m0"), "the returned message must render");
+        assert!(
+            !text.contains("s-m1"),
+            "an id absent from the batch must not render: {text}"
+        );
+        assert!(
+            state
+                .storage
+                .get_email_keyword(owner, &folder_id, "m0")
+                .await
+                .unwrap()
+                .is_some(),
+            "a delivered Create must seed its flag baseline"
+        );
+        assert!(
+            state
+                .storage
+                .get_email_keyword(owner, &folder_id, "m1")
+                .await
+                .unwrap()
+                .is_none(),
+            "an id the client never received must not get a baseline row"
+        );
+        assert_eq!(
+            state
+                .storage
+                .get_ews_sync_state(owner, &folder_id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("S1"),
+            "the window is still acknowledged"
         );
     }
 }

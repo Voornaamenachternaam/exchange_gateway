@@ -172,6 +172,53 @@ async fn mailbox_target_for_distinguished(
     }
 }
 
+/// Resolve a folder reference against an ALREADY-FETCHED mailbox listing.
+///
+/// Same outcomes as [`resolve_mailbox_target`], but the distinguished-folder
+/// role lookup reads the listing's `role` field instead of issuing a
+/// `Mailbox/query` per reference — `CopyFolder` can name a destination plus N
+/// sources, and the operation already needs the full listing for its recursion.
+fn resolve_mailbox_target_in(
+    mailboxes: &[crate::jmap::JmapMailbox],
+    owner: &str,
+    explicit_id: Option<&str>,
+    distinguished_id: Option<&str>,
+) -> MailboxTarget {
+    fn by_distinguished(
+        mailboxes: &[crate::jmap::JmapMailbox],
+        df: DistinguishedFolder,
+    ) -> MailboxTarget {
+        if df == DistinguishedFolder::MsgFolderRoot {
+            return MailboxTarget::MsgFolderRoot;
+        }
+        match role_for_folder(df) {
+            None => MailboxTarget::NotAMailFolder,
+            Some(role) => mailboxes
+                .iter()
+                .find(|m| m.role.as_deref() == Some(role))
+                .and_then(|m| m.id.clone())
+                .map(MailboxTarget::Id)
+                .unwrap_or(MailboxTarget::NotFound),
+        }
+    }
+
+    if let Some(d) = distinguished_id {
+        return match d.parse::<DistinguishedFolder>() {
+            Ok(df) => by_distinguished(mailboxes, df),
+            Err(_) => MailboxTarget::NotFound,
+        };
+    }
+    let Some(id) = explicit_id else {
+        return MailboxTarget::NotFound;
+    };
+    match resolve_folder_id(id, owner) {
+        Some(df) => by_distinguished(mailboxes, df),
+        // Anything else is treated as a native JMAP mailbox id, exactly as
+        // `resolve_mailbox_target` does.
+        None => MailboxTarget::Id(id.to_string()),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Shared plumbing
 // ---------------------------------------------------------------------------
@@ -1018,6 +1065,11 @@ struct FolderCopyCtx<'a> {
     password: &'a SecretString,
     jmap: &'a Arc<JmapClient>,
     account_id: &'a str,
+    /// The account's mailboxes, listed ONCE per `CopyFolder` (Performance.md
+    /// C3). The copy only CREATES mailboxes under the destination, so a new id
+    /// can never satisfy the recursion's `parent_id == Some(src_mailbox_id)`
+    /// filter — the list cannot go stale inside one operation.
+    mailboxes: &'a [crate::jmap::JmapMailbox],
 }
 
 /// Best-effort removal of a copied folder subtree after a failed copy.
@@ -1083,9 +1135,8 @@ fn copy_folder_recursive<'a>(
             anyhow::bail!("folder copy exceeded depth {MAX_DEPTH}");
         }
 
-        let all = ctx.jmap.query_mailboxes(ctx.username, ctx.password).await?;
+        let all = ctx.mailboxes;
         let src = all
-            .mailboxes
             .iter()
             .find(|m| m.id.as_deref() == Some(src_mailbox_id))
             .ok_or_else(|| anyhow::anyhow!("source folder not found"))?;
@@ -1152,7 +1203,6 @@ fn copy_folder_recursive<'a>(
 
             // Recurse: children of the source become children of the copy.
             for child in all
-                .mailboxes
                 .iter()
                 .filter(|m| m.parent_id.as_deref() == Some(src_mailbox_id))
             {
@@ -1216,17 +1266,33 @@ pub(crate) async fn handle_copy_folder(
         .and_then(|n| n.attribute("Id"))
         .map(|s| s.to_string());
 
-    let dest_parent = match resolve_mailbox_target(
-        &jmap,
-        &account_id,
+    let source_ids = all_attrs(body, Some("FolderIds"), "FolderId", "Id");
+
+    // ONE mailbox listing for the whole operation (Performance.md C3). The
+    // destination resolution, every source resolution and the recursive copy
+    // all read this list, so a request naming N folders costs one listing
+    // instead of one per recursion level plus one per distinguished reference.
+    // A request that names no folder and no distinguished destination needs no
+    // listing at all, so it cannot fail on a backend hiccup it never used.
+    let mut listing: Vec<crate::jmap::JmapMailbox> = Vec::new();
+    let needs_listing = !source_ids.is_empty()
+        || to_distinguished.is_some()
+        || to_explicit
+            .as_deref()
+            .is_some_and(|e| resolve_folder_id(e, &owner).is_some());
+    if needs_listing {
+        match jmap.query_mailboxes(&auth.username, &auth.password).await {
+            Ok(l) => listing = l.mailboxes,
+            Err(e) => return internal_error(action, "Failed to list mailboxes", &e),
+        }
+    }
+
+    let dest_parent = match resolve_mailbox_target_in(
+        &listing,
         &owner,
         to_explicit.as_deref(),
         to_distinguished.as_deref(),
-        &auth.username,
-        &auth.password,
-    )
-    .await
-    {
+    ) {
         MailboxTarget::Id(id) => Some(id),
         MailboxTarget::MsgFolderRoot => None,
         MailboxTarget::NotAMailFolder => {
@@ -1248,18 +1314,8 @@ pub(crate) async fn handle_copy_folder(
     };
 
     let mut created_ids: Vec<String> = Vec::new();
-    for id in all_attrs(body, Some("FolderIds"), "FolderId", "Id") {
-        let mailbox_id = match resolve_mailbox_target(
-            &jmap,
-            &account_id,
-            &owner,
-            Some(&id),
-            None,
-            &auth.username,
-            &auth.password,
-        )
-        .await
-        {
+    for id in source_ids {
+        let mailbox_id = match resolve_mailbox_target_in(&listing, &owner, Some(&id), None) {
             MailboxTarget::Id(m) => m,
             MailboxTarget::NotAMailFolder
             | MailboxTarget::MsgFolderRoot
@@ -1278,6 +1334,7 @@ pub(crate) async fn handle_copy_folder(
                 password: &auth.password,
                 jmap: &jmap,
                 account_id: &account_id,
+                mailboxes: &listing,
             },
             &mailbox_id,
             dest_parent.as_deref(),
@@ -4118,5 +4175,172 @@ mod tests {
             row.parent_id, "0",
             "a failed parent resolution must not write a stale/incorrect ParentId"
         );
+    }
+
+    /// C3: `CopyFolder` lists the account's mailboxes ONCE for the whole
+    /// operation — the destination resolution, every source resolution and the
+    /// recursive copy all read that one listing.
+    ///
+    /// The request names a distinguished destination plus two sources (one with
+    /// a child), which the per-level implementation answered with four
+    /// `Mailbox/query` calls (one role lookup + one listing per recursion
+    /// level). It must now be exactly one, and the response must still carry
+    /// one `FolderId` per requested folder in REQUEST order.
+    #[tokio::test]
+    async fn copy_folder_lists_mailboxes_once_per_operation() {
+        use axum::response::Response;
+        use serde_json::{Value, json};
+
+        let mailboxes = vec![
+            json!({"id": "mbx-inbox", "name": "Inbox", "parentId": null, "role": "inbox"}),
+            json!({"id": "src-1", "name": "Projects", "parentId": null, "role": null}),
+            json!({"id": "src-1-child", "name": "Sub", "parentId": "src-1", "role": null}),
+            json!({"id": "src-2", "name": "Notes", "parentId": null, "role": null}),
+        ];
+        let calls: StdArc<TokioMutex<Vec<Value>>> = StdArc::new(TokioMutex::new(Vec::new()));
+        let created_counter = StdArc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let session_base = base.clone();
+        let api_calls = calls.clone();
+        let api_mailboxes = mailboxes.clone();
+        let api_created = created_counter.clone();
+        let app = axum::Router::new()
+            .route(
+                "/session",
+                get(move || {
+                    let base = session_base.clone();
+                    async move {
+                        axum::Json(json!({
+                            "apiUrl": base,
+                            "downloadUrl": format!("{base}/download/{{accountId}}/{{blobId}}"),
+                            "uploadUrl": format!("{base}/upload/{{accountId}}"),
+                            "eventSourceUrl": format!("{base}/eventsource"),
+                            "state": "s",
+                            "username": "u",
+                            "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                            "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                            "capabilities": {}
+                        }))
+                    }
+                }),
+            )
+            .route(
+                "/",
+                post(move |body: String| {
+                    let calls = api_calls.clone();
+                    let mailboxes = api_mailboxes.clone();
+                    let created = api_created.clone();
+                    async move {
+                        let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+                        let mut responses = Vec::new();
+                        for call in req
+                            .get("methodCalls")
+                            .and_then(|v| v.as_array())
+                            .cloned()
+                            .unwrap_or_default()
+                        {
+                            let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                            let args = call.get(1).cloned().unwrap_or(Value::Null);
+                            let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                            calls
+                                .lock()
+                                .await
+                                .push(json!({"method": name, "args": args.clone()}));
+                            let result = match name {
+                                "Mailbox/query" => {
+                                    let ids: Vec<Value> =
+                                        mailboxes.iter().filter_map(|m| m.get("id").cloned()).collect();
+                                    json!({"accountId": "a", "ids": ids, "total": ids.len()})
+                                }
+                                "Mailbox/get" => json!({"accountId": "a", "list": mailboxes}),
+                                "Mailbox/set" => {
+                                    let mut created_map = serde_json::Map::new();
+                                    if let Some(create) = args.get("create").and_then(|v| v.as_object()) {
+                                        for key in create.keys() {
+                                            let n = created
+                                                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                            created_map.insert(
+                                                key.clone(),
+                                                json!({"id": format!("new-{n}")}),
+                                            );
+                                        }
+                                    }
+                                    json!({"accountId": "a", "created": created_map})
+                                }
+                                "Email/query" => json!({"accountId": "a", "ids": [], "total": 0}),
+                                "Email/get" => json!({"accountId": "a", "list": []}),
+                                _ => json!({"accountId": "a"}),
+                            };
+                            responses.push(json!([name, result, cid]));
+                        }
+                        let resp = json!({"methodResponses": responses, "sessionState": "s"});
+                        Response::builder()
+                            .status(200)
+                            .header("content-type", "application/json")
+                            .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                            .unwrap()
+                    }
+                }),
+            );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base,
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(crate::models::AppState::new(cfg, StdArc::new(storage)));
+        let auth = AuthContext {
+            username: "u@example.com".to_string(),
+            password: SecretString::from("pw"),
+        };
+        // Destination: distinguished Inbox. Sources: src-2 FIRST, then src-1
+        // (which has a child) — request order must survive.
+        let body = r#"<?xml version="1.0"?><m:CopyFolder xmlns:m="m" xmlns:t="t"><m:ToFolderId><t:DistinguishedFolderId Id="inbox"/></m:ToFolderId><m:FolderIds><t:FolderId Id="src-2"/><t:FolderId Id="src-1"/></m:FolderIds></m:CopyFolder>"#;
+        let resp = handle_copy_folder(&state, &auth, body).await;
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+
+        let calls = calls.lock().await.clone();
+        let mailbox_queries = calls
+            .iter()
+            .filter(|c| c.get("method").and_then(|m| m.as_str()) == Some("Mailbox/query"))
+            .count();
+        assert_eq!(
+            mailbox_queries, 1,
+            "the whole CopyFolder must list the mailboxes ONCE: {calls:?}"
+        );
+        assert!(text.contains("NoError"), "copy must succeed: {text}");
+
+        // One FolderId per requested folder, in request order: the first copy
+        // is `src-2` (Notes), the second is `src-1` (Projects).
+        let folders_at = text.find("<m:Folders>").expect("Folders element");
+        let folders = &text[folders_at..];
+        let first = folders.find("new-0").expect("first copy rendered");
+        let second = folders.find("new-1").expect("second copy rendered");
+        assert!(
+            first < second,
+            "FolderIds must follow the request order: {folders}"
+        );
+
+        // Four mailboxes created: src-2's copy, then src-1's copy + its child.
+        let creates: Vec<&Value> = calls
+            .iter()
+            .filter(|c| c.get("method").and_then(|m| m.as_str()) == Some("Mailbox/set"))
+            .collect();
+        assert_eq!(creates.len(), 3, "one create per copied folder: {calls:?}");
     }
 }

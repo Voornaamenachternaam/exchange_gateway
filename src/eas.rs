@@ -8680,33 +8680,38 @@ pub(crate) async fn scan_email_keyword_changes(
             complete = true;
             break;
         }
+        // ONE batched baseline read per page instead of one query per id: the
+        // page is `KEYWORD_SCAN_PAGE` messages, so the per-id form made a delta
+        // pay a query per message it swept.
+        let page_ids: Vec<String> = entries.iter().map(|(id, _)| id.clone()).collect();
+        let previous_rows = match state
+            .storage
+            .get_email_keywords(username, state_collection_id, &page_ids)
+            .await
+        {
+            Ok(m) => m,
+            Err(e) => {
+                // A failed baseline read must NOT be treated as a missing
+                // row: that would record the new keywords as a fresh
+                // capture and silently swallow the flag change. Hold the
+                // cursor at this page's start so the next sweep re-reads
+                // every id in it, and stop here.
+                tracing::warn!(
+                    error = %e,
+                    "Failed to read email keyword baseline rows; holding scan position"
+                );
+                outcome.position = position;
+                outcome.deferred = true;
+                return outcome;
+            }
+        };
         for (id, keywords) in entries {
-            let previous = match state
-                .storage
-                .get_email_keyword(username, state_collection_id, &id)
-                .await
-            {
-                Ok(p) => p,
-                Err(e) => {
-                    // A failed baseline read must NOT be treated as a missing
-                    // row: that would record the new keywords as a fresh
-                    // capture and silently swallow the flag change. Hold the
-                    // cursor at this page's start so the next sweep re-reads
-                    // every id in it, and stop here.
-                    tracing::warn!(
-                        error = %e,
-                        "Failed to read email keyword baseline row; holding scan position"
-                    );
-                    outcome.position = position;
-                    outcome.deferred = true;
-                    return outcome;
-                }
-            };
+            let previous = previous_rows.get(&id);
             // A row is written only when the baseline is missing or the live
             // keywords differ: re-upserting an unchanged row on every sweep
             // would issue up to `KEYWORD_SCAN_MAX_PAGES * KEYWORD_SCAN_PAGE`
             // pointless writes per delta.
-            let differs = previous.as_ref() != Some(&keywords);
+            let differs = previous != Some(&keywords);
             if !differs {
                 continue;
             }

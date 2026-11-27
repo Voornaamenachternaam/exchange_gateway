@@ -1558,7 +1558,7 @@ impl JmapClient {
     /// the gateway needs to render EWS/EAS: the metadata used by SyncFolderItems
     /// / FindItem / Sync plus the richer fields (`attachments`, `header:raw`,
     /// `bodyStructure`) required for full-fidelity GetItem rendering.
-    fn mail_properties() -> Vec<&'static str> {
+    pub(crate) fn mail_properties() -> Vec<&'static str> {
         vec![
             "id",
             "blobId",
