@@ -1394,7 +1394,10 @@ impl Wbxml {
 
     /// Read an inline string token's payload: raw bytes up to (not
     /// including) the terminating NUL, which is consumed as UTF-8.
-    fn read_inline_str(bytes: &[u8], pos: &mut usize) -> Result<String> {
+    /// Read a NUL-terminated STR_I value as a slice of the payload: the caller
+    /// escapes it straight into the output, so no intermediate `String` is
+    /// allocated per string token.
+    fn read_inline_str<'a>(bytes: &'a [u8], pos: &mut usize) -> Result<&'a str> {
         let start = *pos;
         while *pos < bytes.len() && bytes[*pos] != 0 {
             *pos += 1;
@@ -1402,7 +1405,7 @@ impl Wbxml {
         if *pos >= bytes.len() {
             return Err(anyhow!("Unterminated STR_I string"));
         }
-        let s = String::from_utf8(bytes[start..*pos].to_vec())?;
+        let s = std::str::from_utf8(&bytes[start..*pos])?;
         *pos += 1;
         Ok(s)
     }
@@ -1427,7 +1430,7 @@ impl Wbxml {
             return Err(anyhow!("Empty WBXML payload"));
         }
         if bytes[0] == b'<' {
-            return Ok(String::from_utf8(bytes.to_vec())?);
+            return Ok(std::str::from_utf8(bytes)?.to_owned());
         }
 
         let mut pos = 0usize;
@@ -1450,8 +1453,16 @@ impl Wbxml {
         // default namespace (see the tag-emission note below).
         let mut root_code_page: Option<u8> = None;
         let mut seen_root = false;
-        let mut xml_stack: Vec<String> = Vec::new();
-        let mut output = String::from("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
+        // Every name comes from `TAG_TO_NAME` (`&'static str`), and the
+        // root-page rule only takes a `rsplit(':')` slice of it, so the open
+        // element stack needs no owned `String` per element.
+        let mut xml_stack: Vec<&'static str> = Vec::new();
+        const XML_DECL: &str = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n";
+        // WBXML expands to XML at roughly 2–4x, so reserve the expansion up
+        // front (the declaration is already accounted for) instead of growing
+        // through a dozen reallocations for a large Sync response.
+        let mut output = String::with_capacity(XML_DECL.len() + bytes.len().saturating_mul(2));
+        output.push_str(XML_DECL);
 
         while pos < bytes.len() {
             // A WBXML document's body is exactly one element; character data
@@ -1478,11 +1489,13 @@ impl Wbxml {
                     let Some(tag) = xml_stack.pop() else {
                         return Err(anyhow!("WBXML END with no open element"));
                     };
-                    let _ = write!(output, "</{tag}>");
+                    output.push_str("</");
+                    output.push_str(tag);
+                    output.push('>');
                 }
                 STR_I => {
                     let content = Self::read_inline_str(bytes, &mut pos)?;
-                    output.push_str(&xml_escape_text(&content));
+                    output.push_str(&xml_escape_text(content));
                 }
                 STR_T => {
                     let offset = usize::try_from(Self::read_mb_uint(bytes, &mut pos)?)
@@ -1494,8 +1507,8 @@ impl Wbxml {
                     while end < string_table.len() && string_table[end] != 0 {
                         end += 1;
                     }
-                    let content = String::from_utf8(string_table[offset..end].to_vec())?;
-                    output.push_str(&xml_escape_text(&content));
+                    let content = std::str::from_utf8(&string_table[offset..end])?;
+                    output.push_str(&xml_escape_text(content));
                 }
                 ENTITY => {
                     let ent = Self::read_mb_uint(bytes, &mut pos)?;
@@ -1577,11 +1590,15 @@ impl Wbxml {
                     } else {
                         name
                     };
-                    let _ = write!(output, "<{display_name}>");
+                    output.push('<');
+                    output.push_str(display_name);
+                    output.push('>');
                     if has_content {
-                        xml_stack.push(display_name.to_string());
+                        xml_stack.push(display_name);
                     } else {
-                        let _ = write!(output, "</{display_name}>");
+                        output.push_str("</");
+                        output.push_str(display_name);
+                        output.push('>');
                     }
                 }
             }
@@ -1627,7 +1644,7 @@ impl Wbxml {
         // unqualified descendant names resolve against it.
         let mut implicit_root_cp: Option<u8> = None;
         let mut ns_stack: Vec<Option<u8>> = Vec::new();
-        let mut prefix_ns_stack: Vec<std::collections::HashMap<String, Option<u8>>> = Vec::new();
+        let mut prefix_ns_stack: Vec<PrefixBindings> = Vec::new();
         // Parallel stack: whether each open element carries a byte-array value
         // that must be OPAQUE-encoded ([MS-ASDTYPE] §2.7.1).
         let mut byte_array_stack: Vec<bool> = Vec::new();
@@ -1764,15 +1781,15 @@ impl Wbxml {
                 }
                 Ok(quick_xml::events::Event::CData(ref c)) => {
                     // CDATA carries the same character content as a text
-                    // node, only unescaped in source form.
-                    let content = String::from_utf8(c.as_ref().as_bytes().to_vec())
-                        .map_err(|e| anyhow!("XML encode error: invalid CDATA UTF-8: {e}"))?;
+                    // node, only unescaped in source form. Borrowed, not
+                    // copied: the aggregated buffer owns the bytes.
+                    let content = c.as_ref();
                     if ns_stack.is_empty() && !content.is_empty() {
                         return Err(anyhow!(
                             "XML encode error: character data outside the document element"
                         ));
                     }
-                    pending_text.push_str(&content);
+                    pending_text.push_str(content);
                 }
                 // WBXML has no representation for processing instructions or
                 // a DTD; silently dropping them would lose document meaning.
@@ -1844,9 +1861,16 @@ impl Wbxml {
     }
 }
 
-/// Namespace-declaration map: prefix -> its code page, `None` when the
-/// declared URI is not a [MS-ASWBXML] namespace (an error when used).
-type PrefixBindings = std::collections::HashMap<String, Option<u8>>;
+/// Namespace declarations made by one element: `(prefix, its code page)`,
+/// `None` when the declared URI is not a [MS-ASWBXML] namespace (an error when
+/// the prefix is used).
+///
+/// `None` for the whole binding set means "this element declares no prefixes",
+/// which is every element in EAS traffic except the document root. It costs one
+/// null pointer on the scope stack and allocates nothing — the previous
+/// `HashMap` was built (allocating) once per element, and every one of those
+/// maps was empty.
+type PrefixBindings = Option<Box<[(Box<str>, Option<u8>)]>>;
 
 /// Collect the namespace bindings an element's attributes declare.
 ///
@@ -1861,16 +1885,21 @@ type PrefixBindings = std::collections::HashMap<String, Option<u8>>;
 fn encode_namespace_attributes(
     e: &quick_xml::events::BytesStart<'_>,
 ) -> Result<(PrefixBindings, Option<u8>)> {
-    let mut prefixes: PrefixBindings = std::collections::HashMap::new();
+    // Every `Vec` here starts empty and stays empty for an element with no
+    // attributes, so the common case (every element but the root) allocates
+    // nothing at all.
+    let mut prefixes: Vec<(Box<str>, Option<u8>)> = Vec::new();
     let mut default_cp: Option<u8> = None;
-    let mut seen_keys: Vec<String> = Vec::new();
+    // Keys stay BORROWED from the element (`QName` is `Copy`), so duplicate
+    // detection needs no per-attribute `String`.
+    let mut seen_keys: Vec<&str> = Vec::new();
     for attr in e.attributes() {
         let attr = attr.map_err(|err| anyhow!("XML encode error: malformed attribute: {err}"))?;
-        let key = attr.key.as_ref().to_string();
+        let key: &str = attr.key.into_inner();
         if seen_keys.contains(&key) {
             return Err(anyhow!("XML encode error: duplicate attribute '{key}'"));
         }
-        seen_keys.push(key.clone());
+        seen_keys.push(key);
         let value = attr
             .normalized_value(quick_xml::XmlVersion::Implicit1_0)
             .map_err(|err| anyhow!("XML encode error: invalid namespace value '{key}': {err}"))?;
@@ -1884,15 +1913,20 @@ fn encode_namespace_attributes(
                 )
             })?);
         } else if key.starts_with("xmlns:") && key.len() > "xmlns:".len() {
-            let prefix = key["xmlns:".len()..].to_string();
-            prefixes.insert(prefix, namespace_uri_to_code_page(value.as_ref()));
+            let prefix = &key["xmlns:".len()..];
+            prefixes.push((prefix.into(), namespace_uri_to_code_page(value.as_ref())));
         } else {
             return Err(anyhow!(
                 "XML encode error: attribute '{key}' cannot be represented in WBXML: [MS-ASWBXML] \u{a7}2.1.3 defines no attribute encoding"
             ));
         }
     }
-    Ok((prefixes, default_cp))
+    let bindings = if prefixes.is_empty() {
+        None
+    } else {
+        Some(prefixes.into_boxed_slice())
+    };
+    Ok((bindings, default_cp))
 }
 
 /// Resolve a prefix that is in scope for an element to its code page.
@@ -1903,15 +1937,14 @@ fn encode_namespace_attributes(
 /// `Err` when the prefix is explicitly bound to a namespace URI this codec
 /// does not support — an unrepresentable binding must never be silently
 /// overridden by the canonical-prefix or ambient-page fallbacks.
-fn resolve_prefix_binding(
-    prefix: &str,
-    prefix_ns_stack: &[std::collections::HashMap<String, Option<u8>>],
-) -> Result<Option<u8>> {
-    match prefix_ns_stack
-        .iter()
-        .rev()
-        .find_map(|map| map.get(prefix).copied())
-    {
+fn resolve_prefix_binding(prefix: &str, prefix_ns_stack: &[PrefixBindings]) -> Result<Option<u8>> {
+    match prefix_ns_stack.iter().rev().find_map(|bindings| {
+        bindings
+            .as_deref()?
+            .iter()
+            .find(|(declared, _)| &**declared == prefix)
+            .map(|(_, cp)| *cp)
+    }) {
         Some(Some(cp)) => Ok(Some(cp)),
         Some(None) => Err(anyhow!(
             "XML encode error: prefix '{prefix}' is declared with a namespace URI that is not a [MS-ASWBXML] namespace"
@@ -2149,6 +2182,50 @@ mod tests {
         assert!(decoded.contains("<AirSyncBase:TruncationSize>512</AirSyncBase:TruncationSize>"));
         assert!(!decoded.contains("<AirSync:"));
         assert!(!decoded.contains("<Sync:"));
+    }
+
+    /// The decoded document is BYTE-EXACT: the tag/END emission is raw
+    /// `push_str` pieces and the open-element stack holds the `&'static` names
+    /// from `TAG_TO_NAME`, so the whole text is pinned here — including the
+    /// escaped value of a string element and an OPAQUE (base64) byte-array
+    /// value.
+    #[test]
+    fn decode_emits_byte_exact_xml_for_escaped_text_and_opaque() {
+        let xml = concat!(
+            r#"<Sync xmlns="AirSync:" xmlns:AirSyncBase="AirSyncBase:">"#,
+            "<Collections><Collection><SyncKey>a&amp;b&lt;x&gt;</SyncKey>",
+            "<AirSyncBase:Content>QUJD</AirSyncBase:Content>",
+            "</Collection></Collections></Sync>"
+        );
+        let wb = Wbxml::new().encode(xml).expect("encode");
+        assert_eq!(
+            Wbxml::new().decode(&wb).expect("decode"),
+            concat!(
+                "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n",
+                "<Sync><Collections><Collection><SyncKey>a&amp;b&lt;x&gt;</SyncKey>",
+                "<AirSyncBase:Content>QUJD</AirSyncBase:Content>",
+                "</Collection></Collections></Sync>"
+            )
+        );
+    }
+
+    /// The two leniently-accepted tokens keep their exact expansions: `STR_T`
+    /// indexes the (always empty in this profile) string table, and `ENTITY`
+    /// becomes the numeric character reference `&#n;` — never the resolved
+    /// character, which would then be re-escaped on the next encode.
+    #[test]
+    fn decode_expands_str_t_and_entity_tokens_verbatim() {
+        let body = [
+            0x03, 0x01, 0x6A, 0x03, b'h', b'i', 0x00, // header + string table "hi\0"
+            0x45, // <Sync> with content (page 0, token 0x05 | 0x40)
+            0x83, 0x00, // STR_T offset 0 -> "hi"
+            0x02, 0x26, // ENTITY 38 -> "&#38;"
+            0x01, // </Sync>
+        ];
+        assert_eq!(
+            Wbxml::new().decode(&body).expect("decode"),
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<Sync>hi&#38;</Sync>"
+        );
     }
 
     // ============ AUDIT.md §11: [MS-ASWBXML] conformance hardening ============
@@ -2991,6 +3068,73 @@ mod tests {
             "<Collections><AirSyncBase:Body>3</AirSyncBase:Body></Collections></Sync>"
         );
         assert!(Wbxml::new().encode(canonical_fallback).is_ok());
+    }
+
+    /// Prefix declarations are scoped per element and resolved innermost-first,
+    /// which the binding list must preserve now that it is a plain slice
+    /// instead of a `HashMap`: an ancestor's declaration applies to
+    /// descendants, a re-declaration on a nearer element wins, a declaration to
+    /// an unknown URI on an ANCESTOR still errors when the prefix is used
+    /// below it, and more than two declarations on one element all resolve.
+    #[test]
+    fn encode_resolves_prefix_scope_across_nesting_and_shadowing() {
+        let wbxml = Wbxml::new();
+
+        let nested = concat!(
+            r#"<Sync xmlns="AirSync:" xmlns:Email="Email:">"#,
+            "<Collections><Collection><Email:From>a@b.c</Email:From>",
+            "</Collection></Collections></Sync>"
+        );
+        let decoded = wbxml
+            .decode(&wbxml.encode(nested).expect("ancestor binding resolves"))
+            .expect("decode");
+        assert!(
+            decoded.contains("<Email:From>a@b.c</Email:From>"),
+            "{decoded}"
+        );
+
+        // The nearer declaration wins over the ancestor's.
+        let shadowed = concat!(
+            r#"<Sync xmlns="AirSync:" xmlns:Email="AirSync:">"#,
+            r#"<Collections xmlns:Email="Email:">"#,
+            "<Collection><Email:From>x</Email:From></Collection></Collections></Sync>"
+        );
+        let decoded = wbxml
+            .decode(&wbxml.encode(shadowed).expect("inner binding wins"))
+            .expect("decode");
+        assert!(decoded.contains("<Email:From>x</Email:From>"), "{decoded}");
+
+        // An ancestor's unknown-URI declaration still fails when used below it.
+        let unknown_on_ancestor = concat!(
+            r#"<Sync xmlns="AirSync:" xmlns:Email="Unknown">"#,
+            "<Collections><Collection><Email:From>x</Email:From>",
+            "</Collection></Collections></Sync>"
+        );
+        let err = wbxml
+            .encode(unknown_on_ancestor)
+            .expect_err("a declared-but-unknown ancestor prefix must be rejected");
+        assert!(err.to_string().contains("prefix 'Email'"), "{err}");
+
+        // Three declarations on one element, two of them used.
+        let many = concat!(
+            r#"<Sync xmlns="AirSync:" xmlns:Email="Email:" "#,
+            r#"xmlns:AirSyncBase="AirSyncBase:" xmlns:FolderHierarchy="FolderHierarchy:">"#,
+            "<Collections><Collection><Email:From>y</Email:From>",
+            "<AirSyncBase:ContentType>text/plain</AirSyncBase:ContentType>",
+            "</Collection></Collections></Sync>"
+        );
+        let decoded = wbxml
+            .decode(
+                &wbxml
+                    .encode(many)
+                    .expect("multi-declaration element encodes"),
+            )
+            .expect("decode");
+        assert!(decoded.contains("<Email:From>y</Email:From>"), "{decoded}");
+        assert!(
+            decoded.contains("<AirSyncBase:ContentType>text/plain</AirSyncBase:ContentType>"),
+            "{decoded}"
+        );
     }
 
     /// [MS-ASWBXML] §2.1.3 defines no attribute encoding, so any attribute

@@ -1110,3 +1110,135 @@ warning-free, `rustfmt --edition 2024` clean on every touched file. New tests:
 over prefixed/nested/entity/CDATA/self-closing corpora),
 `eas::tests::extract_all_tag_blocks_keeps_inner_text_and_first_close`, and
 `email::tests::test_parse_eas_sendmail_large_mime_without_source_references`.
+
+# C7 and C8 delivered — WBXML codec allocations (implementation record)
+
+Scope implemented: **C7 and C8** from `## Rewritten changes`, in the form
+written there. C9–C13 remain open. `src/wbxml.rs` is the only file touched; the
+emitted token stream and the decoded document are unchanged.
+
+## C7 — the encoder's per-element binding set allocates nothing (`src/wbxml.rs`)
+
+`encode_namespace_attributes` ran for every `Start`/`Empty` and started with
+`HashMap::new()`, `Vec::new()` and `attr.key.as_ref().to_string()` per attribute.
+EAS documents declare their namespaces on the ROOT element, so virtually every
+one of those maps and vectors was empty — two allocations per element for
+nothing, thousands per Sync response.
+
+The binding set is now `Option<Box<[(Box<str>, Option<u8>)]>>`:
+
+* `None` means "this element declares no prefixes" — one null pointer on
+  `prefix_ns_stack`, no allocation, no hashing. It is the case for every element
+  but the root.
+* Declarations (the rare case) are a plain slice, searched linearly: a real
+  element declares one to three prefixes, where a linear scan beats hashing and
+  costs one allocation for the whole list instead of one per entry.
+* Attribute keys stay BORROWED from the element (`attr.key.into_inner()`;
+  `QName` is `Copy`, so the `Attribute` stays usable for
+  `normalized_value`). Duplicate detection therefore compares `&str`s and needs
+  no per-attribute `String`.
+
+Every pinned semantic is preserved, and the two existing guard tests
+(`encode_rejects_declared_unknown_namespace_bindings`,
+`encode_rejects_non_namespace_attributes`) pass unchanged:
+
+* a binding set is pushed for EVERY `Start`/`Empty`, empty or not, so
+  `prefix_ns_stack` stays depth-aligned with `ns_stack`;
+* duplicate attribute names are still a hard error, compared on the same key
+  text as before;
+* a non-namespace attribute is still a hard error ([MS-ASWBXML] §2.1.3 defines
+  no attribute encoding);
+* `xmlns` with an unknown URI is an immediate error, `xmlns:p` with an unknown
+  URI stays `None` and errors only when `p` is USED;
+* the canonical-prefix fallback and the implicit-root fallback are untouched;
+* the emitted bytes are identical (the §3 byte-exact test and every fixture
+  round-trip pass).
+
+New test: `encode_resolves_prefix_scope_across_nesting_and_shadowing` — an
+ancestor's declaration resolves for a descendant, a nearer re-declaration wins
+over it, an ancestor's unknown-URI declaration still fails when used below it
+(the `Some(None)` arm of the new lookup), and three declarations on one element
+all resolve.
+
+## C8 — the decoder keeps static names and formats nothing (`src/wbxml.rs`)
+
+* `xml_stack: Vec<String>` → `Vec<&'static str>`. Every name comes from
+  `TAG_TO_NAME` (`phf::Map<[u8; 2], &'static str>`), and the root-page rule only
+  takes a `rsplit(':').next()` slice of it, so the open-element stack needs no
+  owned `String` per element.
+* `format!("</{tag}>")` → `push_str("</"); push_str(tag); push('>')`, and the
+  same for the open tag: identical bytes, no `fmt` machinery on the two
+  per-element writes. (`ENTITY` → `&#{n};` was already a `write!` after P1-8.)
+* `output` is built with `String::with_capacity(XML_DECL.len() +
+  bytes.len() * 2)` instead of growing from the declaration: WBXML expands to
+  XML at roughly 2–4×, and the declaration's own length is counted so the
+  reserve is not short by 39 bytes.
+* `String::from_utf8(bytes.to_vec())` → `std::str::from_utf8(bytes)?.to_owned()`
+  in the raw-XML passthrough branch (one copy instead of two), and the same
+  borrowing in the STR_I / STR_T / CDATA paths: those values are escaped
+  straight into `output` through `xml_escape_text`'s `Cow`, so a string token
+  allocates nothing of its own (the encoder's input is a `&str`, so the UTF-8
+  validation it used to run on a fresh `Vec` could never fail).
+
+Preserved exactly: the root-page-unqualified rule (pinned by
+`sync_root_page_expands_unqualified_and_switched_pages_prefixed`), every
+fail-closed rejection (§2.1.3 tokens, attribute-bit tag tokens, unknown
+code page/token, END underflow, data before/after the root, truncation), and
+the lenient `ENTITY`/`STR_T` handling.
+
+New tests: `decode_emits_byte_exact_xml_for_escaped_text_and_opaque` (the whole
+decoded document compared verbatim, including an escaped string value and an
+OPAQUE base64 byte-array value) and
+`decode_expands_str_t_and_entity_tokens_verbatim` (a hand-built body with a
+string table, asserting `<Sync>hi&#38;</Sync>` — the tokens the encoder never
+emits).
+
+## Evidence (executed, `rustc 1.99.1` / `cargo 1.99.1`)
+
+`cargo bench --bench hot_paths -- wbxml_codec --warm-up-time 1
+--measurement-time 3`, run back to back on the same tree with `git stash push --
+src/` to get the pre-change code:
+
+| bench | before | after | delta |
+| --- | --- | --- | --- |
+| `encode_64_collections` | 46.61 µs | 45.30 µs | −3.7 % |
+| `decode_64_collections` | 28.93 µs | 16.16 µs | **−44.5 %** |
+| `round_trip_64_collections` | 75.25 µs | 61.91 µs | **−20.5 %** |
+
+Two honest corrections to the audit's own hypotheses:
+
+* **P1-9's "proven cost" was a hypothesis, and it is small.** Removing the
+  per-element `HashMap`/`Vec`/`String` set is worth ~3 % of encode. The cost was
+  real but not dominant; the encoder is dominated by quick-xml parsing and the
+  `STR_I` writes, as P1-8's render measurement already suggested. The change is
+  still right (it removes allocations proportional to element count), but it
+  should not have been ranked as the codec's main cost.
+* **P1-10's win is larger than expected** because the owned-`String` removal
+  also covered the per-string-token `String` in `read_inline_str` and the
+  `STR_T` branch, which the audit did not list: a 64-collection decode carries
+  ~250 string tokens, so those were ~250 avoidable allocations per decode.
+
+## Found while implementing C8 — NOT changed (deliberate behaviour, out of scope)
+
+The encoder trims each Text event (`Reader::config_mut().trim_text(true)`), and
+quick-xml splits a text run at every entity reference. A value like
+`R &amp; D &lt;x&gt;` therefore encodes as `R&D<x>` — the spaces AROUND an
+escaped character are lost. This is reachable from the wire: every rendered
+value goes through `xml_escape`, so a subject `R & D` is escaped to
+`R &amp; D` and then encoded without its spaces.
+
+It is **pinned** behaviour: `split_element_content_encodes_as_single_wbxml_token`
+asserts the aggregated value is `A&B` for source `A &amp; B`, with a comment
+explaining that per-segment trimming is what keeps pretty-printed templates from
+emitting spurious `STR_I` tokens. Trimming the aggregated value once instead
+(the trim moves into `write_element_content`, with a whitespace-only pending
+still dropped) fixes the space loss and keeps that property — the whole suite
+passes with it — but it changes bytes on the wire for any value containing an
+escaped character, which is a semantic change, not a performance one. It is
+recorded here for a separate, deliberate item rather than smuggled into C7/C8.
+
+## Gate
+
+1638 tests green (1532 lib + 36 + 3 + 10 + 6 + 5 + 10 + 15 + 11 + 1 + 8 + 1),
+`cargo clippy --all-targets -- -D warnings` 0 warnings, release build
+warning-free, `rustfmt --edition 2024` clean on `src/wbxml.rs`.
