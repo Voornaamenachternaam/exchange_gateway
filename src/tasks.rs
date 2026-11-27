@@ -1265,7 +1265,9 @@ async fn apply_note_mutation(
 
 /// An ensured CalDAV collection plus the client that reaches it.
 pub struct TaskBackendStore {
-    pub caldav: crate::caldav::CaldavClient,
+    /// The process-wide CalDAV client (shared connection pool); an `Arc`
+    /// because the store borrows it rather than owning a private client.
+    pub caldav: std::sync::Arc<crate::caldav::CaldavClient>,
     /// Collection href the store is bound to (with trailing slash).
     pub collection: String,
 }
@@ -1280,7 +1282,10 @@ impl TaskBackendStore {
         name: &str,
         components: &[&str],
     ) -> Result<Self> {
-        let caldav = crate::caldav::CaldavClient::new(&state.cfg)?;
+        let caldav = state
+            .caldav()
+            .map_err(|e| anyhow::anyhow!("CalDAV client unavailable: {e}"))?
+            .clone();
         caldav
             .ensure_calendar_collection(username, password, name, components, name)
             .await?;
@@ -2150,7 +2155,9 @@ pub async fn backend_inventory_changed(
     tasks: bool,
     notes: bool,
 ) -> Result<BackendProbe> {
-    let caldav = crate::caldav::CaldavClient::new(&state.cfg)?;
+    let caldav = state
+        .caldav()
+        .map_err(|e| anyhow::anyhow!("CalDAV client unavailable: {e}"))?;
     let mut probe = BackendProbe::default();
     if tasks {
         match caldav

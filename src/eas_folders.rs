@@ -20,7 +20,6 @@ use secrecy::{ExposeSecret, SecretString};
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
 
-use crate::caldav::CaldavClient;
 use crate::jmap::JmapClient;
 use crate::models::AppState;
 use crate::storage::FolderRow;
@@ -552,7 +551,7 @@ async fn create_caldav_folder(
     folder_type: i64,
     coll: CalCollection,
 ) -> FolderMutationResult {
-    let Ok(caldav) = CaldavClient::new(&state.cfg) else {
+    let Ok(caldav) = state.caldav() else {
         return FolderMutationResult::status(6);
     };
 
@@ -1124,7 +1123,7 @@ pub async fn delete_folder(
                 }
             }
             "caldav" => {
-                let Ok(caldav) = CaldavClient::new(&state.cfg) else {
+                let Ok(caldav) = state.caldav() else {
                     prune_destroyed_folder_ids(state, owner, &destroyed_ids).await;
                     return FolderMutationResult::status(6);
                 };
@@ -1397,7 +1396,7 @@ pub(crate) async fn reconcile_deferred_folder_prunes(
     // *ambiguous*: it must not be treated as proof of absence, and its intent
     // is retained.
     if !caldav_pending.is_empty() {
-        let Ok(caldav) = CaldavClient::new(&state.cfg) else {
+        let Ok(caldav) = state.caldav() else {
             tracing::warn!(
                 owner = %owner,
                 "folder prune reconcile: no CalDAV client; leaving CalDAV intents unresolved"
@@ -2030,7 +2029,7 @@ async fn rename_caldav_folder(
     row: &FolderRow,
     display_name: &str,
 ) -> FolderMutationResult {
-    let Ok(caldav) = CaldavClient::new(&state.cfg) else {
+    let Ok(caldav) = state.caldav() else {
         return FolderMutationResult::status(6);
     };
     // The per-folder mutation lock is held by `update_folder` for the WHOLE

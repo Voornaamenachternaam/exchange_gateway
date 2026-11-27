@@ -1402,8 +1402,9 @@ async fn verify_jmap_health(state: &Arc<AppState>) -> Result<()> {
 }
 
 async fn verify_caldav_health(state: &Arc<AppState>) -> Result<()> {
-    use exchange_gateway::caldav::CaldavClient;
-    let caldav = CaldavClient::new(&state.cfg)?;
+    let caldav = state
+        .caldav()
+        .map_err(|e| anyhow::anyhow!("CalDAV client unavailable: {e}"))?;
     // Use a lightweight OPTIONS request to the CalDAV base URL with dummy
     // Basic auth. This avoids two Stalwart log-noise problems:
     //   (1) "Missing Authorization header" — caused by unauthenticated requests

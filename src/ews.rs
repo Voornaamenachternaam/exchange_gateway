@@ -4,7 +4,6 @@ use crate::attachment::{
     render_create_attachment_response, render_file_attachment_xml, render_get_attachment_response,
 };
 use crate::auth::AuthOutcome;
-use crate::caldav::CaldavClient;
 use crate::calendar::{
     extract_ews_field, extract_ews_fields, parse_ews_attendees, parse_ews_calendar_item,
     parse_ews_recurrence, parse_ics_event, render_ics,
@@ -1756,7 +1755,7 @@ async fn merged_freebusy_for_mailbox(
         tracing::debug!(target: "ews", "JMAP Calendar free-busy failed, falling back to CalDAV");
     }
 
-    let caldav = match CaldavClient::new(&state.cfg) {
+    let caldav = match state.caldav() {
         Ok(c) => c,
         Err(_) => {
             merged.fill('4');
@@ -2247,7 +2246,9 @@ async fn load_current_calendar_items_caldav(
     password: &str,
     window: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>,
 ) -> Result<Vec<CurrentCalendarItem>, anyhow::Error> {
-    let caldav = CaldavClient::new(&state.cfg)?;
+    let caldav = state
+        .caldav()
+        .map_err(|e| anyhow!("CalDAV client unavailable: {e}"))?;
     let calendars = caldav.find_user_calendars(owner, password).await?;
     let collection_href = calendars
         .first()
@@ -4653,10 +4654,10 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
             Err(e) => {
                 tracing::warn!(error = %e, "JMAP get_calendar_event failed, falling back to CalDAV if possible");
                 // Fallback to CalDAV if possible
-                let caldav = match CaldavClient::new(&state.cfg) {
+                let caldav = match state.caldav() {
                     Ok(c) => c,
                     Err(e2) => {
-                        tracing::error!(error = %e2, "Failed to create CalDAV client for fallback");
+                        tracing::error!(error = %e2, "CalDAV client unavailable for fallback");
                         return operation_error_response(
                             &EwsAction::GetItem,
                             "ErrorInternalServerError",
@@ -4716,7 +4717,7 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
             }
         }
     } else {
-        let caldav = match CaldavClient::new(&state.cfg) {
+        let caldav = match state.caldav() {
             Ok(c) => c,
             Err(e) => {
                 tracing::error!(error = %e, "An internal error occurred");
@@ -6571,7 +6572,7 @@ async fn handle_sync_folder_items(
     };
     let mut delivered_now: Vec<(String, String)> = Vec::new();
     let mut deleted_now: Vec<String> = Vec::new();
-    let caldav = CaldavClient::new(&state.cfg).ok();
+    let caldav = state.caldav().ok();
     let mut emitted_ids = HashSet::new();
     let mut changes_xml = String::new();
     let mut last_returned_seq = since;
@@ -6703,7 +6704,7 @@ async fn handle_sync_folder_items(
                                 );
                             }
                         }
-                    } else if let Some(ref c) = caldav {
+                    } else if let Some(c) = caldav {
                         match c
                             .get_event(&stored.resource_href, owner, auth.password.expose_secret())
                             .await
@@ -8679,7 +8680,7 @@ async fn load_stored_calendar_item(
             .ok()?;
         return parse_ics_event(&ics);
     }
-    let caldav = CaldavClient::new(&state.cfg).ok()?;
+    let caldav = state.caldav().ok()?;
     let (ics, _etag) = caldav
         .get_event(href, owner, password.expose_secret())
         .await
@@ -10252,10 +10253,10 @@ async fn handle_copy_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
             soap_ok(response)
         } else {
             // CalDAV fallback
-            let caldav = match CaldavClient::new(&state.cfg) {
+            let caldav = match state.caldav() {
                 Ok(c) => c,
                 Err(e) => {
-                    tracing::error!(error = %e, "CopyItem: CalDAV client init failed");
+                    tracing::error!(error = %e, "CopyItem: CalDAV client unavailable");
                     return operation_error_response(
                         &EwsAction::CopyItem,
                         "ErrorInternalServerError",
@@ -13360,8 +13361,8 @@ async fn create_calendar_via_caldav(
     password: &SecretString,
     item: &crate::calendar::CalendarItem,
 ) -> Result<EwsItemRow, Box<Response>> {
-    let caldav = CaldavClient::new(&state.cfg).map_err(|e| {
-        tracing::error!(error = %e, "Failed to create CalDAV client");
+    let caldav = state.caldav().map_err(|e| {
+        tracing::error!(error = %e, "CalDAV client unavailable");
         Box::new(operation_error_response(
             &EwsAction::CreateItem,
             "ErrorInternalServerError",
@@ -13702,8 +13703,8 @@ async fn update_calendar_via_caldav(
     new_item: &crate::calendar::CalendarItem,
     conflict_resolution: &str,
 ) -> Result<EwsItemRow, Box<Response>> {
-    let caldav = CaldavClient::new(&state.cfg).map_err(|e| {
-        tracing::error!(error = %e, "Failed to create CalDAV client");
+    let caldav = state.caldav().map_err(|e| {
+        tracing::error!(error = %e, "CalDAV client unavailable");
         Box::new(operation_error_response(
             &EwsAction::UpdateItem,
             "ErrorInternalServerError",
@@ -13938,10 +13939,10 @@ async fn event_has_attendees(
     if let Some(href) = &item.caldav_href
         && !href.is_empty()
     {
-        let caldav = match CaldavClient::new(&state.cfg) {
+        let caldav = match state.caldav() {
             Ok(c) => c,
             Err(e) => {
-                tracing::warn!(error = %e, "Failed to build CalDAV client while checking attendees");
+                tracing::warn!(error = %e, "No CalDAV client while checking attendees");
                 return false;
             }
         };
@@ -13982,8 +13983,8 @@ async fn delete_calendar_via_caldav(
     password: &SecretString,
     stored_item: &EwsItemRow,
 ) -> Result<(), Box<Response>> {
-    let caldav = CaldavClient::new(&state.cfg).map_err(|e| {
-        tracing::error!(error = %e, "Failed to create CalDAV client");
+    let caldav = state.caldav().map_err(|e| {
+        tracing::error!(error = %e, "CalDAV client unavailable");
         Box::new(operation_error_response(
             &EwsAction::DeleteItem,
             "ErrorInternalServerError",

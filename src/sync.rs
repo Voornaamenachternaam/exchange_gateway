@@ -1,5 +1,4 @@
 // src/sync.rs
-use crate::caldav::CaldavClient;
 use crate::calendar::{
     Attendee, CalendarException, CalendarItem, EasSyncMutation, parse_datetime,
     parse_eas_sync_mutations, parse_ics_event, render_ics,
@@ -322,7 +321,9 @@ pub async fn apply_client_sync_mutations(
         return Ok(Vec::new());
     }
 
-    let caldav = CaldavClient::new(&state.cfg)?;
+    let caldav = state
+        .caldav()
+        .map_err(|e| anyhow!("CalDAV client unavailable: {e}"))?;
     // Scope mutations to the folder the client is syncing: a custom
     // calendar-family folder ([MS-ASCMD] §2.2.3.186.2 Types 13/15/16/17) has
     // its CalDAV collection href as its CollectionId, so an Add there must land
@@ -2342,7 +2343,10 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         // delta; keeping it would let the CalDAV snapshot's sweep tombstone an
         // event this collection still holds.
         scoped_out_server_ids.clear();
-        let caldav = CaldavClient::new(&params.state.cfg)?;
+        let caldav = params
+            .state
+            .caldav()
+            .map_err(|e| anyhow!("CalDAV client unavailable: {e}"))?;
         // Prefer the folder's own collection (resolved from its stored href)
         // over the first calendar returned: a custom calendar folder must sync
         // only its own collection. `absolute_url` keeps the configured base

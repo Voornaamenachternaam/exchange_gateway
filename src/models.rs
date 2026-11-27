@@ -1,6 +1,7 @@
 // src/models.rs
 use crate::attachment::AttachmentManager;
 use crate::auth::AuthVerifier;
+use crate::caldav::CaldavClient;
 use crate::carddav::CarddavClient;
 use crate::config::Config;
 use crate::directory::{self, DirectoryLookup};
@@ -37,6 +38,18 @@ pub struct AppState {
     pub jmap_client: Option<Arc<JmapClient>>,
     /// CardDAV client for contacts sync (None if CardDAV not configured)
     pub carddav_client: Option<Arc<CarddavClient>>,
+    /// CalDAV client shared by every calendar/task/notes path: EAS and EWS
+    /// calendar sync, the Tasks/Notes mirror, the MAPI calendar contents table
+    /// and the readiness probe. Each of those used to build its own
+    /// `CaldavClient` per request, so every calendar Sync paid a fresh TCP+TLS
+    /// handshake to Stalwart and threw its connection pool away afterwards.
+    /// `None` when the client could not be built at startup (see
+    /// [`AppState::caldav`]).
+    pub caldav_client: Option<Arc<CaldavClient>>,
+    /// Why `caldav_client` is `None`. Only set when the startup construction
+    /// failed, so the per-request call sites can log the original cause instead
+    /// of a generic "unavailable".
+    caldav_client_error: Option<Arc<str>>,
     /// Application metrics collector.
     pub metrics: Arc<AppMetrics>,
     /// Per-client rate limiter, keyed by the edge-reported client IP
@@ -129,7 +142,10 @@ impl AppState {
             None
         };
 
-        let auth_verifier = Arc::new(AuthVerifier::new_from_topology(&cfg, auth_jmap_client));
+        let auth_verifier = Arc::new(AuthVerifier::new_from_topology(
+            &cfg,
+            auth_jmap_client.clone(),
+        ));
 
         // The directory service (GAL / ResolveNames / OAB / NSPI) reads the
         // Stalwart directory over JMAP (`urn:stalwart:jmap` `x:Account/*` /
@@ -234,6 +250,27 @@ impl AppState {
             None
         };
 
+        // One CalDAV client for the whole process. Every calendar/task/notes
+        // path used to construct its own, so each calendar Sync opened a fresh
+        // TCP+TLS connection to Stalwart and dropped the pool afterwards. The
+        // client is stateless apart from that pool (the base URL is fixed at
+        // startup and credentials travel per request), so sharing it is safe.
+        // It is built even when `caldav_base` is empty, because that is exactly
+        // what the old per-request construction did: call sites that need to
+        // distinguish "CalDAV not configured" still test `cfg.caldav_base`.
+        let (caldav_client, caldav_client_error) = match CaldavClient::new(&cfg) {
+            Ok(c) => (Some(Arc::new(c)), None),
+            Err(e) => {
+                tracing::warn!(
+                    target: "models",
+                    caldav_base = %cfg.caldav_base,
+                    error = %e,
+                    "Failed to create CalDAV client; calendar sync will be unavailable"
+                );
+                (None, Some(Arc::<str>::from(e.to_string())))
+            }
+        };
+
         if cfg.email_enabled {
             tracing::info!(
                 target: "models",
@@ -304,6 +341,21 @@ impl AppState {
             .with_attachment_manager(attachment_manager.clone())
             .with_push_registry(push_registry.clone())
             .with_storage(storage.clone());
+            // Share the process-wide JMAP client with the MAPI surface.
+            // `Execute` carries every MAPI operation, and it used to build a
+            // fresh `JmapClient` per RPC, discarding the connection pool, the
+            // per-username session cache and the credential-probe cache each
+            // time. The ungated client is used (not `jmap_client`) because MAPI
+            // only needs JMAP when `jmap_base` is configured, regardless of the
+            // `email_enabled` feature flag — the same condition the old
+            // per-request construction applied.
+            if let Some(client) = &auth_jmap_client {
+                mapi_state = mapi_state.with_jmap(client.clone());
+            }
+            // Share the CalDAV client with the MAPI calendar contents table.
+            if let Some(client) = &caldav_client {
+                mapi_state = mapi_state.with_caldav(client.clone());
+            }
             // Wire the operator-configured directory so the NSPI address-book
             // surface (`/mapi/nspi`) serves a real GAL rather than the
             // caller-only minimal stub (audit gap §2d). When no JMAP-backed
@@ -329,6 +381,8 @@ impl AppState {
             smtp_client,
             jmap_client,
             carddav_client,
+            caldav_client,
+            caldav_client_error,
             metrics,
             rate_limiter,
             mapi,
@@ -358,6 +412,22 @@ impl AppState {
 
     pub fn caldav_base(&self) -> &str {
         &self.cfg.caldav_base
+    }
+
+    /// The process-wide CalDAV client, shared by every calendar/task/notes
+    /// path so they reuse one connection pool and one TLS session cache.
+    ///
+    /// `Err` carries the reason it is unavailable (the startup construction
+    /// failure), so call sites can log the cause instead of a generic message.
+    /// Note the client exists even when `caldav_base` is empty — the previous
+    /// per-request construction behaved the same way, and call sites that need
+    /// to distinguish "not configured" test [`AppState::caldav_base`].
+    pub fn caldav(&self) -> Result<&Arc<CaldavClient>, &str> {
+        match (&self.caldav_client, &self.caldav_client_error) {
+            (Some(client), _) => Ok(client),
+            (None, Some(reason)) => Err(reason),
+            (None, None) => Err("CalDAV client is not available"),
+        }
     }
 
     /// Whether email functionality is available (enabled and configured)
@@ -468,6 +538,187 @@ mod tests {
         assert!(state.auth_verifier.shared_jmap_client().is_some());
         assert!(state.jmap_client.is_some());
         assert!(state.can_read_email());
+    }
+
+    /// P0-2: the CalDAV client is built ONCE for the whole process. Every
+    /// calendar/task/notes path used to construct its own per request, so each
+    /// calendar Sync opened a fresh TCP+TLS connection and dropped the pool
+    /// afterwards. Two `AppState::caldav()` calls must hand back the SAME
+    /// `Arc`, which is only possible if the client is a process-wide field.
+    #[tokio::test]
+    async fn caldav_client_is_shared_across_the_process() {
+        let cfg = Config {
+            caldav_base: "http://127.0.0.1:1/dav/cal".to_string(),
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = state_for(cfg).await;
+        let first = state.caldav().expect("caldav client must build");
+        let second = state.caldav().expect("caldav client must build");
+        assert!(
+            Arc::ptr_eq(first, second),
+            "every caller must share one CalDAV client (one connection pool)"
+        );
+        assert!(
+            state.caldav_client.is_some(),
+            "the shared client must be exposed on the state"
+        );
+    }
+
+    /// P0-1/P0-2: the MAPI surface reuses the SAME clients `AppState` built —
+    /// `Execute` used to build a throwaway `JmapClient` per RPC (dropping the
+    /// connection pool, the session cache and the credential-probe cache), and
+    /// the calendar contents table built a throwaway `CaldavClient`.
+    #[tokio::test]
+    async fn mapi_state_shares_the_process_wide_backend_clients() {
+        let cfg = Config {
+            jmap_base: "http://127.0.0.1:1".to_string(),
+            caldav_base: "http://127.0.0.1:1/dav/cal".to_string(),
+            email_enabled: false,
+            mapi_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = state_for(cfg).await;
+        let mapi = state.mapi.as_ref().expect("mapi state must be built");
+
+        let shared_jmap = state
+            .auth_verifier
+            .shared_jmap_client()
+            .expect("ungated JMAP client");
+        let mapi_jmap = mapi.jmap.as_ref().expect("MAPI must carry a JMAP client");
+        assert!(
+            Arc::ptr_eq(mapi_jmap, shared_jmap),
+            "MAPI must reuse the process-wide JMAP client, not build its own"
+        );
+
+        let shared_caldav = state.caldav().expect("caldav client must build");
+        let mapi_caldav = mapi
+            .caldav
+            .as_ref()
+            .expect("MAPI must carry the shared CalDAV client");
+        assert!(
+            Arc::ptr_eq(mapi_caldav, shared_caldav),
+            "MAPI must reuse the process-wide CalDAV client"
+        );
+    }
+
+    /// A deployment with no CalDAV configured still gets a client object (the
+    /// previous per-request construction behaved the same way); call sites that
+    /// need "not configured" test `caldav_base` explicitly.
+    #[tokio::test]
+    async fn caldav_client_exists_without_a_configured_base() {
+        let cfg = Config {
+            caldav_base: String::new(),
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = state_for(cfg).await;
+        assert!(state.caldav().is_ok());
+    }
+
+    /// P0-2, measured on the wire: a shared `CaldavClient` reuses ONE TCP
+    /// connection for consecutive requests (its `reqwest::Client` pool is the
+    /// only state it carries), while two separately-constructed clients open
+    /// two. This is the cost the per-request construction paid on every
+    /// calendar request: a fresh TCP (and, against an `https` backend, TLS)
+    /// handshake to Stalwart plus a discarded pool.
+    ///
+    /// The stub counts accepted TCP connections, so the assertion is about
+    /// actual sockets, not about request counts (which a fresh client would
+    /// produce identically).
+    #[tokio::test]
+    async fn shared_caldav_client_reuses_one_tcp_connection() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        /// Minimal HTTP/1.1 keep-alive responder that counts accepted sockets.
+        async fn counting_stub() -> (String, Arc<AtomicUsize>) {
+            fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+                haystack.windows(needle.len()).position(|w| w == needle)
+            }
+            fn content_length(head: &str) -> usize {
+                head.lines()
+                    .find_map(|l| {
+                        let (k, v) = l.split_once(':')?;
+                        k.trim()
+                            .eq_ignore_ascii_case("content-length")
+                            .then(|| v.trim().parse::<usize>().ok())?
+                    })
+                    .unwrap_or(0)
+            }
+
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let accepts = Arc::new(AtomicUsize::new(0));
+            let counter = accepts.clone();
+            tokio::spawn(async move {
+                loop {
+                    let Ok((mut sock, _)) = listener.accept().await else {
+                        return;
+                    };
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    tokio::spawn(async move {
+                        let mut buf: Vec<u8> = Vec::new();
+                        let mut chunk = [0u8; 4096];
+                        loop {
+                            let n = match sock.read(&mut chunk).await {
+                                Ok(0) | Err(_) => return,
+                                Ok(n) => n,
+                            };
+                            buf.extend_from_slice(&chunk[..n]);
+                            while let Some(end) = find(&buf, b"\r\n\r\n") {
+                                let head = String::from_utf8_lossy(&buf[..end]).to_string();
+                                let total = end + 4 + content_length(&head);
+                                if buf.len() < total {
+                                    break;
+                                }
+                                buf.drain(..total);
+                                let resp = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+                                if sock.write_all(resp.as_bytes()).await.is_err() {
+                                    return;
+                                }
+                            }
+                        }
+                    });
+                }
+            });
+            (format!("http://{addr}/dav/cal"), accepts)
+        }
+
+        let (base, accepts) = counting_stub().await;
+        let cfg = Config {
+            caldav_base: base.clone(),
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = state_for(cfg.clone()).await;
+
+        let caldav = state.caldav().expect("caldav client must build");
+        for _ in 0..2 {
+            let _ = caldav.check_credentials("u@example.com", "pw").await;
+        }
+        assert_eq!(
+            accepts.load(Ordering::SeqCst),
+            1,
+            "the shared client must reuse its pooled TCP connection"
+        );
+
+        // Control: two throwaway clients (the pre-fix shape) each open their
+        // own connection, so the counter is genuinely observing sockets.
+        for _ in 0..2 {
+            let fresh = crate::caldav::CaldavClient::new(&cfg).unwrap();
+            let _ = fresh.check_credentials("u@example.com", "pw").await;
+        }
+        assert_eq!(
+            accepts.load(Ordering::SeqCst),
+            3,
+            "a per-request client opens a new connection per request"
+        );
     }
 
     /// No `jmap_base` means no JMAP auth and no email client, regardless of the

@@ -1,6 +1,5 @@
 // src/eas.rs
 use crate::auth::AuthOutcome;
-use crate::caldav::CaldavClient;
 use crate::calendar::{parse_datetime, parse_ics_event};
 
 use crate::error::GatewayError as Error;
@@ -4207,10 +4206,10 @@ async fn handle_item_operations(ctx: &ItemOperationsCtx<'_>) -> Response {
     if fetches.is_empty() {
         return bad_request_response(request_id, "ItemOperations requires at least one Fetch");
     }
-    let caldav = match CaldavClient::new(&state.cfg) {
+    let caldav = match state.caldav() {
         Ok(c) => c,
         Err(e) => {
-            return bad_request_response(request_id, &format!("CalDAV client init failed: {e}"));
+            return bad_request_response(request_id, &format!("CalDAV client unavailable: {e}"));
         }
     };
     let owner_lower = crate::util::normalize_email(username);
@@ -5208,7 +5207,7 @@ async fn merged_freebusy_for_mailbox(
         tracing::debug!(target: "eas", "JMAP Calendar free-busy failed, falling back to CalDAV");
     }
 
-    let caldav = match CaldavClient::new(&state.cfg) {
+    let caldav = match state.caldav() {
         Ok(c) => c,
         Err(_) => {
             merged.fill('4');

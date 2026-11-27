@@ -646,3 +646,82 @@ and are protocol-neutral). Three items changed materially:
 
 P3-1 moves up in importance: it is the only item where a careless implementation silently rewrites
 every contact's `ChangeKey`.
+
+---
+
+# P0 delivered — shared backend clients (implementation record)
+
+Scope implemented: **P0-1** and **P0-2** only, in their rewritten (↻) form from
+`# Protocol-compliance audit of the recommendations`. Nothing else in this document was
+touched; every P1/P2/P3 item remains open.
+
+## P0-1 — one `JmapClient` for MAPI `Execute`
+
+`MapiState` gained `jmap: Option<Arc<JmapClient>>`, wired by `AppState::new` from the SAME
+`Arc` it already builds before the auth verifier (the ungated client, so the condition stays
+exactly the old one: "JMAP is available when `jmap_base` is set", independent of
+`email_enabled`). `handle_execute` now reads `state.jmap.as_deref()` instead of calling
+`JmapClient::new` per RPC.
+
+The constructors (`MapiState::new`, `MapiState::with_subscription_manager`) still build a
+client from `cfg` when `jmap_base` is set, so every existing unit-test fixture keeps its exact
+behaviour; production overrides it through `with_jmap`.
+
+Constraint from the audit kept: auth stays per request. The shared client carries no
+credentials — every JMAP call still passes `username`/`password` explicitly.
+
+## P0-2 — one `CaldavClient` for the whole process
+
+`AppState` gained `caldav_client: Option<Arc<CaldavClient>>`, built once in `AppState::new`
+with `CaldavClient::new(&cfg)` — the 30 s constructor, as the audit requires (`new_from_base`
+and its 10 s timeout stay for tests and per-user-home callers). All 22 production
+construction sites were replaced with `state.caldav()`:
+
+| file | sites |
+| --- | --- |
+| `src/sync.rs` | `apply_client_sync_mutations`, `perform_sync` (CalDAV fallback) |
+| `src/tasks.rs` | `TaskBackendStore::for_user`, `backend_inventory_changed` |
+| `src/eas.rs` | `ItemOperations` Fetch, `merged_freebusy_for_mailbox` |
+| `src/eas_folders.rs` | create / delete / prune-reconcile / rename |
+| `src/ews.rs` | free-busy fallback, `load_current_calendar_items_caldav`, GetItem ×2, SyncFolderItems, `load_stored_calendar_item`, CopyItem, CreateItem, UpdateItem, DeleteItem, `event_has_attendees` |
+| `src/meeting/rsvp.rs` | `read_calendar_row_ics`, `write_existing_copy`, `create_attendee_copy` |
+| `src/mapi/handler.rs` | `fetch_calendar_rows` (via `MapiState.caldav`) |
+| `src/main.rs` | `verify_caldav_health` |
+
+`state.caldav()` returns `Result<&Arc<CaldavClient>, &str>`: the `Err` carries the startup
+construction failure so each call site still logs the original cause instead of a generic
+"unavailable". The client is built even when `caldav_base` is empty, because that is what the
+previous per-request construction did — call sites that must distinguish "CalDAV not
+configured" keep testing `cfg.caldav_base`, unchanged.
+
+`TaskBackendStore` now holds `Arc<CaldavClient>` instead of owning a private client.
+
+## Evidence (executed, `rustc 1.99.1` / `cargo 1.99.1`)
+
+- `models::tests::execute_reuses_one_jmap_client_across_rpcs` (in `src/mapi/handler.rs`):
+  two `Execute` RPCs, each resolving a mailbox over JMAP, against a stub that counts
+  `GET /session`. Asserts **2** JMAP POSTs and **1** session fetch. Reverting `handle_execute`
+  to the old per-RPC construction makes the same test fail with `session_hits = 2`, i.e. the
+  "extra `GET /session` per `Execute`" the audit describes is reproduced and then removed.
+- `models::tests::shared_caldav_client_reuses_one_tcp_connection`: a raw TCP stub counts
+  accepted sockets. Two `check_credentials` calls through `state.caldav()` open **1**
+  connection; two throwaway `CaldavClient::new` clients (the pre-fix shape) add **2** more.
+  The control arm proves the counter observes sockets, not requests.
+- `models::tests::caldav_client_is_shared_across_the_process`,
+  `mapi_state_shares_the_process_wide_backend_clients`,
+  `caldav_client_exists_without_a_configured_base`: `Arc::ptr_eq` on the instances handed to
+  EAS/EWS/MAPI, plus the "no `caldav_base` still yields a client" behaviour.
+- Gate: 1512 lib + 36 + 3 + 10 + 6 + 5 + 10 + 15 + 11 + 1 + 8 + 1 = 1618 tests green,
+  `cargo clippy --all-targets` 0 warnings, `rustfmt --edition 2024` clean on every touched
+  file, release build warning-free.
+
+## Deliberately NOT changed
+
+- `CarddavClient::new` in `mapi/handler.rs::fetch_contact_rows` still builds a client per
+  contents-table read. It is the same defect class as P0-2 but is NOT listed in P0, and the
+  JMAP-first contacts path usually short-circuits before it. Recorded here as the natural
+  companion of P0-2 if a follow-up is scheduled.
+- `JmapClient::new` in `src/directory.rs`, `src/oof.rs` and `AuthVerifier::new`'s fallback are
+  per-call by design (admin-credential probes with their own lifecycle); P0-1 named the MAPI
+  `Execute` path specifically.
+- `src/main.rs`'s startup capability probe keeps its one-shot client: it runs once at boot.

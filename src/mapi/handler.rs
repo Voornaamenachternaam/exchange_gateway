@@ -144,10 +144,46 @@ pub struct MapiState {
     /// mailbox they destroy, keeping EAS FolderSync/GetHierarchy consistent.
     /// `None` in unit-test fixtures keeps them free of a live SQLite handle.
     pub storage: Option<std::sync::Arc<crate::storage::Storage>>,
+    /// Shared JMAP client. `Execute` is the RPC that carries every MAPI
+    /// operation, and it used to build a fresh `JmapClient` per call, which
+    /// discarded the connection pool, the per-username session cache and the
+    /// credential-probe cache each time and forced a new TCP+TLS handshake
+    /// plus a `GET /session` round trip. Production wires the same
+    /// `Arc<JmapClient>` `AppState` builds for the auth verifier; the
+    /// constructors below still build one from `cfg` so unit-test fixtures
+    /// behave exactly as before.
+    pub jmap: Option<std::sync::Arc<crate::jmap::JmapClient>>,
+    /// Shared CalDAV client, used by the MAPI calendar contents table
+    /// (`fetch_calendar_rows`). Same rationale as [`MapiState::jmap`].
+    pub caldav: Option<std::sync::Arc<crate::caldav::CaldavClient>>,
+}
+
+/// The JMAP client a bare `MapiState` fixture gets from its config: the same
+/// "build it if `jmap_base` is set" rule the old per-`Execute` construction
+/// used, so fixtures keep their exact behaviour.
+fn default_jmap_client(cfg: &Config) -> Option<std::sync::Arc<crate::jmap::JmapClient>> {
+    if cfg.jmap_base.is_empty() {
+        None
+    } else {
+        crate::jmap::JmapClient::new(&cfg.jmap_base)
+            .ok()
+            .map(std::sync::Arc::new)
+    }
+}
+
+/// The CalDAV client a bare `MapiState` fixture gets from its config. Matches
+/// the old per-call `CaldavClient::new(&cfg)` rule, including building one for
+/// an empty base (call sites gate on `cfg.caldav_base` where it matters).
+fn default_caldav_client(cfg: &Config) -> Option<std::sync::Arc<crate::caldav::CaldavClient>> {
+    crate::caldav::CaldavClient::new(cfg)
+        .ok()
+        .map(std::sync::Arc::new)
 }
 
 impl MapiState {
     pub fn new(cfg: Config, auth: std::sync::Arc<AuthVerifier>) -> Self {
+        let jmap = default_jmap_client(&cfg);
+        let caldav = default_caldav_client(&cfg);
         Self {
             cfg,
             auth,
@@ -158,6 +194,8 @@ impl MapiState {
             gal_cache: None,
             push_registry: std::sync::Arc::new(crate::jmap_push::PushMonitorRegistry::new()),
             storage: None,
+            jmap,
+            caldav,
         }
     }
 
@@ -169,6 +207,8 @@ impl MapiState {
         auth: std::sync::Arc<AuthVerifier>,
         subscription_manager: std::sync::Arc<crate::notifications::SubscriptionManager>,
     ) -> Self {
+        let jmap = default_jmap_client(&cfg);
+        let caldav = default_caldav_client(&cfg);
         Self {
             cfg,
             auth,
@@ -179,7 +219,26 @@ impl MapiState {
             gal_cache: None,
             push_registry: std::sync::Arc::new(crate::jmap_push::PushMonitorRegistry::new()),
             storage: None,
+            jmap,
+            caldav,
         }
+    }
+
+    /// Share the process-wide JMAP client with the MAPI state. Called by the
+    /// production `AppState` builder so `Execute` reuses the connection pool,
+    /// the session cache and the credential-probe cache instead of building a
+    /// throwaway client per RPC.
+    pub fn with_jmap(mut self, jmap: std::sync::Arc<crate::jmap::JmapClient>) -> Self {
+        self.jmap = Some(jmap);
+        self
+    }
+
+    /// Share the process-wide CalDAV client with the MAPI state. Called by the
+    /// production `AppState` builder so the calendar contents table reuses the
+    /// same connection pool as the EAS/EWS calendar paths.
+    pub fn with_caldav(mut self, caldav: std::sync::Arc<crate::caldav::CaldavClient>) -> Self {
+        self.caldav = Some(caldav);
+        self
     }
 
     /// Wire the gateway SQLite store onto the MAPI state. Called by the
@@ -715,14 +774,11 @@ async fn handle_execute(req: MapiRequest, state: &MapiState) -> MapiResponse {
     let password = req.password.clone();
     let logon_id = snap.logon_id.unwrap_or(0);
 
-    // One cheap JmapClient per Execute ŌĆö the session cache inside it caches
-    // the JMAP session per-username for 5 minutes, so the per-call cost is
-    // just the cache lookup after the first request.
-    let jmap = if !state.cfg.jmap_base.is_empty() {
-        crate::jmap::JmapClient::new(&state.cfg.jmap_base).ok()
-    } else {
-        None
-    };
+    // Reuse the process-wide JMAP client. `Execute` carries every MAPI
+    // operation, so the previous per-call construction threw away the
+    // connection pool, the per-username session cache and the
+    // credential-probe cache on every RPC (P0-1).
+    let jmap = state.jmap.as_deref();
 
     let mut cur = Buf::new(&req.body);
     let mut out_body = Vec::with_capacity(req.body.len() + 64);
@@ -742,7 +798,8 @@ async fn handle_execute(req: MapiRequest, state: &MapiState) -> MapiResponse {
         session_id: &session_id,
         sessions: &state.sessions,
         snap: &snap,
-        jmap: jmap.as_ref(),
+        jmap,
+        caldav: state.caldav.as_deref(),
         cfg: &state.cfg,
         username: &username,
         password: password_secret.as_ref(),
@@ -812,6 +869,7 @@ struct RopContext<'a> {
     sessions: &'a SessionManager,
     snap: &'a crate::mapi::session::SessionSnapshot,
     jmap: Option<&'a crate::jmap::JmapClient>,
+    caldav: Option<&'a crate::caldav::CaldavClient>,
     cfg: &'a Config,
     username: &'a str,
     password: Option<&'a secrecy::SecretString>,
@@ -1272,6 +1330,7 @@ async fn execute_one_rop(
         sessions,
         snap,
         jmap,
+        caldav,
         cfg,
         username,
         password,
@@ -1487,7 +1546,7 @@ async fn execute_one_rop(
                 let rows = if let Some(pw) = password {
                     match parent_kind {
                         FolderKind::Calendar => {
-                            fetch_calendar_rows(cfg, username, pw, &parent_backend).await
+                            fetch_calendar_rows(cfg, caldav, username, pw, &parent_backend).await
                         }
                         FolderKind::Contacts => {
                             fetch_contact_rows(cfg, jmap, username, pw, &parent_backend).await
@@ -7571,6 +7630,7 @@ async fn materialize_handle_properties(
         session_id,
         sessions,
         jmap,
+        caldav,
         cfg,
         username,
         password,
@@ -7712,7 +7772,7 @@ async fn materialize_handle_properties(
         {
             let target = u64::from_str_radix(&backend_id, 16)
                 .unwrap_or_else(|_| store::folder_id_from_backend(&backend_id));
-            fetch_calendar_rows(cfg, username, pw, store::CALENDAR_BACKEND_ID)
+            fetch_calendar_rows(cfg, caldav, username, pw, store::CALENDAR_BACKEND_ID)
                 .await
                 .into_iter()
                 .find_map(|r| {
@@ -8032,6 +8092,7 @@ async fn fetch_email_rows(
 /// time-range).
 async fn fetch_calendar_rows(
     cfg: &Config,
+    caldav: Option<&crate::caldav::CaldavClient>,
     username: &str,
     password: &secrecy::SecretString,
     mailbox_id: &str,
@@ -8042,12 +8103,9 @@ async fn fetch_calendar_rows(
         tracing::debug!("mapi calendar contents: no caldav_base configured");
         return Vec::new();
     }
-    let caldav = match crate::caldav::CaldavClient::new(cfg) {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!("mapi calendar contents: caldav client build failed: {}", e);
-            return Vec::new();
-        }
+    let Some(caldav) = caldav else {
+        tracing::warn!("mapi calendar contents: caldav client unavailable");
+        return Vec::new();
     };
     let href = caldav.calendar_collection_href(username);
     let now = chrono::Utc::now();
@@ -10383,6 +10441,7 @@ mod tests {
             sessions: &state.sessions,
             snap: &snap,
             jmap: None,
+            caldav: None,
             cfg: &Config::default(),
             username: "u@example.com",
             password: None,
@@ -10417,6 +10476,7 @@ mod tests {
                 sessions: &state.sessions,
                 snap: &snap2,
                 jmap: None,
+                caldav: None,
                 cfg: &Config::default(),
                 username: "u@example.com",
                 password: None,
@@ -10527,6 +10587,7 @@ mod tests {
                 sessions: &state.sessions,
                 snap: &snap,
                 jmap: None,
+                caldav: None,
                 cfg: &Config::default(),
                 username: "u@example.com",
                 password: None,
@@ -10680,6 +10741,7 @@ mod tests {
                 sessions: &state.sessions,
                 snap: &snap,
                 jmap: Some(&jmap),
+                caldav: None,
                 cfg: &Config::default(),
                 username: "u@example.com",
                 password: Some(&password),
@@ -10730,6 +10792,7 @@ mod tests {
                 sessions: &state.sessions,
                 snap: &snap3,
                 jmap: Some(&jmap),
+                caldav: None,
                 cfg: &Config::default(),
                 username: "u@example.com",
                 password: Some(&password),
@@ -11400,6 +11463,7 @@ mod tests {
                 sessions: &state.sessions,
                 snap: &snap,
                 jmap: None,
+                caldav: None,
                 cfg: &Config::default(),
                 username: "u@example.com",
                 password: None,
@@ -13585,6 +13649,148 @@ mod tests {
         assert!(
             pos("grandchild") < pos("child-a"),
             "grandchild must be destroyed before its parent: {ids:?}"
+        );
+    }
+
+    /// P0-1: `Execute` carries every MAPI operation, and it used to build a
+    /// throwaway `JmapClient` per RPC. Every new client re-ran `GET /session`
+    /// before its first JMAP call (its session cache is per-instance), so the
+    /// per-request construction cost one extra round trip per Execute on top of
+    /// a discarded connection pool. Two Executes that both resolve a mailbox
+    /// through `Mailbox/query` must therefore produce exactly ONE `/session`
+    /// fetch: with a per-Execute client the second Execute would fetch it again.
+    #[tokio::test]
+    async fn execute_reuses_one_jmap_client_across_rpcs() {
+        use axum::routing::{get, post};
+        use serde_json::{Value, json};
+        use std::sync::Arc as StdArc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        #[derive(Clone)]
+        struct Ctl {
+            base: String,
+            session_hits: StdArc<AtomicUsize>,
+            api_hits: StdArc<AtomicUsize>,
+        }
+
+        async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
+            ctl.session_hits.fetch_add(1, Ordering::SeqCst);
+            axum::Json(json!({
+                "apiUrl": ctl.base,
+                "downloadUrl": format!("{}/download/{{accountId}}/{{blobId}}", ctl.base),
+                "uploadUrl": format!("{}/upload/{{accountId}}", ctl.base),
+                "eventSourceUrl": format!("{}/eventsource", ctl.base),
+                "state": "s",
+                "username": "u",
+                "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                "capabilities": {"urn:ietf:params:jmap:core": {"maxObjectsInGet": 500}}
+            }))
+        }
+
+        async fn api(
+            axum::Extension(ctl): axum::Extension<Ctl>,
+            body: String,
+        ) -> axum::response::Response {
+            ctl.api_hits.fetch_add(1, Ordering::SeqCst);
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let mut responses = Vec::new();
+            for call in req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                let result = match name {
+                    "Mailbox/query" => json!({"accountId":"a","ids":["mbx-target"],"total":1}),
+                    "Mailbox/get" => json!({"accountId":"a","state":"m1","list":[
+                        {"id":"mbx-target","name":"Target","parentId":null}
+                    ]}),
+                    _ => json!({"accountId":"a"}),
+                };
+                responses.push(json!([name, result, cid]));
+            }
+            let resp = json!({"methodResponses": responses, "sessionState": "s"});
+            axum::response::Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                .unwrap()
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let session_hits = StdArc::new(AtomicUsize::new(0));
+        let api_hits = StdArc::new(AtomicUsize::new(0));
+        let ctl = Ctl {
+            base: base.clone(),
+            session_hits: session_hits.clone(),
+            api_hits: api_hits.clone(),
+        };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let mut cfg = Config::test_with_mail_domain("example.com");
+        cfg.mapi_enabled = true;
+        cfg.jmap_base = base;
+        cfg.email_enabled = true;
+        let state = MapiState::new(
+            cfg,
+            std::sync::Arc::new(AuthVerifier::new(&Config::default())),
+        );
+        let sid = state
+            .sessions
+            .create(crate::mapi::session::SessionPrincipal {
+                email: "u@example.com".into(),
+                basic_auth: true,
+            });
+        state.sessions.with_session_mut(&sid, |s| {
+            s.set_handle(
+                3,
+                crate::mapi::session::Handle::Folder {
+                    backend_id: "mbx-other".into(),
+                    kind: crate::mapi::session::FolderKind::Mail,
+                },
+            );
+        });
+
+        let target_fid = crate::mapi::store::folder_id_from_backend("mbx-target");
+        let mut body = vec![0x02u8, 0x00, 3u8, 9u8];
+        body.extend_from_slice(&target_fid.to_le_bytes());
+        body.push(0);
+
+        for request_id in ["{G}:1", "{G}:2"] {
+            let req = MapiRequest {
+                kind: RpcKind::Mailbox(MapiRequestType::Execute),
+                request_id: request_id.into(),
+                client_application: None,
+                client_info: None,
+                username: None,
+                password: Some("pw".into()),
+                cookies: vec![("MapiContext".to_string(), sid.to_string())],
+                body: body.clone(),
+            };
+            let resp = handle_execute(req, &state).await;
+            assert_eq!(resp.code, ResponseCode::Success, "Execute {request_id}");
+        }
+
+        assert_eq!(
+            api_hits.load(Ordering::SeqCst),
+            2,
+            "each Execute must resolve the mailbox over JMAP (one request each)"
+        );
+        assert_eq!(
+            session_hits.load(Ordering::SeqCst),
+            1,
+            "the shared client must cache the JMAP session across Executes; a \
+             per-Execute client would fetch it once per RPC"
         );
     }
 }
