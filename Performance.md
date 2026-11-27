@@ -674,8 +674,10 @@ credentials — every JMAP call still passes `username`/`password` explicitly.
 
 `AppState` gained `caldav_client: Option<Arc<CaldavClient>>`, built once in `AppState::new`
 with `CaldavClient::new(&cfg)` — the 30 s constructor, as the audit requires (`new_from_base`
-and its 10 s timeout stay for tests and per-user-home callers). All 22 production
-construction sites were replaced with `state.caldav()`:
+and its 10 s timeout stay for tests and per-user-home callers). All 26 production
+construction sites were replaced with `state.caldav()` — the 22 the audit listed, plus the
+three in the §13 RSVP pipeline (`meeting/rsvp.rs`, written after the audit) and the MAPI
+calendar-contents read:
 
 | file | sites |
 | --- | --- |
