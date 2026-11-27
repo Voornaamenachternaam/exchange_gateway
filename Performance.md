@@ -99,6 +99,8 @@ Every plan below was obtained with `EXPLAIN QUERY PLAN` against `sqlite_schema.s
 
 ## Ranked recommendations
 
+> **Protocol-compliance revisions.** Items marked ↻ were rewritten after the `exchange_protocols/` review; **P2-2 is withdrawn**. Use the rewritten form in “Protocol-compliance audit of the recommendations” at the end of this document — the text in this section records only what was originally proposed.
+
 Impact is the expected effect under the stated client workload (New Outlook for Windows, Outlook Android) with a Stalwart backend. "Proven" means the cost follows from the code and API semantics as written; "needs profiling" means the cost is real but its share of wall clock is not established.
 
 ### P0 — per-request backend client construction (connection pool and cache destruction)
@@ -120,35 +122,35 @@ Change: build one `Arc<CaldavClient>` in `AppState` (mirroring `state.jmap`), ke
 
 ### P1 — N+1 backend round trips
 
-**P1-1. EWS `SyncFolderItems` fetches each changed message individually.**
+**P1-1. EWS `SyncFolderItems` fetches each changed message individually. ↻**
 `src/ews.rs:5663`, `:5705`, `:5770`, `:5836` each call `jmap.get_email(...)` inside the per-id loops over `changes.created` / `changes.destroyed`. A 100-message delta therefore costs 100 serial HTTP requests. A batch accessor already exists (`get_emails`, used at `src/ews.rs:11589`, `src/eas.rs:3823`, `:8891`).
 
-Change: collect the ids for each phase, call `get_emails` in chunks bounded by Stalwart's `maxObjectsInGet` (500, back-references exempt), build a `HashMap<&str, JmapEmail>`, then render. Keep the existing fail-closed behavior: a batch failure must still fail the whole call (`ErrorServerBusy`), and a missing id must still be treated as `undelivered_ids`. Effect: O(1) round trips instead of O(n). Risk: medium — the per-id "message left the folder" (`email_lives_in_mailbox`) and seed/`rendered_ids` bookkeeping must be preserved exactly; this is the kind of change that needs the existing delta tests plus a new "batch partially absent" test. Confidence: proven cost, straightforward fix.
+Change: collect the ids for each phase, call `get_emails` in chunks bounded by Stalwart's `maxObjectsInGet` (500, back-references exempt), key the result by `email.id`, then render in the ORIGINAL id order (C1). Keep the existing fail-closed behavior: a batch failure must still fail the whole call (`ErrorServerBusy`), and a missing id must still be treated as `undelivered_ids`. Effect: O(1) round trips instead of O(n). Risk: medium — the per-id "message left the folder" (`email_lives_in_mailbox`) and seed/`rendered_ids` bookkeeping must be preserved exactly; this is the kind of change that needs the existing delta tests plus a new "batch partially absent" test. Confidence: proven cost, straightforward fix.
 
-**P1-2. The EAS email delta reads the keyword baseline one row per message.**
+**P1-2. The EAS email delta reads the keyword baseline one row per message. ↻**
 `src/eas.rs:8687` calls `storage.get_email_keyword(username, state_collection_id, &id)` inside the per-entry loop of the bounded flag scan (`KEYWORD_SCAN_MAX_PAGES = 8`, `:8274`). Each page is one `Email/query` plus one SQLite round trip per message.
 
 Change: one `SELECT email_id, keywords_json FROM email_keyword_baseline WHERE owner=?1 AND collection_id=?2 AND email_id IN (...)` per page (`sqlx::QueryBuilder::push_tuples`). Preserve the current fail-closed rule: a page-level read error must still hold the scan position (`outcome.deferred = true`) rather than be treated as "no row". Effect: page-size × fewer SQLite round trips per delta. Risk: low. Confidence: proven.
 
-**P1-3. `CopyFolder` re-lists every mailbox once per folder copied.**
+**P1-3. `CopyFolder` re-lists every mailbox once per folder copied. ↻**
 `src/ews_folder_ops.rs:1086` calls `ctx.jmap.query_mailboxes(...)` at every recursion level of `copy_folder_recursive`; `src/ews_folder_ops.rs:159` calls `get_mailbox_ids_for_role` (one `Mailbox/query`) per distinguished source folder. Copying a subtree of N folders costs N full mailbox listings.
 
 Change: fetch the mailbox list once in the handler, pass `&[JmapMailbox]` through `FolderCopyCtx`, and resolve distinguished ids from that list. Effect: N listings → 1. Risk: low. Confidence: proven.
 
-**P1-4. Contacts photo downloads are serial.**
-Retained from the checkpoint (`src/contacts.rs:1337-1358`): one awaited download per contact photo. Change: bounded concurrency (`futures_util::stream::iter(...).buffer_unordered(K)`, K≈8) or defer to rendered contacts. Effect: latency divided by K. Risk: medium (ordering/identity must not change). Confidence: proven cost.
+**P1-4. Contacts photo downloads are serial. ↻**
+Retained from the checkpoint (`src/contacts.rs:1337-1358`): one awaited download per contact photo. Change: bounded concurrency with order preservation only — never defer (the PHOTO property is hashed into the contact `ChangeKey`; see C4). Effect: latency divided by K. Risk: medium (ordering/identity must not change). Confidence: proven cost.
 
 ### P1 — repeated parsing of the same request document
 
-**P1-5. `extract_first_tag_text` re-parses the whole document on every call.**
+**P1-5. `extract_first_tag_text` re-parses the whole document on every call. ↻**
 `src/eas.rs:743` and `src/ews.rs:594` build a `quick_xml::Reader` from the start of the document and scan until the tag closes. Call counts: **68 sites in `src/eas.rs`, 55 in `src/ews.rs`**. For a `SendMail` carrying `MIMEData` (admitted up to 40 MiB) each extraction is a separate prefix scan; the total work is O(k·n) in document size.
 
 Change: parse once per handler into a `HashMap<&str, Vec<String>>` (borrowed local names, borrowed text where possible) or a typed request struct, and read fields from it. Cheapest interim step: have the helpers share one `Reader` via a cursor and require callers to request tags in document order. Effect: large on the SendMail/SmartForward paths, moderate on Sync. Risk: medium — entity/whitespace semantics are pinned by `extract_first_tag_text_keeps_spaces_around_entities`; a rewrite must keep the "text not trimmed per event, only the finished value" rule. Confidence: proven cost.
 
-**P1-6. `extract_all_tag_blocks` is an O(n·m) byte-window scan with per-call allocations.**
+**P1-6. `extract_all_tag_blocks` is an O(n·m) byte-window scan with per-call allocations. ↻**
 `src/eas.rs:709-735` builds `open`/`close` `Vec<u8>` per call and searches with `bytes[pos..].windows(len).position(...)`. It is also not nesting-aware.
 
-Change: use `memchr::memmem::find_iter` (the `memchr` crate is already a declared dependency and currently unused, see P3-5) or reuse `extract_all_tag_blocks_checked` (`src/ews.rs:651`), which is nesting-aware and slice-based. Effect: removes a quadratic term on large bodies. Risk: low. Confidence: proven.
+Change: use `memchr::memmem::find_iter` (the `memchr` crate is already a declared dependency and currently unused, see P3-5). Keep the same matching semantics and replace only the search with `memchr::memmem` — do NOT reuse `extract_all_tag_blocks_checked` (`src/ews.rs:651`), which returns the full block rather than the inner text (C6). Effect: removes a quadratic term on large bodies. Risk: low. Confidence: proven.
 
 **P1-7. `let payload = body.to_vec();` copies every EAS request body.**
 `src/eas.rs:10485`, in `handle_eas_request` before dispatch — so the copy happens on **every** EAS request, not just the large ones. `body` is `Bytes` (already a cheap refcounted handle) and `Wbxml::decode` takes `&[u8]` (`src/wbxml.rs:1424`). The copy is up to `MAX_BODY_BYTES` = 40 MiB (`src/main.rs:38`).
@@ -162,7 +164,7 @@ Distribution: `src/ews.rs` 82, `src/sync.rs` 64, `src/eas.rs` 36, `src/meeting/m
 
 Change: `use std::fmt::Write;` and `write!(out, "...", ..)` / `writeln!`. In render loops (a 500-item Sync response, ~10 fields per item) this removes thousands of short-lived allocations per response, and it is mechanical. Note `write!` returns `Result`; use `let _ = write!(...)` on `String` (which cannot fail) or `expect`. Effect: measurable allocator pressure reduction on every Sync/Find/GetItem response. Risk: low. Confidence: proven cost, mechanical fix.
 
-**P1-9. The WBXML encoder allocates a `HashMap`, a `Vec<String>` and `String`s per element.**
+**P1-9. The WBXML encoder allocates a `HashMap`, a `Vec<String>` and `String`s per element. ↻**
 `src/wbxml.rs:1650-1652` calls `encode_namespace_attributes` for every `Event::Start` and pushes the result onto `prefix_ns_stack`. `encode_namespace_attributes` (`:1860-1895`) starts with `HashMap::new()`, `Vec::new()`, and `attr.key.as_ref().to_string()` per attribute. In EAS documents only the root element declares namespaces, so virtually all of these allocations are empty maps and empty vecs — one pair per element, i.e. thousands per Sync response.
 
 Change: (a) return a `PrefixBindings` that is `Option<Box<[(Box<str>, Option<u8>)]>>` (or `SmallVec<[_; 2]>`) and represent "no attributes" as `None` without allocating; (b) take a fast path when `e.attributes().len() == 0`; (c) keep attribute keys as `&str` borrowed from the event buffer instead of `to_string()`. Effect: removes the dominant per-element allocation in the encoder. Risk: low-medium — namespace resolution semantics (declared-unknown = hard error, canonical prefix fallback) are pinned by `encode_rejects_declared_unknown_namespace_bindings` and the §3 byte-exact test. Confidence: proven cost.
@@ -179,12 +181,12 @@ Change: `Vec<&'static str>` for the stack (with an owned fallback only if a futu
 
 Change: `CREATE INDEX idx_item_map_server ON item_map(server_id)` (the unique index is `(owner, server_id)`, so `server_id` alone cannot be seeked). Write cost is one extra index per `item_map` insert. Effect: O(log n) instead of O(n) per item read. Risk: low. Confidence: proven (plan measured).
 
-**P2-2. Two owner-scoped identity queries sort their whole result set for an ordering the caller discards.**
+**P2-2. Two owner-scoped identity queries sort their whole result set for an ordering the caller discards. ↻**
 `src/storage.rs:2268` and `:2283` both end in `ORDER BY id ASC`; measured plans show `USE TEMP B-TREE FOR ORDER BY`. Both callers (`src/sync.rs:130-157`) insert into `HashMap`s where order is irrelevant.
 
-Change: drop `ORDER BY id` (or add `(owner, id)`-leading indexes if a deterministic order is ever needed). Effect: removes an O(n log n) sort per calendar Sync. Risk: none. Confidence: proven (plan measured).
+Change: **withdrawn** — the clause is load-bearing for ServerId stability (C9). If the sort ever measures, add a plain `item_map(owner)` / `jmap_id_alias(owner)` index (which supplies rowid order) and keep the clause.
 
-**P2-3. `CalendarIdentity::load` materializes the whole owner item map per calendar sync.**
+**P2-3. `CalendarIdentity::load` materializes the whole owner item map per calendar sync. ↻**
 `src/sync.rs:1892` calls `CalendarIdentity::load` once per `perform_sync`; the loader (`src/sync.rs:121-160`) runs two full owner scans and builds three maps with `String` clones per row (`server_id.clone()`, `resource_identity(...).into_owned()`). For an owner with N events and C calendars, one device sync of all C calendars costs C·O(N) rows and allocations.
 
 Change, in increasing ambition: (a) `resource_identity` already returns a `Cow` — avoid `into_owned()` when the href is already path-only by keying on a `Box<str>` built once; (b) cache the loaded identity for the duration of one sync request when several collections are synced together; (c) add a collection discriminator to `item_map` so the map can be scoped (this is the structural fix, and it also removes the cross-collection `item_map` sharing that AUDIT.md §10 documents as the reason scoped deletes cannot tombstone). Effect: proportional to N. Risk: high for (c) — it interacts with the documented shared-row semantics; (a) and (b) are low risk. Confidence: proven cost; benefit needs N in production.
@@ -197,14 +199,14 @@ Change, in increasing ambition: (a) `resource_identity` already returns a `Cow` 
 
 Change: `is_unmetered_path(req.uri().path())` on the borrowed `&str`; make `normalize_path` write into a reusable `String` (or map the known route set through a `phf`/`OnceLock<HashMap<&'static str, &'static str>>`, since the router's route table is static); skip percent-decoding when the path contains no `%`. Effect: removes 3–5 short allocations per request from the fixed overhead. Risk: low — keep `normalize_path`'s id-collapsing behavior identical. Confidence: proven cost, small absolute size.
 
-**P2-6. `TZ_PARAMS_CACHE` is an unbounded process-wide cache keyed on a client-supplied string.**
+**P2-6. `TZ_PARAMS_CACHE` is an unbounded process-wide cache keyed on a client-supplied string. ↻**
 `src/timezone.rs:987-1004`: `static TZ_PARAMS_CACHE: LazyLock<Mutex<HashMap<String, Option<TzParams>>>>` is keyed by the **raw input string** and has no capacity limit and no eviction (the only accesses are `get` at `:991` and `insert` at `:1000`). The doc comment claims it is "bounded by the finite set of IANA ids a tenant's calendar events reference", but the key is whatever the caller passes, and the production caller is the item render path `src/ews.rs:1485` passing `item.timezone` — the stored TZID of a calendar event, which an authenticated client supplies when it creates the event. A client that creates events with distinct bogus `TZID`s (each resolving to `None`, which is also cached) grows this map without bound for the whole process, across all users. Secondary cost: a single global `Mutex` taken twice per lookup, on a per-event render path, serializing timezone conversion across all worker threads.
 
-Change: bound the cache (Moka with capacity, or an `LruCache`), and key it on the canonical IANA id after resolution — `None` results should not be memoized at all, since the failure is cheap to recompute and is exactly the attacker-chosen key space. Replacing the `Mutex<HashMap>` with `moka::sync::Cache` also removes the double lock acquisition. Effect: bounded memory under hostile input, less lock contention on calendar render. Risk: low — the memo is a pure function of its key. Confidence: proven by inspection.
+Change: bound the cache (Moka with capacity) and stop memoizing `None`; keep the raw key (C11). Replacing the `Mutex<HashMap>` with `moka::sync::Cache` also removes the double lock acquisition. Effect: bounded memory under hostile input, less lock contention on calendar render. Risk: low — the memo is a pure function of its key. Confidence: proven by inspection.
 
 ### P3 — micro-optimizations and build hygiene
 
-**P3-1. `sort_by_key(|(k, _)| k.to_string())` in `src/jscard.rs:367, 387, 428, 640`.** `slice::sort_by_key` recomputes the key on every comparison, so this allocates O(n log n) `String`s. Use `sort_unstable_by(|a, b| a.0.cmp(&b.0))` (order of equal keys is irrelevant for vCard property emission that is re-sorted by the consumer).
+**P3-1. `sort_by_key(|(k, _)| k.to_string())` in `src/jscard.rs:367, 387, 428, 640`. ↻** `slice::sort_by_key` recomputes the key on every comparison, so this allocates O(n log n) `String`s. Use a STABLE `entries.sort_by(|a, b| a.0.cmp(b.0))` — see C12; the emitted property order is hashed into the contact `ChangeKey` and must not change.
 
 **P3-2. `normalize_email` (`src/util.rs:120-134`)** lowercases twice (`trimmed.to_lowercase()` and `stripped.nfc().collect::<String>().to_lowercase()`), allocating three `String`s. Add an ASCII fast path (`if trimmed.is_ascii() { return trimmed.to_ascii_lowercase() }`) and return `Cow<'_, str>`. Called on every attendee/recipient comparison in calendar and recipient resolution.
 
@@ -214,7 +216,7 @@ Change: bound the cache (Moka with capacity, or an `LruCache`), and key it on th
 
 **P3-5. Seventeen declared-but-unused direct dependencies.** Verified by scanning every `src/**/*.rs`, `benches/*.rs` and `tests/*.rs` for each name: `axum-extra`, `base64ct`, `tower`, `futures-core`, `compact_str`, `flate2`, `pin-project-lite`, `http-body-util`, `arc-swap`, `memchr`, `itoa`, `ryu`, `smartstring`, `bstr`, `rustls-pki-types`, `lzxd`, `compressed-rtf`. `compressed-rtf` appears only in comments describing unimplemented RTF compression (`src/mapi/store.rs:553-601`) and `lzxd` has no mention anywhere in `src/`, `benches/` or `tests/`. `memchr` should not be dropped — P1-6 uses it. Effect: fewer direct-dependency edges to resolve, compile and keep version-pinned (crates still pulled in transitively, such as `compact_str` via another dependency, remain in the graph); no runtime change.
 
-**P3-6. `harvest_and_store` runs on every outbound send.** `src/email.rs:3253` calls `crate::smime::harvest_and_store`, which parses the whole MIME with `mail-parser` and every certificate with `cms`/`x509-cert` (`src/smime.rs:271-305`) for each `SendMail`/`SmartReply`/`SmartForward`, including large attachments. Gate on a cheap scan for `application/pkcs7-mime` / `multipart/signed` before the full parse.
+**P3-6. `harvest_and_store` runs on every outbound send. ↻** `src/email.rs:3253` calls `crate::smime::harvest_and_store`, which parses the whole MIME with `mail-parser` and every certificate with `cms`/`x509-cert` (`src/smime.rs:271-305`) for each `SendMail`/`SmartReply`/`SmartForward`, including large attachments. Gate on a cheap, CR/LF-unfolded, case-insensitive scan for `pkcs7` / `multipart/signed` before the full parse — a superset check, never a strict one (C13).
 
 **P3-7. Non-UTF-8-breaking but tooling-hostile control byte.** `src/recorded_client_contract.rs:852` contains a literal `NUL` inside a `//` comment (after `cn=user`). Rust accepts it (U+0000 is valid UTF-8), but it makes the file "binary" to `grep`/`rg` and can confuse editors and diff tooling. Replace with a normal character.
 
@@ -225,7 +227,7 @@ These are the edition-2024 / 1.99.1 features that apply directly to the findings
 | Feature | Where it applies | Note |
 | --- | --- | --- |
 | `std::fmt::Write` (`write!`/`writeln!` into `String`) | P1-8 (280 sites), P1-9/10 | Removes the temporary `String` per append. `String`'s `Write` impl is infallible in practice; `let _ =` or `.expect()` is idiomatic. |
-| `slice::sort_unstable_by` | P3-1 | `sort_by_key` recomputes keys per comparison; `sort_unstable_by` compares borrowed fields directly. |
+| `slice::sort_by` (stable) | P3-1 / C12 | `sort_by_key` recomputes and allocates a key per comparison; `sort_by` compares borrowed fields and keeps the byte-identical property order the contact `ChangeKey` depends on. |
 | `Vec::extract_if` (1.87) | any "partition then collect" in the delta paths | In-place move-out filtering without a second allocation. |
 | `Cow<'_, str>` return types | P3-2, `xml_escape` family (`src/util.rs:38-56`) | Borrow when nothing needs escaping (already done for XML; extend to `normalize_email`). |
 | `LazyLock` / `const` items | P3-3, `src/timezone.rs:267` | Static tables instead of per-call `vec!`/`format!`. |
@@ -261,7 +263,7 @@ Reading these numbers against the findings:
 ## Rejected candidates
 
 - **Replacing every `String::new()` with `String::with_capacity`.** The checkpoint's caution stands: growth-doubling is already amortized, and wrong capacity estimates waste memory. Only P1-10 (WBXML `output`) has a known expansion ratio worth hard-coding.
-- **A blanket `sort_unstable` migration.** Most sorts here are over user-visible ordered lists (folders, reminders) where stability is part of the wire contract. Only P3-1 is justified because the key order is re-derived by the consumer.
+- **A blanket `sort_unstable` migration.** Most sorts here are over user-visible ordered lists (folders, reminders) where stability is part of the wire contract. P3-1 is the only candidate, and even there the STABLE form is required (C12).
 - **Disabling `debug-assertions` in the test profile.** `calcard`'s exporter asserts in debug builds, and the JSCalendar participant-preservation test relies on that class of check; disabling them would silently change test semantics for a small compile-time win.
 - **Fat LTO / `codegen-units = 1` changes.** `[profile.release]` already uses `lto = "thin"` with `codegen-units = 1`. Full LTO would trade a large build-time increase for a runtime gain not evidenced by any measurement here.
 - **Pooling or caching `JmapClient` per user inside the client itself.** Unnecessary: the shared-client fix (P0-1/P0-2) achieves the same reuse with the caches that already exist.
@@ -318,3 +320,329 @@ Reading these numbers against the findings:
 2. P1-1, P1-2, P1-3, P1-8, P1-9, P1-10 — larger but well covered by the existing test suite; each needs one new test pinning the batch/encoding behavior.
 3. P1-5, P1-6, P2-3 — restructure request parsing / identity loading; do these behind the existing round-trip and delta tests.
 4. P3-6, P2-5, P3-4 — opportunistic.
+---
+
+# Protocol-compliance audit of the recommendations
+
+Every recommendation in the section above was re-checked against the 129 Microsoft protocol
+documents in `exchange_protocols/` (release v20250520) and against the code path it would touch.
+Nothing here was implemented; this section replaces the earlier wording wherever they disagree.
+
+Verdicts:
+
+- **COMPLIANT** — the change cannot alter client-visible bytes, ordering or identity.
+- **REWRITE** — as written the change would alter protocol-visible behaviour. The rewritten form below
+  is the one to implement; the original wording must not be used.
+- **WITHDRAWN** — the saving does not justify the protocol risk.
+
+## Verdict table
+
+| Item | Verdict | Governing clause | Why |
+| --- | --- | --- | --- |
+| P0-1 shared `JmapClient` | COMPLIANT | [MS-OXCMAPIHTTP] (session context is gateway-side) | Backend-internal; the MAPI wire is untouched. Auth stays per request. |
+| P0-2 shared `CaldavClient` | COMPLIANT, one constraint | — (CalDAV is not an MS protocol) | All 21 call sites pass `&state.cfg`, so the base is identical. Must share the 30 s `new` client, not the 10 s `new_from_base`. |
+| P1-1 batch `get_emails` in SyncFolderItems | **REWRITE** (C1) | [MS-OXWSSYNC] §3.1.1, §3.1.4.2.3.6, §3.1.4.2.4.1 | `MaxChangesReturned` MUST be 1..=512 and the truncation prefix must be stable; ids must be keyed by id, never position. |
+| P1-2 batch keyword baseline | **REWRITE** (C2) | [MS-ASCMD] §3.1.5 (Sync: collections processed "in the order received", `WindowSize`/`MoreAvailable`) | Emission order and the deferred-scan rule are protocol-visible through `MoreAvailable`. |
+| P1-3 reuse mailbox list in CopyFolder | **REWRITE** (C3) | [MS-OXWSFOLD] §3.1.4.1 | Safe only because children are filtered by SOURCE parent id; the all-or-nothing rollback must stay. |
+| P1-4 parallel photo downloads | **REWRITE** (C4) | [MS-OXWSCONT], [MS-OXWSSYNC] (delta contract) | The PHOTO property is part of the vCard whose hash IS the contact `ChangeKey`; "defer" would change every ChangeKey. |
+| P1-5 parse request once | **REWRITE** (C5) | [MS-ASCMD] request schemas | The helper resets its accumulator on a nested same-name Start; a naive map returns the outer content instead. |
+| P1-6 replace `extract_all_tag_blocks` | **REWRITE** (C6) | [MS-ASCMD] request shapes | The suggested replacement returns the FULL block, not the inner text, and is nesting-aware. The original suggestion is wrong. |
+| P1-7 drop `body.to_vec()` | COMPLIANT | — | `payload` is read-only; byte-identical decode input. |
+| P1-8 `write!` instead of `format!` | COMPLIANT | [MS-ASWBXML] §2.1.2.1 (token/code-page table) | Escaping happens in `xml_escape` before formatting; `write!` produces identical bytes. |
+| P1-9 WBXML encode allocations | **REWRITE** (C7) | [MS-ASWBXML] §2.1.2.1, §2.1.3 | The binding stack is depth-aligned; duplicate/unknown-namespace hard errors must survive. |
+| P1-10 WBXML decode allocations | COMPLIANT, constraints (C8) | [MS-ASWBXML] §2.1.2.1, §3 | `&'static str` is valid (all names come from `TAG_TO_NAME`); the root-page rule must be kept. |
+| P2-1 `item_map(server_id)` index | COMPLIANT | — | Index only; result set unchanged. |
+| P2-2 drop `ORDER BY id` | **WITHDRAWN** (C9) | [MS-ASCMD] ServerId durability | First-wins/last-wins identity resolution becomes order-dependent, giving client-visible ServerId churn. |
+| P2-3 scope `CalendarIdentity` | **REWRITE** (C10) | [MS-ASCMD] ServerId; AUDIT.md §10 | (a)/(b) are safe; the collection discriminator must not re-key `item_map.server_id`. |
+| P2-5 middleware allocations | COMPLIANT | — | Metrics/rate-limit keys only; `normalize_path` collapsing must stay identical. |
+| P2-6 bound `TZ_PARAMS_CACHE` | **REWRITE** (C11) | [MS-ASDTYPE] §2.7 (TimeZone), [MS-OXWSGTZ] §2.2.4.12 | Bound the map and drop `None` memoisation, but keep the raw key and the exact outputs. |
+| P3-1 `sort_by_key(..to_string())` | **REWRITE** (C12) | [MS-OXWSCONT], [MS-OXWSSYNC] | Property order is hashed into the contact `ChangeKey`; the sort must be stable and lexicographic. |
+| P3-2 `normalize_email` fast path | COMPLIANT | [MS-OXOCAL] attendee identity | ASCII lowercase equals Unicode lowercase for ASCII input; NFC is a no-op there. |
+| P3-3 `const` mail properties | COMPLIANT | RFC 8621 §4.1 (property names) | Same names, same array shape. |
+| P3-4 `Arc<JmapSession>` | COMPLIANT | — | Cache handle only. |
+| P3-5 drop unused deps | COMPLIANT | — | Keep `memchr` (used by C6). |
+| P3-6 gate S/MIME harvest | **REWRITE** (C13) | [MS-OXOSMIME] | The gate must be a conservative superset check; a false negative loses a GAL certificate. |
+| P3-7 NUL byte in a comment | COMPLIANT | — | No wire effect. |
+
+## Rewritten changes
+
+### C1 — replaces P1-1 (EWS `SyncFolderItems` batching)
+
+Batch **per phase**, chunked at 500 ids (Stalwart's `maxObjectsInGet`; `MaxChangesReturned` is capped
+at 512 by [MS-OXWSSYNC] §3.1.4.2.4.1, so one delta needs at most two chunks):
+
+1. Collect the phase's ids (`changes.created` for the Create/Update arm, the destroyed walk for the
+   Delete arm).
+2. `jmap.get_emails(account_id, &chunk, Some(json!(JmapClient::mail_properties())), user, pass, true)`
+   — pass exactly what `get_email` passes today (`jmap.rs:2909-2918` shows `get_email` is already a
+   one-element `get_emails` with that property list), so the rendered `<t:Message>` is byte-identical.
+3. Index the response **by `email.id`**, never by position.
+4. Iterate the ORIGINAL id order and apply the existing per-id logic unchanged:
+   - id absent from the response → the current `Ok(None)` branch (skip; not an error),
+   - `!email_lives_in_mailbox` → `undelivered_ids`,
+   - otherwise render, `rendered_ids.insert`, stage the flag-baseline seed.
+5. A chunk-level `Err` fails the whole call closed exactly as a per-id `Err` does today
+   (`ErrorServerBusy`, `SyncState` unchanged) — never a partial response.
+
+Invariants that must not change:
+
+- the **set and order** of `<t:Create>`/`<t:Update>`/`<t:Delete>` entries, because truncation to
+  `MaxChangesReturned` slices a prefix of that order and a moving prefix makes the client loop;
+- `IncludesLastItemInRange`, `SyncState`, and the 1..=512 cap ([MS-OXWSSYNC] §3.1.4.2.3.6,
+  §3.1.4.2.4.1);
+- each item's `ChangeKey` (for messages it is `server_id.clone()`, content-independent — `ews.rs:5675`);
+- the flag-baseline seeds staged and committed atomically with the window (PR #2046 invariant).
+
+### C2 — replaces P1-2 (EAS keyword-baseline batching)
+
+One query per scan page:
+
+```
+SELECT email_id, keywords_json FROM email_keyword_baseline
+WHERE owner = ?1 AND collection_id = ?2 AND email_id IN (...)
+```
+
+built with `sqlx::QueryBuilder::push_tuples`, chunked at 500 ids to stay well under SQLite's variable
+limit. Then iterate the page's ids in their **original order** and look each one up in the returned
+map, so the emitted `<Change>` sequence and the overflow-queue order are unchanged.
+
+Keep: a page-level read error must still set `KeywordScanOutcome.deferred` (hold the rotating
+position) and must never be treated as "no row". Keep the collection-level accounting exactly as is —
+[MS-ASCMD] requires collections to be "processed by the server in the order received" and defines
+`WindowSize`/`MoreAvailable` per collection, so a batching change that shortened a page would change
+`MoreAvailable` and desynchronise the client.
+
+### C3 — replaces P1-3 (`CopyFolder` mailbox-list reuse)
+
+Hoist `query_mailboxes` into `handle_copy_folder` and pass `&[JmapMailbox]` through `FolderCopyCtx`.
+
+This is safe for a specific reason worth recording: the recursion reads the list only for (a) the
+**source** folder's display name and (b) the children filter
+`parent_id == Some(src_mailbox_id)`. The copy creates mailboxes under the **destination**, so a
+newly created id can never satisfy a filter on a source id — the cached list cannot go stale inside
+one `CopyFolder`, and recursion is still bounded by `MAX_DEPTH`.
+
+Also hoist the per-source `get_mailbox_ids_for_role` call (`ews_folder_ops.rs:160`) to one
+`Mailbox/query` for the whole operation.
+
+Keep: one `FolderId` per requested folder **in request order** in the `CopyFolderResponse`, and the
+all-or-nothing `rollback_copied_subtree` on any failure — that rollback is what makes a client retry
+safe under [MS-OXWSFOLD] §3.1.4.1.
+
+### C4 — replaces P1-4 (contact photos)
+
+**Parallelise only. Do not defer.**
+
+The photo is pushed into `v.properties` **before** `v.to_string()` (`contacts.rs:1341-1358`), and
+with Stalwart exposing no `@etag` the EWS contact `ChangeKey` is `sha256(vcard)`
+(`contacts::contact_change_key` → `contact_hash`). Deferring the photo to render time would change
+that hash for every contact and make the server report the entire address book as modified on the
+next `SyncFolderItems` — the opposite of the intended saving, and a delta-contract violation.
+
+```rust
+futures_util::stream::iter(cards.into_iter().enumerate())
+    .map(|(i, card)| async move { (i, render_card_with_photo(card).await) })
+    .buffer_unordered(8)
+    .collect::<Vec<_>>()
+    .await
+```
+
+then sort by the captured index before returning, so the returned `Vec<CarddavContact>` order is the
+input order (callers build full snapshots and derive ChangeKeys positionally in the EAS diff).
+
+Failure semantics unchanged: a failed blob download logs a warning and omits `PHOTO`, exactly as
+today. (That is already hash-visible; "improving" it here would change ChangeKeys for unrelated
+reasons.)
+
+### C5 — replaces P1-5 (single-pass request parsing)
+
+A single-pass rewrite MUST reproduce this state machine (`eas.rs:743-771`) exactly:
+
+- match on the **local name** (prefix-agnostic);
+- the FIRST `Start` of that local name begins the value; a later `Start` of the SAME local name
+  (nesting) **clears the accumulator** — today's code re-enters `inside` and calls `value.clear()`;
+- collect `Text` + `CData` + `GeneralRef` (resolved through `resolve_xml_reference`) verbatim, with
+  **no per-event trim** (that is what preserves `R &amp; D` → `R & D`);
+- the FIRST `End` of that local name returns `trim_owned(value)`;
+- a parse `Err` yields `None` for every tag, which is what `validate_payload` relies on to reject a
+  malformed command.
+
+A map-of-first-occurrence built by "append until the matching End" changes the nested case: it would
+return the OUTER content where the current code returns the inner one. Either replicate the reset,
+or prove per call site that same-name nesting is unreachable.
+
+### C6 — replaces P1-6 (`extract_all_tag_blocks`)
+
+**The original suggestion must not be followed.** `ews.rs:651 extract_all_tag_blocks_checked` returns
+the **full raw block including `<Tag>`/`</Tag>`** and is nesting-aware; `eas.rs:709
+extract_all_tag_blocks` returns the **inner text only**, is non-nesting-aware (the first `</Tag>`
+closes), and is lossy-UTF-8. Swapping them changes both the returned bytes and the nesting semantics
+at every call site (`ews.rs:10544` uses the ews variant; `eas.rs:1173, 3088, 3139, 3189` use the eas
+variant).
+
+Rewritten: keep the `eas.rs` semantics exactly and change only the search mechanism:
+
+- `memchr::memmem::find(&bytes[pos..], open)` / `find(&bytes[start..], close)` instead of
+  `bytes[..].windows(len).position(..)` — removes the O(n·m) scan;
+- hoist the `open`/`close` construction out of the per-call path (`memmem::Finder::new` behind a
+  `OnceLock` per tag, or build once and pass a `&[u8]` pair);
+- keep `String::from_utf8_lossy(..).into_owned()` and the first-close rule.
+
+A nesting-aware rewrite would change what those five call sites receive; that is a separate,
+deliberate behaviour change and is out of scope for a performance change.
+
+### C7 — replaces P1-9 (WBXML encoder allocations)
+
+Keep all of the following (each is pinned today by `encode_rejects_non_namespace_attributes`,
+`encode_rejects_declared_unknown_namespace_bindings` and the §3 byte-exact test):
+
+- a binding set is pushed for **every** `Start`/`Empty`, empty or not, because `prefix_ns_stack` is
+  depth-aligned with `ns_stack` and `resolve_prefix_binding` walks it in reverse;
+- duplicate attribute names remain a hard error, compared with the same key representation the
+  current `to_string()` comparison uses;
+- a non-namespace attribute remains a hard error — [MS-ASWBXML] §2.1.3 defines no attribute encoding;
+- `xmlns` with an unknown URI is an immediate hard error; `xmlns:p` with an unknown URI stays `None`
+  and errors only when `p` is **used**;
+- the canonical-prefix fallback (`AirSyncBase:` → its own page) and the implicit-root fallback are
+  unchanged;
+- the emitted token stream is byte-identical.
+
+Only the representation changes: `Option<SmallVec<[(Box<str>, Option<u8>); 2]>>` (or a `&'static`
+slice when the prefix is one of the canonical ones) with a zero-attribute fast path that allocates
+nothing.
+
+### C8 — constraints for P1-10 (WBXML decoder allocations)
+
+`Vec<&'static str>` is valid: every name comes from `TAG_TO_NAME`
+(`phf::Map<[u8; 2], &'static str>`, `wbxml.rs:14`) and the root-page rule takes a
+`rsplit(':').next()` slice of that `'static` str. Keep:
+
+- the root-page-unqualified rule (tags on the root page expand unqualified, `SWITCH_PAGE`-reached tags
+  keep `Prefix:`);
+- `format!("</{tag}>")` → `push_str("</"); push_str(tag); push('>')` — identical bytes;
+- `ENTITY` → `&#{n};` — identical bytes;
+- `String::from_utf8(bytes.to_vec())` → `std::str::from_utf8(bytes)?.to_owned()` in the raw-XML
+  passthrough branch only (`wbxml.rs:1429`);
+- `with_capacity` must account for the `<?xml …?>\n` prefix already in `output`.
+
+### C9 — P2-2 is WITHDRAWN
+
+`ORDER BY id ASC` is load-bearing, not incidental. `CalendarIdentity::load` resolves the canonical
+ServerId with first-wins `by_uid.entry(..).or_insert(..)` and first-wins
+`by_resource.entry(..).or_insert(..)`, and then **overwrites** `by_resource` from the alias list
+(last-wins). Dropping the clause makes the winner depend on the index SQLite happens to scan, so an
+owner holding two `item_map` rows that share a UID or an href could be given a **different ServerId
+between two requests** — a client-visible identity change that EAS reports as Delete+Add
+([MS-ASCMD]: the client "MUST store the ServerId … and MUST be able to locate [the object] given a
+ServerId").
+
+The sort runs once per calendar Sync over one owner's rows, where per-row rendering dominates, so
+there is nothing to win. If it ever measures: a plain `item_map(owner)` index already yields rowid
+order for a rowid table, so add that instead of dropping the clause.
+
+### C10 — replaces P2-3 (scoping `CalendarIdentity`)
+
+(a) and (b) are compliant: they change allocation and reuse only, not the resolved ServerId.
+
+(c) is rewritten to state the hard constraint. A per-collection discriminator must NOT:
+
+- change `item_map.server_id` — that text is the EAS `ServerId` ([MS-ASCMD]) and the body of the EWS
+  `ItemId` ([MS-OXWSITEMID]);
+- change which row wins the UID/href join (see C9);
+- change the documented cross-collection behaviour of AUDIT.md §10.
+
+It is a schema change with client-visible identity risk, not a performance tweak, and it should be
+justified by measurement before it is attempted.
+
+### C11 — replaces P2-6 (`TZ_PARAMS_CACHE`)
+
+Bound the map, but keep the key and the outputs:
+
+- keep the **raw input string** as the key (the code documents that distinct spellings get their own
+  entry "rather than aliasing surprises"); do not introduce canonicalisation as part of a perf fix;
+- bound it (moka, capacity ≈ 4096; entries are pure, so no TTL is needed);
+- do NOT memoise `None` — that is precisely the attacker-chosen key space, and a miss is cheap;
+- `moka::sync::Cache` also removes the double lock acquisition.
+
+Outputs must stay identical: the same `(bias, win_name, dst_name, std_rule, dst_rule, 0, dst_bias)`
+feeds the EAS `TimeZone` TZI blob ([MS-ASDTYPE] §2.7) and the EWS `StartTimeZone`/`EndTimeZone`
+Id+Name pair ([MS-OXWSGTZ] §2.2.4.12). The computation is deterministic, so caching cannot change
+them — but that is the invariant to test, not to assume.
+
+### C12 — replaces P3-1 (`jscard` sort)
+
+Use a **stable** sort with the **same** key:
+
+```rust
+entries.sort_by(|a, b| a.0.cmp(b.0));
+```
+
+`sort_unstable_by` would be safe only by accident (JSON object keys are unique, so there are no
+ties) and is one refactor away from becoming a bug.
+
+MUST NOT change the comparison to numeric or insertion order. The emitted vCard property order is
+part of the vCard bytes, and with Stalwart exposing no `@etag` the EWS contact `ChangeKey` is
+`sha256(vcard)` (`contacts::contact_change_key` → `contact_hash`). Any reordering changes every
+contact's `ChangeKey` and makes the server report the whole address book as modified — a
+[MS-OXWSCONT]/[MS-OXWSSYNC] delta-contract violation. The current lexicographic order on the
+JSCalendar map key (`"1"`, `"10"`, `"2"`, …) must be preserved verbatim.
+
+### C13 — replaces P3-6 (S/MIME harvest gate)
+
+The gate must be a conservative **superset** check:
+
+```rust
+let looks_smime = contains_ci_unfolded(raw_mime, b"pkcs7")
+    || contains_ci_unfolded(raw_mime, b"multipart/signed");
+if looks_smime {
+    crate::smime::harvest_and_store(&state.storage, raw_mime, &owned).await;
+}
+```
+
+Unfold CR/LF/space/tab before matching, so a folded `Content-Type: multipart/\r\n signed` is still
+found, and match `pkcs7` (which covers `application/pkcs7-mime`, `application/x-pkcs7-mime` and
+`application/pkcs7-signature`). Never skip when any token appears.
+
+The harvest is gateway-local: [MS-OXOSMIME] governs the structure of S/MIME messages, not this GAL
+certificate cache, and `harvest_and_store` already cannot affect the sent message. So a false
+positive costs one parse, while a false negative silently loses a certificate — the superset rule
+removes the only real risk.
+
+## Items confirmed compliant — invariants to keep while implementing
+
+- **P0-1 / P0-2** — share the client, keep the timeout of the constructor in use (`new` = 30 s), and
+  keep auth per request (never cache credentials on the client). `state.jmap_client` is already an
+  `Arc<JmapClient>`, so P0-1 is a `MapiState` field, not a new abstraction.
+- **P1-7** — `payload` is read-only at all three uses (`payload.first()` sniff, `wbxml.decode`,
+  `validate_payload`), so `&body` is byte-identical.
+- **P1-8** — escaping is performed by `xml_escape`/`xml_escape_text` *before* formatting; `write!`
+  cannot change the bytes.
+- **P1-10** — see C8.
+- **P2-1** — an added index cannot change a result set; keep the `commit_calendar_sync` transaction
+  atomic (the extra index write is inside it).
+- **P2-5** — `normalize_path`'s id collapsing produces the *metric label*; keep it identical or every
+  dashboard series splits.
+- **P3-2** — `to_ascii_lowercase()` is exactly `to_lowercase()` for ASCII input, and NFC is a no-op
+  there; the non-ASCII path must keep Unicode lowercasing + NFC, because attendee matching compares
+  the normalised address.
+- **P3-3** — keep the property list element-for-element; RFC 8621 silently drops unknown names.
+- **P3-5** — keep `memchr`; C6 depends on it.
+- **P3-7** — replace the NUL with a printable character; no protocol surface.
+- **Rust-feature table** — `Vec::extract_if` is an in-place **stable** filter, so it may be used on
+  the delta id lists (relative order is preserved); it must not be used to filter or reorder
+  already-rendered XML fragments. `#[expect(lint)]`, `Cow` returns and `LazyLock` tables have no
+  wire effect.
+
+## Net effect on the ranking
+
+The rewrites leave the P0/P1 ordering unchanged (the two client-construction items are the largest
+and are protocol-neutral). Three items changed materially:
+
+- **P2-2 is withdrawn** — it was the only "free" SQLite win and it is not free.
+- **P1-4 keeps its cost model but loses the "defer" option** — the parallel form is the only
+  compliant saving.
+- **P1-6's replacement target changed** — the allocation win stands, the "reuse the checked helper"
+  shortcut does not.
+
+P3-1 moves up in importance: it is the only item where a careless implementation silently rewrites
+every contact's `ChangeKey`.
