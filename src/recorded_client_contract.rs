@@ -849,7 +849,7 @@ async fn mapi_connect_execute_disconnect_sequence() {
 
     let rop_logon: Vec<u8> = {
         // RopLogon: RopId=0xFE, LogonId=0, OutputHandleIndex=4, flags=1,
-        // OpenFlags=0, StoreState=0, EssdnSize=len+1, Essdn="/o=Example/ou=First/cn=Recipients/cn=user "
+        // OpenFlags=0, StoreState=0, EssdnSize=len+1, Essdn="/o=Example/ou=First/cn=Recipients/cn=user\0"
         let essdn = b"/o=Example/ou=First/cn=Recipients/cn=recorded";
         let mut body = vec![
             0xFE, // RopId ROP_LOGON

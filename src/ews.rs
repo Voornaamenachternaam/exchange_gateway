@@ -5333,7 +5333,7 @@ fn unique_ids(ids: &[String]) -> Vec<String> {
 /// look each id up in the map rather than index the response by position.
 /// `get_emails` chunks the id list at the session's `maxObjectsInGet`, so a
 /// `MaxChangesReturned`-bounded delta costs at most two requests. The property
-/// list is [`JmapClient::mail_properties`] — exactly what
+/// list is [`JmapClient::MAIL_PROPERTIES`] — exactly what
 /// [`JmapClient::get_email`] requests — so the rendered `<t:Message>` is
 /// byte-identical to the per-id version.
 async fn fetch_emails_by_id(
@@ -5347,7 +5347,7 @@ async fn fetch_emails_by_id(
     if ids.is_empty() {
         return Ok(by_id);
     }
-    let properties = serde_json::json!(JmapClient::mail_properties());
+    let properties = serde_json::json!(JmapClient::MAIL_PROPERTIES);
     for email in jmap
         .get_emails(account_id, ids, Some(properties), username, password, true)
         .await?

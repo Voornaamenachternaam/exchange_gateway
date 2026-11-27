@@ -364,7 +364,7 @@ pub fn jscard_to_vcard(card: &Value, uid: &str) -> Vcard {
 
     if let Some(emails) = card.get("emails").and_then(|e| e.as_object()) {
         let mut entries: Vec<_> = emails.iter().collect();
-        entries.sort_by_key(|(k, _)| k.to_string());
+        entries.sort_by(|a, b| a.0.cmp(b.0));
         for (_, e) in entries {
             if let Some(addr) = e.get("address").and_then(|a| a.as_str()) {
                 let mut params = Vec::new();
@@ -384,7 +384,7 @@ pub fn jscard_to_vcard(card: &Value, uid: &str) -> Vcard {
 
     if let Some(phones) = card.get("phones").and_then(|p| p.as_object()) {
         let mut entries: Vec<_> = phones.iter().collect();
-        entries.sort_by_key(|(k, _)| k.to_string());
+        entries.sort_by(|a, b| a.0.cmp(b.0));
         for (_, p) in entries {
             if let Some(num) = p.get("number").and_then(|n| n.as_str()) {
                 let mut params = Vec::new();
@@ -425,7 +425,7 @@ pub fn jscard_to_vcard(card: &Value, uid: &str) -> Vcard {
 
     if let Some(addrs) = card.get("addresses").and_then(|a| a.as_object()) {
         let mut entries: Vec<_> = addrs.iter().collect();
-        entries.sort_by_key(|(k, _)| k.to_string());
+        entries.sort_by(|a, b| a.0.cmp(b.0));
         for (_, a) in entries {
             let mut street = String::new();
             let mut extension = String::new();
@@ -637,7 +637,7 @@ fn js_str(o: &Value, key: &str) -> String {
 
 fn first_org(orgs: &serde_json::Map<String, Value>) -> Option<(&String, &Value)> {
     let mut it = orgs.iter().collect::<Vec<_>>();
-    it.sort_by_key(|(k, _)| k.to_string());
+    it.sort_by(|a, b| a.0.cmp(b.0));
     it.into_iter().next()
 }
 
@@ -745,6 +745,35 @@ mod tests {
             back.properties
                 .iter()
                 .any(|p| matches!(p, vcard::Property::Uid(u) if u.value == "contact-1"))
+        );
+    }
+
+    #[test]
+    fn jscard_emails_follow_lexicographic_key_order() {
+        // The emitted vCard property order is part of the vCard bytes and thus
+        // the EWS contact ChangeKey; the JSCalendar map key order must be
+        // preserved verbatim (`"1"`, `"10"`, `"2"`, …).
+        let mut emails = serde_json::Map::new();
+        emails.insert("2".into(), json!({"address": "two@example.com"}));
+        emails.insert("10".into(), json!({"address": "ten@example.com"}));
+        emails.insert("1".into(), json!({"address": "one@example.com"}));
+        let card = json!({
+            "@type": "Card",
+            "uid": "x",
+            "emails": Value::Object(emails),
+        });
+        let v = jscard_to_vcard(&card, "x");
+        let order: Vec<&str> = v
+            .properties
+            .iter()
+            .filter_map(|p| match p {
+                vcard::Property::Email(e) => Some(e.email.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            order,
+            ["one@example.com", "ten@example.com", "two@example.com"]
         );
     }
 

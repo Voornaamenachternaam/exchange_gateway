@@ -96,7 +96,7 @@ pub fn parse_itip_response(ical: &str) -> Option<ItipResponse> {
         } else if key_upper.starts_with("SEQUENCE") {
             sequence = value.trim().parse::<u32>().unwrap_or(0);
         } else if key_upper.starts_with("ORGANIZER") {
-            let email = normalize_email(value);
+            let email = normalize_email(value).into_owned();
             organizer_email = Some(email);
         }
     }
@@ -105,7 +105,7 @@ pub fn parse_itip_response(ical: &str) -> Option<ItipResponse> {
 
     for (key, value) in event_props {
         if key.starts_with("ATTENDEE") {
-            let email = normalize_email(value);
+            let email = normalize_email(value).into_owned();
 
             if let Some(ref org_email) = organizer_email
                 && email == *org_email

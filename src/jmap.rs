@@ -1477,7 +1477,7 @@ pub struct JmapClient {
     base_url: String,
     client: reqwest::Client,
     /// Cached sessions keyed by username, with expiry time.
-    session_cache: Arc<DashMap<String, (Instant, JmapSession)>>,
+    session_cache: Arc<DashMap<String, (Instant, Arc<JmapSession>)>>,
     /// Credential-probe cache keyed by `username:sha256(password)`.
     ///
     /// The EAS/EWS front doors authenticate every request; without this, each
@@ -1559,36 +1559,34 @@ impl JmapClient {
     /// the gateway needs to render EWS/EAS: the metadata used by SyncFolderItems
     /// / FindItem / Sync plus the richer fields (`attachments`, `header:raw`,
     /// `bodyStructure`) required for full-fidelity GetItem rendering.
-    pub(crate) fn mail_properties() -> Vec<&'static str> {
-        vec![
-            "id",
-            "blobId",
-            "threadId",
-            "mailboxIds",
-            "keywords",
-            "size",
-            "receivedAt",
-            "sentAt",
-            "hasAttachment",
-            "from",
-            "sender",
-            "to",
-            "cc",
-            "bcc",
-            "replyTo",
-            "subject",
-            "preview",
-            "bodyValues",
-            "textBody",
-            "htmlBody",
-            "attachments",
-            "bodyStructure",
-            "messageId",
-            "inReplyTo",
-            "references",
-            "header:raw",
-        ]
-    }
+    pub(crate) const MAIL_PROPERTIES: &[&str] = &[
+        "id",
+        "blobId",
+        "threadId",
+        "mailboxIds",
+        "keywords",
+        "size",
+        "receivedAt",
+        "sentAt",
+        "hasAttachment",
+        "from",
+        "sender",
+        "to",
+        "cc",
+        "bcc",
+        "replyTo",
+        "subject",
+        "preview",
+        "bodyValues",
+        "textBody",
+        "htmlBody",
+        "attachments",
+        "bodyStructure",
+        "messageId",
+        "inReplyTo",
+        "references",
+        "header:raw",
+    ];
     /// Create a new JMAP client pointing at the Stalwart JMAP endpoint.
     pub fn new(base_url: &str) -> Result<Self> {
         Self::with_session_auth(
@@ -2174,7 +2172,7 @@ impl JmapClient {
         &self,
         username: &str,
         password: &SecretString,
-    ) -> Result<JmapSession> {
+    ) -> Result<Arc<JmapSession>> {
         // Check the cache first — return if not expired.
         if let Some(entry) = self.session_cache.get(username)
             && entry.key().as_str() == username
@@ -2267,6 +2265,7 @@ impl JmapClient {
 
         // Cache the session with expiry
         let expires = Instant::now() + SESSION_CACHE_TTL;
+        let session = Arc::new(session);
         self.session_cache
             .insert(username.to_string(), (expires, session.clone()));
 
@@ -2381,7 +2380,7 @@ impl JmapClient {
             .sort
             .unwrap_or_else(|| vec![json!({"property": "receivedAt", "isAscending": false})]);
 
-        let properties = json!(Self::mail_properties());
+        let properties = json!(Self::MAIL_PROPERTIES);
 
         // RFC 8620 §5.5: an `anchor` (with `anchorOffset`) pins the window to
         // an item instead of a numeric offset; `position` is then ignored by
@@ -2663,7 +2662,7 @@ impl JmapClient {
     /// Maps to `Email/query` (RFC 8621 §4.3) and returns the bare id list.
     /// This is the cheap sibling of [`JmapClient::query_emails`] for callers
     /// that only need to reverse-map a MAPI mid to a JMAP id: it avoids
-    /// downloading `mail_properties()`, `bodyStructure`, and `bodyValues` for
+    /// downloading `MAIL_PROPERTIES`, `bodyStructure`, and `bodyValues` for
     /// every page, which `query_emails` batches in.
     pub async fn query_email_ids(&self, params: QueryEmailsParams<'_>) -> Result<Vec<String>> {
         let session = self.get_session(params.username, params.password).await?;
@@ -2838,7 +2837,7 @@ impl JmapClient {
         let session = self.get_session(username, password).await?;
         let api_url = &session.api_url;
 
-        let props = properties.unwrap_or_else(|| json!(Self::mail_properties()));
+        let props = properties.unwrap_or_else(|| json!(Self::MAIL_PROPERTIES));
 
         // RFC 8620 §2: `Email/get` with an explicit `ids` array is bounded by
         // the session's `maxObjectsInGet`. An id list over the cap is rejected
@@ -2911,7 +2910,7 @@ impl JmapClient {
             .get_emails(
                 account_id,
                 &[email_id.to_string()],
-                Some(json!(Self::mail_properties())),
+                Some(json!(Self::MAIL_PROPERTIES)),
                 username,
                 password,
                 fetch_bodies,
@@ -5922,7 +5921,7 @@ impl JmapClient {
         &self,
         username: &str,
         password: &SecretString,
-    ) -> Result<JmapSession> {
+    ) -> Result<Arc<JmapSession>> {
         self.get_session(username, password).await
     }
 
@@ -9522,6 +9521,20 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
         base
+    }
+
+    #[tokio::test]
+    async fn get_session_returns_cached_arc_without_recloning() {
+        let base = spawn_stub_jmap_server().await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let first = client.get_session("u", &pw).await.unwrap();
+        let second = client.get_session("u", &pw).await.unwrap();
+        assert!(
+            std::sync::Arc::ptr_eq(&first, &second),
+            "cached session must be shared by handle, not deep-cloned"
+        );
+        assert_eq!(first.api_url, base);
     }
 
     #[tokio::test]

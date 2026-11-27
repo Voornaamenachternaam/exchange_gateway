@@ -117,15 +117,21 @@ pub fn nfc(input: &str) -> String {
     input.nfc().collect()
 }
 
-pub fn normalize_email(email: &str) -> String {
+pub fn normalize_email(email: &str) -> Cow<'_, str> {
     let trimmed = email.trim();
-    let lower = trimmed.to_lowercase();
-    let stripped = if lower.starts_with("mailto:") {
-        &trimmed["mailto:".len()..]
-    } else {
-        trimmed
+    let stripped = match trimmed.get(.."mailto:".len()) {
+        Some(prefix) if prefix.eq_ignore_ascii_case("mailto:") => &trimmed["mailto:".len()..],
+        _ => trimmed,
     };
-    let normalized: String = stripped.nfc().collect::<String>().to_lowercase();
+    let normalized = if stripped.is_ascii() {
+        if stripped.bytes().any(|b| b.is_ascii_uppercase()) {
+            Cow::Owned(stripped.to_ascii_lowercase())
+        } else {
+            Cow::Borrowed(stripped)
+        }
+    } else {
+        Cow::Owned(stripped.nfc().collect::<String>().to_lowercase())
+    };
     if !email_address::EmailAddress::is_valid(&normalized) {
         tracing::debug!(
             "Normalized email does not pass RFC validation: {}",
@@ -296,6 +302,19 @@ mod tests {
         let nfd_email = "user@\u{0065}\u{0301}xample.com";
         assert_eq!(normalize_email(nfd_email), "user@\u{00e9}xample.com");
         assert_eq!(normalize_email("alice@example.com"), "alice@example.com");
+        // ASCII fast path: already-normalised input is borrowed, not rebuilt.
+        assert!(matches!(
+            normalize_email("alice@example.com"),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        assert!(matches!(
+            normalize_email("Alice@Example.com"),
+            std::borrow::Cow::Owned(_)
+        ));
+        assert!(matches!(
+            normalize_email("mailto:alice@example.com"),
+            std::borrow::Cow::Borrowed(_)
+        ));
     }
 
     #[test]

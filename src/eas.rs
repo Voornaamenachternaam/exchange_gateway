@@ -4461,7 +4461,7 @@ async fn handle_item_operations(ctx: &ItemOperationsCtx<'_>) -> Response {
         let enforcement = PermissionEnforcement::new(&state.storage);
         let perm_ctx = PermissionContext::new(
             username.to_string(),
-            owner_lower.clone(),
+            owner_lower.to_string(),
             calendar_folder_id.clone(),
         );
         match enforcement.can_read_item(&perm_ctx).await {

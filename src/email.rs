@@ -1558,7 +1558,7 @@ pub async fn save_draft_via_jmap(
         VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
         "#,
     )
-    .bind(&owner)
+    .bind(owner.as_ref())
     .bind(&server_id)
     .bind(&jmap_id)
     .bind::<Option<&str>>(None) // uid not available for drafts
@@ -3200,12 +3200,22 @@ pub async fn send_eas_mime_message(
         o.dedup();
         o
     };
-    let stored = crate::smime::harvest_and_store(&state.storage, raw_mime, &owned).await;
-    if stored > 0 {
-        tracing::info!(
-            certs = stored,
-            "harvested S/MIME certificate(s) from outbound EAS mail"
-        );
+    // Gate the (relatively expensive) full MIME + CMS parse on a cheap
+    // superset scan: if no S/MIME token appears at all, there is nothing to
+    // harvest. `pkcs7` covers application/pkcs7-mime, application/x-pkcs7-mime
+    // and application/pkcs7-signature; `multipart/signed` covers detached
+    // signatures. Missing a token would silently lose a GAL certificate, so
+    // the scan must never under-match (Performance audit C13).
+    if contains_ci_unfolded(raw_mime, b"pkcs7")
+        || contains_ci_unfolded(raw_mime, b"multipart/signed")
+    {
+        let stored = crate::smime::harvest_and_store(&state.storage, raw_mime, &owned).await;
+        if stored > 0 {
+            tracing::info!(
+                certs = stored,
+                "harvested S/MIME certificate(s) from outbound EAS mail"
+            );
+        }
     }
 
     if save_in_sent && let Some(jmap) = state.jmap_client.as_ref() {
@@ -3327,9 +3337,71 @@ fn calendar_part_ics(part: &mail_parser::MessagePart<'_>) -> Option<String> {
     is_calendar.then(|| text.to_string())
 }
 
+/// Case-insensitive substring scan that treats CR/LF/space/tab as transparent,
+/// so a folded header (`multipart/\r\n signed`) still matches its unfolded
+/// token. Used as a conservative superset gate before the full S/MIME harvest
+/// (Performance audit C13): false positives cost one parse, false negatives
+/// would lose a certificate.
+fn contains_ci_unfolded(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    let mut i = 0;
+    let mut matched = 0;
+    let mut start = 0;
+    while i < haystack.len() {
+        let b = haystack[i];
+        if matches!(b, b'\r' | b'\n' | b' ' | b'\t') {
+            i += 1;
+            continue;
+        }
+        if b.eq_ignore_ascii_case(&needle[matched]) {
+            if matched == 0 {
+                start = i;
+            }
+            matched += 1;
+            if matched == needle.len() {
+                return true;
+            }
+            i += 1;
+        } else if matched == 0 {
+            i += 1;
+        } else {
+            i = start + 1;
+            matched = 0;
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn contains_ci_unfolded_matches_across_folding_and_case() {
+        assert!(contains_ci_unfolded(
+            b"Content-Type: application/pkcs7-mime; smime-type=signed-data",
+            b"pkcs7"
+        ));
+        assert!(contains_ci_unfolded(
+            b"Content-Type: Application/X-PKCS7-MIME",
+            b"pkcs7"
+        ));
+        assert!(contains_ci_unfolded(
+            b"Content-Type: multipart/\r\n signed;\r\n\tboundary=\"x\"",
+            b"multipart/signed"
+        ));
+        assert!(contains_ci_unfolded(
+            b"Content-Type: Multipart/ Signed",
+            b"multipart/signed"
+        ));
+        assert!(!contains_ci_unfolded(
+            b"Content-Type: text/plain\r\n\r\nhello",
+            b"pkcs7"
+        ));
+        assert!(!contains_ci_unfolded(b"", b"pkcs7"));
+    }
 
     #[test]
     fn test_parse_ews_message_basic() {

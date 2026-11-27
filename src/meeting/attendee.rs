@@ -221,7 +221,7 @@ impl AttendeeTracker {
     }
 
     pub fn add_attendee(&mut self, email: String, name: Option<String>, role: AttendeeRole) {
-        let email = normalize_email(&email);
+        let email = normalize_email(&email).into_owned();
         if !self.attendees.iter().any(|a| a.email == email) {
             self.attendees
                 .push(AttendeeResponse::new(email, name, role));
@@ -229,7 +229,7 @@ impl AttendeeTracker {
     }
 
     pub fn remove_attendee(&mut self, email: &str) -> bool {
-        let email = normalize_email(email);
+        let email = normalize_email(email).into_owned();
         let len_before = self.attendees.len();
         self.attendees.retain(|a| a.email != email);
         self.attendees.len() != len_before
@@ -240,7 +240,7 @@ impl AttendeeTracker {
         email: &str,
         status: AttendeeStatus,
     ) -> Result<(), &'static str> {
-        let email = normalize_email(email);
+        let email = normalize_email(email).into_owned();
         if let Some(attendee) = self.attendees.iter_mut().find(|a| a.email == email) {
             attendee.respond(status);
             Ok(())
@@ -255,7 +255,7 @@ impl AttendeeTracker {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
     ) -> Result<(), &'static str> {
-        let email = normalize_email(email);
+        let email = normalize_email(email).into_owned();
         if let Some(attendee) = self.attendees.iter_mut().find(|a| a.email == email) {
             attendee.propose_new_time(start, end);
             Ok(())
@@ -265,12 +265,12 @@ impl AttendeeTracker {
     }
 
     pub fn get_attendee(&self, email: &str) -> Option<&AttendeeResponse> {
-        let email = normalize_email(email);
+        let email = normalize_email(email).into_owned();
         self.attendees.iter().find(|a| a.email == email)
     }
 
     pub fn get_attendee_mut(&mut self, email: &str) -> Option<&mut AttendeeResponse> {
-        let email = normalize_email(email);
+        let email = normalize_email(email).into_owned();
         self.attendees.iter_mut().find(|a| a.email == email)
     }
 
