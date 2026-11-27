@@ -6791,6 +6791,12 @@ async fn handle_sync_collections(ctx: &SyncCtx<'_>, collections: &[SyncCollectio
     } = *ctx;
     let mut collection_responses: Vec<String> = Vec::new();
 
+    // One owner-identity snapshot per REQUEST: every calendar collection below
+    // would otherwise re-run the two owner-wide `item_map` scans
+    // `CalendarIdentity::load` performs. Anything that writes a mapping
+    // invalidates it (see the mutation arm and `perform_sync`).
+    let identity_cache = sync::SyncIdentityCache::new();
+
     // Remaining global WindowSize budget (MS-ASCMD §2.2.3.199: the WindowSize
     // child of the Sync element "impose[s] a global limit on the number of
     // changes that are returned by the server"). `None` = the client sent no
@@ -7247,6 +7253,11 @@ async fn handle_sync_collections(ctx: &SyncCtx<'_>, collections: &[SyncCollectio
                 {
                     Ok(results) => {
                         mutation_responses = sync::render_client_mutation_responses(&results);
+                        // The mutations just wrote `item_map` rows the cached
+                        // identity snapshot predates: drop it so this
+                        // collection's delta (and every later collection)
+                        // resolves ServerIds against the current state.
+                        identity_cache.invalidate();
                         // Continue to sync below
                         String::new() // marker to indicate we should still sync
                     }
@@ -7297,6 +7308,7 @@ async fn handle_sync_collections(ctx: &SyncCtx<'_>, collections: &[SyncCollectio
                     username,
                     password: password.expose_secret(),
                     client_mutation_responses: &mutation_responses,
+                    identity_cache: Some(&identity_cache),
                 })
                 .await
                 {

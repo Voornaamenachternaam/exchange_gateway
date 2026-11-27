@@ -38,6 +38,10 @@ pub struct PerformSyncParams<'a> {
     pub username: &'a str,
     pub password: &'a str,
     pub client_mutation_responses: &'a str,
+    /// Request-scoped identity cache: a Sync request with several calendar
+    /// collections loads the owner identity once instead of once per
+    /// collection (see [`SyncIdentityCache`]).
+    pub identity_cache: Option<&'a SyncIdentityCache>,
 }
 
 #[derive(Clone, Debug)]
@@ -110,6 +114,27 @@ fn resource_identity(href: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
+/// [`resource_identity`] for a href the caller already OWNS: a path-only href
+/// (the CalDAV common case) is MOVED into the key instead of copied, and only
+/// an absolute href allocates — and then only its stripped form.
+fn resource_identity_owned(href: String) -> Box<str> {
+    // `resource_identity` always returns a SLICE of its input (or the static
+    // `/`), so "already path-only" is exactly "the identity is the whole
+    // string".
+    let stripped = {
+        let identity = resource_identity(&href);
+        if identity.as_ref() == href.as_str() {
+            None
+        } else {
+            Some(identity.into_owned())
+        }
+    };
+    match stripped {
+        Some(stripped) => stripped.into_boxed_str(),
+        None => href.into_boxed_str(),
+    }
+}
+
 struct CalendarIdentity {
     /// UID → `(ServerId, stored_href_is_jmap)`. The href KIND is kept so a UID
     /// join happens ONLY across backends (see [`CalendarIdentity::for_event`]).
@@ -117,14 +142,16 @@ struct CalendarIdentity {
     /// UIDs that map to more than one stored ServerId (distinct events sharing
     /// a UID); never used for a UID join.
     ambiguous_uids: HashSet<String>,
-    by_resource: HashMap<String, String>,
+    /// Comparison identity → ServerId. Keys are `Box<str>` so a stored row's
+    /// own href string can be moved in rather than copied.
+    by_resource: HashMap<Box<str>, String>,
 }
 
 impl CalendarIdentity {
     async fn load(state: &Arc<AppState>, owner: &str) -> Result<Self> {
         let mut by_uid: HashMap<String, (String, bool)> = HashMap::new();
         let mut ambiguous_uids: HashSet<String> = HashSet::new();
-        let mut by_resource: HashMap<String, String> = HashMap::new();
+        let mut by_resource: HashMap<Box<str>, String> = HashMap::new();
         for (uid, resource_href, server_id) in state.storage.list_item_map_identities(owner).await?
         {
             if let Some(uid) = uid.filter(|u| !u.is_empty()) {
@@ -143,7 +170,7 @@ impl CalendarIdentity {
                 }
             }
             by_resource
-                .entry(resource_identity(&resource_href).into_owned())
+                .entry(resource_identity_owned(resource_href))
                 .or_insert(server_id);
         }
         // The durable JMAP alias table links a JMAP pseudo-href to the canonical
@@ -151,7 +178,7 @@ impl CalendarIdentity {
         // through JMAP). It overrides the item_map href entry, which after a
         // preserved real href no longer carries the pseudo-href.
         for (resource_href, server_id) in state.storage.list_jmap_id_aliases(owner).await? {
-            by_resource.insert(resource_identity(&resource_href).into_owned(), server_id);
+            by_resource.insert(resource_identity_owned(resource_href), server_id);
         }
         Ok(Self {
             by_uid,
@@ -191,6 +218,54 @@ impl CalendarIdentity {
             .get(resource_identity(href).as_ref())
             .cloned()
             .unwrap_or_else(|| generate_server_id(secret, href))
+    }
+}
+
+/// Per-request cache of [`CalendarIdentity`] snapshots.
+///
+/// One EAS `Sync` request can carry several `<Collection>` blocks, and each
+/// `perform_sync` would otherwise re-run the two owner-wide scans
+/// [`CalendarIdentity::load`] performs — C·O(N) rows for a device syncing C
+/// calendars. The cache is scoped to the REQUEST, not the process, because the
+/// identity is a snapshot of `item_map` and `jmap_id_alias`: [`invalidate`]
+/// MUST be called after any write to either table. A stale snapshot could
+/// resolve one event to two different ServerIds, and the client keys its
+/// objects by ServerId ([MS-ASCMD]) — a changed ServerId is a Delete+Add on the
+/// device.
+#[derive(Default)]
+pub struct SyncIdentityCache {
+    entries: std::sync::Mutex<HashMap<String, Arc<CalendarIdentity>>>,
+}
+
+impl SyncIdentityCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Drop every cached snapshot. Call after ANY `item_map` or alias write.
+    pub fn invalidate(&self) {
+        self.lock().clear();
+    }
+
+    async fn get_or_load(
+        &self,
+        state: &Arc<AppState>,
+        owner: &str,
+    ) -> Result<Arc<CalendarIdentity>> {
+        if let Some(hit) = self.lock().get(owner).cloned() {
+            return Ok(hit);
+        }
+        // The lock is released before the await: it must never be held across
+        // the two storage round trips.
+        let loaded = Arc::new(CalendarIdentity::load(state, owner).await?);
+        self.lock().insert(owner.to_string(), Arc::clone(&loaded));
+        Ok(loaded)
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Arc<CalendarIdentity>>> {
+        self.entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 
@@ -1912,7 +1987,10 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     // event first (a client Add through CalDAV and a later JMAP Sync otherwise
     // derive different ServerIds and re-emit `<Add>` for an event the client
     // already holds).
-    let identity = CalendarIdentity::load(&params.state, params.owner).await?;
+    let identity = match params.identity_cache {
+        Some(cache) => cache.get_or_load(&params.state, params.owner).await?,
+        None => Arc::new(CalendarIdentity::load(&params.state, params.owner).await?),
+    };
 
     // EventItem struct used by both JMAP and CalDAV paths
     #[derive(Clone)]
@@ -2993,6 +3071,13 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
             &deleted_now,
         )
         .await?;
+    // This collection changed `item_map`, so the request-scoped identity
+    // snapshot is now stale for the collections that follow.
+    if (!delivered_now.is_empty() || !deleted_now.is_empty())
+        && let Some(cache) = params.identity_cache
+    {
+        cache.invalidate();
+    }
     let more_available_tag = if more_available || drain_has_more {
         "<MoreAvailable/>"
     } else {
@@ -3899,6 +3984,7 @@ mod tests {
             username: "user@example.com",
             password: "pw",
             client_mutation_responses: "",
+            identity_cache: None,
         })
         .await
         .expect("perform_sync")
@@ -4126,6 +4212,7 @@ mod tests {
             username: "user@example.com",
             password: "pw",
             client_mutation_responses: "",
+            identity_cache: None,
         })
         .await
         .expect("perform_sync");
@@ -4371,6 +4458,7 @@ mod tests {
             username: "user@example.com",
             password: "pw",
             client_mutation_responses: "",
+            identity_cache: None,
         })
         .await
         .expect("perform_sync");
@@ -4446,6 +4534,7 @@ mod tests {
             username: "user@example.com",
             password: "pw",
             client_mutation_responses: "",
+            identity_cache: None,
         })
         .await
         .expect("perform_sync");
@@ -4526,6 +4615,7 @@ mod tests {
             username: "user@example.com",
             password: "pw",
             client_mutation_responses: "",
+            identity_cache: None,
         })
         .await
         .expect("perform_sync");
@@ -4628,6 +4718,7 @@ mod tests {
                     username: "user@example.com",
                     password: "pw",
                     client_mutation_responses: "",
+                    identity_cache: None,
                 })
                 .await
                 .expect("perform_sync")
@@ -5604,6 +5695,74 @@ mod tests {
 
     /// Two DISTINCT events that share an iCalendar UID (the same UID in two
     /// calendar collections, which CalDAV permits — UID uniqueness is per
+    /// C10(a): the owned-href form of `resource_identity` keeps the exact
+    /// comparison identity of the borrowed one — a path-only href is kept
+    /// verbatim (and MOVED into the key instead of copied), an absolute
+    /// `http(s)` URL is reduced to its path, and a JMAP pseudo-href stays
+    /// opaque.
+    #[test]
+    fn resource_identity_owned_matches_the_borrowed_form() {
+        for href in [
+            "/dav/cal/user@example.com/Default/e1.ics",
+            "https://mail.example.com/dav/cal/user@example.com/Default/e1.ics",
+            "jmap://calendar/acct/e1",
+            "https://host",
+            "/",
+        ] {
+            assert_eq!(
+                resource_identity_owned(href.to_string()).as_ref(),
+                resource_identity(href).as_ref(),
+                "owned form must agree for {href}"
+            );
+        }
+    }
+
+    /// C10(b): the request-scoped identity cache hands out ONE snapshot per
+    /// owner until something invalidates it, and an invalidation makes the
+    /// next load see rows written in the meantime — the ServerId a client
+    /// already holds must never be shadowed by a stale snapshot.
+    #[tokio::test]
+    async fn identity_cache_reuses_one_snapshot_and_reloads_after_invalidation() {
+        let state = calendar_sync_state("http://127.0.0.1:1").await;
+        let owner = "user@example.com";
+        let cache = SyncIdentityCache::new();
+
+        let first = cache.get_or_load(&state, owner).await.unwrap();
+        let second = cache.get_or_load(&state, owner).await.unwrap();
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "a second collection must reuse the same snapshot"
+        );
+
+        // A mapping written after the snapshot was taken is invisible to it…
+        let href = "/dav/cal/user@example.com/Default/e1.ics";
+        state
+            .storage
+            .upsert_item_map(owner, href, href, "canonical-srv", "uid-e1", "etag")
+            .await
+            .unwrap();
+        assert_eq!(
+            cache
+                .get_or_load(&state, owner)
+                .await
+                .unwrap()
+                .for_href("secret", href),
+            generate_server_id("secret", href),
+            "the cached snapshot must still be the pre-write one"
+        );
+
+        // …and visible again once the writer invalidates.
+        cache.invalidate();
+        assert_eq!(
+            cache
+                .get_or_load(&state, owner)
+                .await
+                .unwrap()
+                .for_href("secret", href),
+            "canonical-srv"
+        );
+    }
+
     /// collection) must NOT be joined to one identity: an ambiguous UID is not
     /// used for the UID join, so each event keeps its href-derived ServerId.
     /// Joining them would make the delivery commit overwrite one event's mapping
@@ -6002,6 +6161,7 @@ mod tests {
             username: owner,
             password: "pw",
             client_mutation_responses: "",
+            identity_cache: None,
         })
         .await;
         assert!(

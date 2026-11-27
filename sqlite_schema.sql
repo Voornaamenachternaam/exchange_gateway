@@ -375,6 +375,12 @@ CREATE INDEX IF NOT EXISTS idx_item_map_owner_time ON item_map(owner, updated_at
 CREATE INDEX IF NOT EXISTS idx_item_map_resource ON item_map(owner, resource_href);
 CREATE INDEX IF NOT EXISTS idx_item_map_uid ON item_map(owner, uid);
 CREATE INDEX IF NOT EXISTS idx_item_map_instance ON item_map(owner, instance_id);
+-- `get_item_owner` resolves an owner from a ServerId ALONE (an EAS
+-- GetAttachment / ItemOperations target, an EWS GetItem, a calendar item read),
+-- once per item. The UNIQUE(owner, server_id) b-tree below cannot serve that:
+-- its leftmost column is `owner`, so a server_id-only predicate degraded to a
+-- full scan of the covering index. This index makes it a seek.
+CREATE INDEX IF NOT EXISTS idx_item_map_server ON item_map(server_id);
 -- The UNIQUE(owner, server_id) constraint already provides a b-tree on that
 -- column pair, covering keyset pagination (`WHERE owner = ? AND server_id > ?
 -- ORDER BY server_id ASC`) and point lookups (`WHERE owner = ? AND server_id =

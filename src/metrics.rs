@@ -35,29 +35,36 @@ pub const REJECTION_COUNT: &str = "http_request_rejections_total";
 /// Normalize a request path for metric labels by replacing identifier-like segments with {id}.
 /// This prevents high cardinality from dynamic path elements (UUIDs, numeric IDs).
 /// Heuristic: any segment consisting only of alphanumerics, '-' or '_' with length >= 8 is considered an ID.
-fn normalize_path(path: &str) -> String {
-    let mut segments = Vec::new();
-    for seg in path.split('/') {
-        if seg.is_empty() {
-            segments.push(seg.to_string());
-            continue;
+/// A path segment that is collapsed to `{id}` in the metric label: at least
+/// eight ASCII alphanumerics/`-`/`_` (an opaque object id, not a route word).
+fn is_metric_id_segment(seg: &str) -> bool {
+    seg.len() >= 8
+        && seg
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+}
+
+/// The metric label for a request path: every opaque id segment collapsed to
+/// `{id}`, so one series covers every object instead of one per id.
+///
+/// Returns a borrowed path when nothing collapses (the common case: a route
+/// with no id segment), so the per-request label costs no allocation.
+fn normalize_path(path: &str) -> std::borrow::Cow<'_, str> {
+    if !path.split('/').any(is_metric_id_segment) {
+        return std::borrow::Cow::Borrowed(path);
+    }
+    let mut out = String::with_capacity(path.len());
+    for (index, seg) in path.split('/').enumerate() {
+        if index > 0 {
+            out.push('/');
         }
-        let mut is_id_candidate = true;
-        let mut len = 0;
-        for c in seg.chars() {
-            len += 1;
-            if !(c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-                is_id_candidate = false;
-                break;
-            }
-        }
-        if is_id_candidate && len >= 8 {
-            segments.push("{id}".to_string());
+        if is_metric_id_segment(seg) {
+            out.push_str("{id}");
         } else {
-            segments.push(seg.to_string());
+            out.push_str(seg);
         }
     }
-    segments.join("/")
+    std::borrow::Cow::Owned(out)
 }
 
 /// HTTP request metrics.
@@ -154,17 +161,19 @@ impl HttpMetrics {
 
     /// Record a request end (decrement in-flight gauge and record duration).
     pub fn record_request(&self, method: &str, path: &str, status: StatusCode, elapsed: Duration) {
-        let status = status.as_u16().to_string();
+        // `StatusCode::as_str` is a `&'static str`, so labelling the series
+        // with the code allocates nothing.
+        let status = status.as_str();
         let elapsed_secs = elapsed.as_secs_f64();
         // Decrement in-flight.
         self.requests_in_flight
             .with_label_values(&[method, path])
             .dec();
         self.requests_total
-            .with_label_values(&[method, path, &status])
+            .with_label_values(&[method, path, status])
             .inc();
         self.request_duration_seconds
-            .with_label_values(&[method, path, &status])
+            .with_label_values(&[method, path, status])
             .observe(elapsed_secs);
     }
 }
@@ -525,8 +534,11 @@ pub async fn record_http(
     next: Next,
 ) -> Response {
     let method = req.method().clone();
-    let raw_path = req.uri().path().to_string();
-    let normalized_path = normalize_path(&raw_path);
+    // `Uri` holds its path in a refcounted `Bytes`, so cloning it is a
+    // reference bump, not a copy: the label can then borrow it across
+    // `next.run(req)` without an owned path string per request.
+    let uri = req.uri().clone();
+    let normalized_path = normalize_path(uri.path());
 
     // Increment in-flight gauge
     state
@@ -546,4 +558,49 @@ pub async fn record_http(
         .record_request(method.as_str(), &normalized_path, status, duration);
 
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::borrow::Cow;
+
+    /// P2-5: the metric label must collapse exactly the segments the previous
+    /// implementation collapsed (an opaque id is 8+ ASCII alphanumerics/`-`/
+    /// `_`), and a path with nothing to collapse must come back BORROWED so the
+    /// per-request label costs no allocation.
+    #[test]
+    fn normalize_path_collapses_ids_and_borrows_plain_routes() {
+        for route in [
+            "/EWS/Exchange.asmx",
+            "/health/live",
+            "/health/ready",
+            "/metrics",
+            "/",
+            "",
+        ] {
+            assert!(
+                matches!(normalize_path(route), Cow::Borrowed(_)),
+                "a route without an id segment must borrow: {route}"
+            );
+            assert_eq!(normalize_path(route).as_ref(), route);
+        }
+
+        // Exactly the old rule: 8+ characters, all ASCII alphanumeric/`-`/`_`.
+        for (path, label) in [
+            ("/ews/abc123", "/ews/abc123"),     // 6 chars: a route word
+            ("/ews/abcdefgh", "/ews/{id}"),     // 8 chars: an id
+            ("/ews/abc-def_gh", "/ews/{id}"),   // 11 valid chars
+            ("/ews/abcdefg.", "/ews/abcdefg."), // '.' disqualifies
+            ("/ews/abcdefgh/", "/ews/{id}/"),   // trailing empty segment
+            ("//x//abcdefgh/", "//x//{id}/"),   // interior empties preserved
+            ("/ews/ünïcödéé", "/ews/ünïcödéé"), // non-ASCII is never an id
+            ("/ews/12345678", "/ews/{id}"),     // digits are ids too
+            // The rule has always been "any 8+ character segment", route words
+            // included: the EAS collection label is `{id}` today and stays so.
+            ("/Microsoft-Server-ActiveSync", "/{id}"),
+        ] {
+            assert_eq!(normalize_path(path).as_ref(), label, "for {path}");
+        }
+    }
 }

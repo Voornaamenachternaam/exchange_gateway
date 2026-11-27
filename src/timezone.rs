@@ -2,10 +2,9 @@
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use chrono::{Datelike, Offset, TimeZone};
 use chrono_tz::Tz;
-use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::str::FromStr;
-use std::sync::{LazyLock, Mutex};
+use std::sync::LazyLock;
 use strum::IntoEnumIterator;
 use windows_timezones::WindowsTimezone;
 
@@ -980,29 +979,25 @@ fn vtimezone_rrule(rule: [u8; 16]) -> String {
 /// expensive) full-year offset scan + the `WindowsTimezone::iter()` offset
 /// comparison need only run once per id per process. This is the per-item
 /// render path's hot loop — a calendar folder of N events triggered N year
-/// scans before the cache — so the memo converts N scans into one. The map is
-/// keyed by the raw input string (canonicalisation happens after the lookup)
+/// scans before the cache — so the memo converts N scans into one.
+///
+/// The key is the RAW input string (canonicalisation happens after the lookup),
 /// so distinct spellings (e.g. `UTC` vs `Etc/UTC`) each get their own entry
-/// rather than aliasing surprises; the values are small and bounded by the
-/// finite set of IANA ids a tenant's calendar events reference.
-static TZ_PARAMS_CACHE: LazyLock<Mutex<HashMap<String, Option<TzParams>>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+/// rather than aliasing surprises. That key is CLIENT-CONTROLLED — it is the
+/// TZID of a calendar event the client created — so the map is
+/// capacity-bounded, and a MISS is never memoised: a bogus TZID then costs one
+/// failed parse per render instead of one permanent entry per invented name.
+/// `moka` also removes the global mutex this used to take twice per lookup.
+static TZ_PARAMS_CACHE: LazyLock<moka::sync::Cache<String, TzParams>> =
+    LazyLock::new(|| moka::sync::Cache::builder().max_capacity(4096).build());
 
 pub fn iana_to_windows_params(iana: &str) -> Option<TzParams> {
-    if let Some(cached) = TZ_PARAMS_CACHE
-        .lock()
-        .expect("TZ_PARAMS_CACHE mutex poisoned")
-        .get(iana)
-        .cloned()
-    {
-        return cached;
+    if let Some(cached) = TZ_PARAMS_CACHE.get(iana) {
+        return Some(cached);
     }
-    let computed = compute_iana_to_windows_params(iana);
-    TZ_PARAMS_CACHE
-        .lock()
-        .expect("TZ_PARAMS_CACHE mutex poisoned")
-        .insert(iana.to_string(), computed.clone());
-    computed
+    let computed = compute_iana_to_windows_params(iana)?;
+    TZ_PARAMS_CACHE.insert(iana.to_string(), computed.clone());
+    Some(computed)
 }
 
 fn compute_iana_to_windows_params(iana: &str) -> Option<TzParams> {
@@ -1339,6 +1334,74 @@ mod tests {
     /// `(month, weekday, week, hour)` for a Windows TZI SYSTEMTIME.
     fn parse_rule(b: &[u8; 16]) -> (u16, u16, u16, u16) {
         (word(b, 2), word(b, 4), word(b, 6), word(b, 8))
+    }
+
+    /// C11: the memo must be transparent — a cached lookup returns exactly
+    /// what the uncached computation returns, for every spelling (the raw key
+    /// is kept, so `UTC` and `Etc/UTC` are separate entries with separate
+    /// results), and repeating a lookup cannot change its answer.
+    #[test]
+    fn tz_params_memo_is_transparent_to_the_computation() {
+        for zone in [
+            "UTC",
+            "Etc/UTC",
+            "Etc/GMT",
+            "GMT",
+            "America/New_York",
+            "Europe/Berlin",
+            "Asia/Kolkata",
+            "Australia/Lord_Howe",
+            "Pacific/Apia",
+            "W. Europe Standard Time",
+            "Not/AZone",
+            "",
+        ] {
+            let first = iana_to_windows_params(zone);
+            let second = iana_to_windows_params(zone);
+            assert_eq!(first, second, "the memo must be stable for {zone:?}");
+            assert_eq!(
+                first,
+                compute_iana_to_windows_params(zone),
+                "the memo must equal the computation for {zone:?}"
+            );
+        }
+    }
+
+    /// C11: the key space is client-controlled, so a MISS must not be
+    /// memoised — otherwise every invented TZID would pin an entry for the
+    /// life of the process.
+    #[test]
+    fn tz_params_memo_does_not_cache_misses() {
+        let bogus = "Not/AZone-C11-Miss";
+        assert!(iana_to_windows_params(bogus).is_none());
+        TZ_PARAMS_CACHE.run_pending_tasks();
+        assert!(
+            !TZ_PARAMS_CACHE.contains_key(bogus),
+            "a miss must not occupy a cache entry"
+        );
+
+        // A hit IS memoised.
+        let hit = iana_to_windows_params("Europe/Berlin").expect("Berlin params");
+        TZ_PARAMS_CACHE.run_pending_tasks();
+        assert!(TZ_PARAMS_CACHE.contains_key("Europe/Berlin"));
+        assert_eq!(TZ_PARAMS_CACHE.get("Europe/Berlin"), Some(hit));
+    }
+
+    /// C11: the map is capacity-bounded. Entries are pure, so eviction only
+    /// costs a recomputation — but an unbounded map is a memory leak a client
+    /// could drive with distinct TZIDs.
+    #[test]
+    fn tz_params_memo_is_capacity_bounded() {
+        let params = iana_to_windows_params("UTC").expect("UTC params");
+        for i in 0..(TZ_PARAMS_CACHE.policy().max_capacity().unwrap_or(4096) + 1024) {
+            TZ_PARAMS_CACHE.insert(format!("bounded-c11-{i}"), params.clone());
+        }
+        TZ_PARAMS_CACHE.run_pending_tasks();
+        assert!(
+            TZ_PARAMS_CACHE.entry_count() <= 4096,
+            "cache must stay bounded, holds {}",
+            TZ_PARAMS_CACHE.entry_count()
+        );
     }
 
     #[test]

@@ -5760,6 +5760,47 @@ mod tests {
         storage
     }
 
+    /// P2-1: `get_item_owner` filters on `server_id` ALONE, and the
+    /// `UNIQUE(owner, server_id)` index cannot serve that predicate (its
+    /// leftmost column is `owner`), so before `idx_item_map_server` the query
+    /// scanned every row of the covering index. Pin the PLAN, not just the
+    /// result: a dropped index would still answer correctly, only slowly.
+    #[tokio::test]
+    async fn item_map_server_index_serves_get_item_owner_as_a_seek() {
+        let storage = mem_storage().await;
+        let plan =
+            sqlx::query("EXPLAIN QUERY PLAN SELECT owner FROM item_map WHERE server_id = ?1")
+                .bind("srv-1")
+                .fetch_all(storage.pool.as_ref())
+                .await
+                .expect("query plan")
+                .iter()
+                .map(|row| row.get::<String, _>("detail"))
+                .collect::<Vec<_>>();
+        assert!(
+            plan.iter().any(
+                |step| step.contains("SEARCH item_map") && step.contains("idx_item_map_server")
+            ),
+            "a server_id-only lookup must seek idx_item_map_server: {plan:?}"
+        );
+
+        storage
+            .upsert_item_map(
+                "owner@example.com",
+                "res-1",
+                "res-1",
+                "srv-1",
+                "uid-1",
+                "etag-1",
+            )
+            .await
+            .expect("mapping stored");
+        assert_eq!(
+            storage.get_item_owner("srv-1").await.expect("owner lookup"),
+            Some("owner@example.com".to_string())
+        );
+    }
+
     /// A reminder action is keyed by (owner, item, occurrence): a Dismiss is
     /// stored as `snooze_until = NULL`, a later Snooze for the same occurrence
     /// replaces it in place, another occurrence of the same item is

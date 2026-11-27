@@ -1242,3 +1242,128 @@ recorded here for a separate, deliberate item rather than smuggled into C7/C8.
 1638 tests green (1532 lib + 36 + 3 + 10 + 6 + 5 + 10 + 15 + 11 + 1 + 8 + 1),
 `cargo clippy --all-targets -- -D warnings` 0 warnings, release build
 warning-free, `rustfmt --edition 2024` clean on `src/wbxml.rs`.
+
+# P2-1, C10, P2-5 and C11 delivered (implementation record)
+
+Scope implemented: **P2-1**, **C10** (P2-3 rewritten: (a) and (b) only — (c) stays
+out, see C10), **P2-5** and **C11** (P2-6 rewritten). C12/C13 and the P3 tail
+remain open. No behaviour change beyond what the entries specify.
+
+## P2-1 — `item_map(server_id)` index (`sqlite_schema.sql`)
+
+`get_item_owner` filters on `server_id` alone (EAS `GetAttachment`/
+`ItemOperations` targets, EWS `GetItem`, calendar item reads), and the
+`UNIQUE(owner, server_id)` b-tree cannot serve that predicate: its leftmost
+column is `owner`. Measured plans on the schema, `EXPLAIN QUERY PLAN SELECT
+owner FROM item_map WHERE server_id = ?`:
+
+| | plan |
+| --- | --- |
+| before | `SCAN item_map USING COVERING INDEX sqlite_autoindex_item_map_1` |
+| after | `SEARCH item_map USING INDEX idx_item_map_server (server_id=?)` |
+
+The index is declared in `sqlite_schema.sql` (`IF NOT EXISTS`, so existing
+databases pick it up on the next `init_schema`), not in the ALTER-probed
+migration block, because `server_id` is a base column — the §15 hazard is only
+for columns added by `ALTER TABLE`. New test
+`storage::tests::item_map_server_index_serves_get_item_owner_as_a_seek` pins the
+PLAN (a dropped index still answers correctly, only slowly) and the result.
+
+## C10 — scoping `CalendarIdentity` (replaces P2-3)
+
+(a) and (b) only. (c) is a schema change with client-visible identity risk and
+is deliberately NOT attempted (C10's own constraint).
+
+**(a) Owned-href keys.** `CalendarIdentity::load` built every `by_resource` key
+with `resource_identity(&href).into_owned()` — a fresh `String` per row — even
+though the row's own `resource_href` `String` was about to be dropped.
+`resource_identity` always returns a SLICE of its input (or the static `/`), so
+"already path-only" is exactly "the identity is the whole string";
+`resource_identity_owned` MOVES that `String` into the key (`Box<str>`) and
+allocates only for an absolute href, where the stripped form is unavoidable.
+`by_resource` is `HashMap<Box<str>, String>`; lookups still borrow `&str`.
+
+**(b) Request-scoped identity cache.** One EAS `Sync` request can carry several
+`<Collection>` blocks and each `perform_sync` re-ran the two owner-wide scans.
+New `sync::SyncIdentityCache` holds `Arc<CalendarIdentity>` per owner for the
+duration of ONE request; `PerformSyncParams` gained
+`identity_cache: Option<&SyncIdentityCache>` (the EAS handler passes
+`Some(&cache)`, everything else passes `None`). **The invalidation rule is what
+keeps this compliant with C10**: the identity is a snapshot of `item_map` and
+`jmap_id_alias`, and a stale snapshot could resolve one event to two different
+ServerIds — a client-visible Delete+Add — so the cache is dropped on every
+mapping write inside the request:
+
+* after `apply_client_sync_mutations` succeeds (it writes `item_map`),
+* inside `perform_sync`, right after `commit_calendar_sync`, and ONLY when that
+  commit carried delivered or deleted items (an empty commit writes no mapping,
+  so the snapshot stays valid and the next collection reuses it).
+
+The mutex is never held across an `await` (lock, clone the `Arc`, drop, then
+load).
+
+Measured on an in-memory store with 2000 `item_map` rows (`rustc 1.99.1`,
+temporary instrumented test, removed afterwards):
+
+| step | cost |
+| --- | --- |
+| `CalendarIdentity::load` | 6.28 ms/call |
+| — of which `list_item_map_identities` (the SQL) | 5.29 ms |
+| — of which `list_jmap_id_aliases` | 0.09 ms |
+| 3 collections through the cache | 6.44 ms/request (vs 18.8 ms) |
+
+Two honest corrections to the audit: the load is dominated by the SQL round
+trips, not by the map building, so (a) is worth ~1 % of a load (2000 keys:
+55.8 µs copied vs 55.9 µs moved — the move removes the allocation but the
+allocator is not the cost). The real lever is (b): **−66 %** for a three-collection
+request, and C·O(N) → O(N) per request. Tests:
+`sync::tests::resource_identity_owned_matches_the_borrowed_form` (the owned form
+agrees with the borrowed one for path-only, absolute, JMAP and root hrefs) and
+`sync::tests::identity_cache_reuses_one_snapshot_and_reloads_after_invalidation`
+(one snapshot per owner, a write after the snapshot is invisible until
+`invalidate`, then visible).
+
+## P2-5 — per-request middleware allocations
+
+* `metrics::record_http` no longer copies the path: it clones the `Uri`
+  (a refcount bump on its `Bytes`) and `normalize_path` returns
+  `Cow<'_, str>`, borrowed whenever no segment collapses — so the label costs
+  ZERO allocations on a route without an id segment, where it previously cost
+  `path.to_string()` + a `Vec<String>` + one `String` per segment + `join`.
+  Collapsing writes into one pre-sized `String`.
+* `normalize_path`'s id rule is unchanged and now pinned by
+  `metrics::tests::normalize_path_collapses_ids_and_borrows_plain_routes`,
+  including the rule's long-standing quirk that a ROUTE WORD of 8+ characters
+  is also collapsed (`/Microsoft-Server-ActiveSync` → `/{id}`) — the metric
+  label must not change.
+* `record_request` labels the series with `StatusCode::as_str()` (a
+  `&'static str`) instead of `as_u16().to_string()`.
+* `rate_limit::check_rate_limit` compares `req.uri().path()` directly instead
+  of copying it for `is_unmetered_path`.
+* `validation` skips the percent-decode when the path contains no `%` (it
+  cannot decode to anything else, so the traversal check is unchanged).
+
+## C11 — bound `TZ_PARAMS_CACHE` (replaces P2-6)
+
+`static TZ_PARAMS_CACHE` is now a `moka::sync::Cache<String, TzParams>` with
+`max_capacity(4096)`, replacing `LazyLock<Mutex<HashMap<String, Option<TzParams>>>>`.
+The key stays the RAW input string (distinct spellings keep distinct entries),
+and a MISS is no longer memoised — that was precisely the attacker-chosen key
+space (a client-supplied TZID on an event it created), and a miss is one failed
+`parse` per render. The double mutex acquisition per lookup is gone.
+
+Outputs are unchanged by construction (the computation is deterministic) and
+pinned by `timezone::tests::tz_params_memo_is_transparent_to_the_computation`
+(cached == uncached for `UTC`/`Etc/UTC`/`Etc/GMT`/`GMT`/IANA/Windows-id/bogus/
+empty spellings, and repeat lookups are stable), plus
+`tz_params_memo_does_not_cache_misses` (a bogus TZID leaves no entry; a hit
+does) and `tz_params_memo_is_capacity_bounded` (5000 inserts leave ≤ 4096
+entries).
+
+## Gate
+
+1645 tests green (1539 lib + 36 + 3 + 10 + 6 + 5 + 10 + 15 + 11 + 1 + 8 + 1),
+`cargo clippy --all-targets -- -D warnings` 0 warnings, release build
+warning-free, `rustfmt --edition 2024` clean on every touched file
+(`sqlite_schema.sql`, `src/eas.rs`, `src/metrics.rs`, `src/rate_limit.rs`,
+`src/storage.rs`, `src/sync.rs`, `src/timezone.rs`, `src/validation.rs`).

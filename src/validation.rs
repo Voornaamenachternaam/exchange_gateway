@@ -41,8 +41,12 @@ pub async fn validate_request(
         return Err(StatusCode::PAYLOAD_TOO_LARGE);
     }
 
-    // Path traversal check: decode percent-encoded sequences and check for /../ or leading ../
-    if let Ok(decoded_bytes) = percent_decode_str(path).decode_utf8() {
+    // Path traversal check: decode percent-encoded sequences and check for
+    // `/../` or a leading `../`. A path with no `%` cannot decode to anything
+    // else, so it skips the decode entirely (the overwhelmingly common case).
+    if path.contains('%')
+        && let Ok(decoded_bytes) = percent_decode_str(path).decode_utf8()
+    {
         let decoded = decoded_bytes.as_ref();
         if decoded.contains("/../") || decoded.starts_with("../") {
             warn!(
