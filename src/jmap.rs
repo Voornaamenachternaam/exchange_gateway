@@ -35,6 +35,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, trace, warn};
@@ -8374,13 +8375,14 @@ impl JmapClient {
                     )
                 })
                 .unwrap_or_default();
-            events_xml.push_str(&format!(
+            let _ = write!(
+                events_xml,
                 "<t:CalendarEvent><t:StartTime>{}</t:StartTime><t:EndTime>{}</t:EndTime><t:BusyType>{}</t:BusyType>{}</t:CalendarEvent>",
                 crate::util::format_ews_datetime(&block_start),
                 crate::util::format_ews_datetime(&block_end),
                 busy_type,
                 details_xml
-            ));
+            );
         }
         if !saw_usable_block {
             return None;

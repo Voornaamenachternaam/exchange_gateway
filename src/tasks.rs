@@ -35,6 +35,7 @@ use anyhow::Result;
 use quick_xml::Reader;
 use quick_xml::events::Event;
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 use uuid::Uuid;
 
 /// EAS collection type discriminators (see MS-ASCMD §2.2.3.186.3 / FolderSync Type).
@@ -52,81 +53,84 @@ pub fn render_eas_task(row: &TaskRow) -> String {
     if let Some(subject) = row.subject.as_deref()
         && !subject.is_empty()
     {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<Tasks:Subject>{}</Tasks:Subject>",
             xml_escape(subject)
-        ));
+        );
     }
 
     if let Some(importance) = row.importance {
-        xml.push_str(&format!(
-            "<Tasks:Importance>{}</Tasks:Importance>",
-            importance
-        ));
+        let _ = write!(xml, "<Tasks:Importance>{}</Tasks:Importance>", importance);
     }
 
     if let Some(sensitivity) = row.sensitivity {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<Tasks:Sensitivity>{}</Tasks:Sensitivity>",
             sensitivity
-        ));
+        );
     }
 
     if let Some(start_date) = row.start_date.as_deref() {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<Tasks:StartDate>{}</Tasks:StartDate>",
             xml_escape(start_date)
-        ));
+        );
     }
 
     if let Some(due_date) = row.due_date.as_deref() {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<Tasks:DueDate>{}</Tasks:DueDate>",
             xml_escape(due_date)
-        ));
+        );
     }
 
     if let Some(utc_start_date) = row.utc_start_date.as_deref() {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<Tasks:UtcStartDate>{}</Tasks:UtcStartDate>",
             xml_escape(utc_start_date)
-        ));
+        );
     }
 
     if let Some(utc_due_date) = row.utc_due_date.as_deref() {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<Tasks:UtcDueDate>{}</Tasks:UtcDueDate>",
             xml_escape(utc_due_date)
-        ));
+        );
     }
 
     // MS-ASTASK: 0 = incomplete, 1 = complete.
-    xml.push_str(&format!(
-        "<Tasks:Complete>{}</Tasks:Complete>",
-        row.complete
-    ));
+    let _ = write!(xml, "<Tasks:Complete>{}</Tasks:Complete>", row.complete);
 
     if let Some(date_completed) = row.date_completed.as_deref()
         && !date_completed.is_empty()
     {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<Tasks:DateCompleted>{}</Tasks:DateCompleted>",
             xml_escape(date_completed)
-        ));
+        );
     }
 
-    xml.push_str(&format!(
+    let _ = write!(
+        xml,
         "<Tasks:ReminderSet>{}</Tasks:ReminderSet>",
         row.reminder_set
-    ));
+    );
 
     if let Some(reminder_time) = row.reminder_time.as_deref()
         && !reminder_time.is_empty()
     {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<Tasks:ReminderTime>{}</Tasks:ReminderTime>",
             xml_escape(reminder_time)
-        ));
+        );
     }
 
     if let Some(categories) = row.categories.as_deref()
@@ -134,10 +138,11 @@ pub fn render_eas_task(row: &TaskRow) -> String {
     {
         xml.push_str("<Tasks:Categories>");
         for category in categories.split(';').filter(|c| !c.is_empty()) {
-            xml.push_str(&format!(
+            let _ = write!(
+                xml,
                 "<Tasks:Category>{}</Tasks:Category>",
                 xml_escape(category)
-            ));
+            );
         }
         xml.push_str("</Tasks:Categories>");
     }
@@ -145,7 +150,7 @@ pub fn render_eas_task(row: &TaskRow) -> String {
     if let Some(body) = row.body.as_deref()
         && !body.is_empty()
     {
-        xml.push_str(&format!("<Tasks:Body>{}</Tasks:Body>", xml_escape(body)));
+        let _ = write!(xml, "<Tasks:Body>{}</Tasks:Body>", xml_escape(body));
     }
 
     xml
@@ -167,10 +172,11 @@ pub fn render_eas_note(row: &NoteRow) -> String {
     if let Some(subject) = row.subject.as_deref()
         && !subject.is_empty()
     {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<Notes:Subject>{}</Notes:Subject>",
             xml_escape(subject)
-        ));
+        );
     }
 
     let message_class = row
@@ -178,18 +184,20 @@ pub fn render_eas_note(row: &NoteRow) -> String {
         .as_deref()
         .filter(|m| !m.is_empty())
         .unwrap_or("IPM.StickyNote");
-    xml.push_str(&format!(
+    let _ = write!(
+        xml,
         "<Notes:MessageClass>{}</Notes:MessageClass>",
         xml_escape(message_class)
-    ));
+    );
 
     if let Some(last_modified) = row.last_modified_date.as_deref()
         && !last_modified.is_empty()
     {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<Notes:LastModifiedDate>{}</Notes:LastModifiedDate>",
             xml_escape(last_modified)
-        ));
+        );
     }
 
     if let Some(categories) = row.categories.as_deref()
@@ -197,10 +205,11 @@ pub fn render_eas_note(row: &NoteRow) -> String {
     {
         xml.push_str("<Notes:Categories>");
         for category in categories.split(';').filter(|c| !c.is_empty()) {
-            xml.push_str(&format!(
+            let _ = write!(
+                xml,
                 "<Notes:Category>{}</Notes:Category>",
                 xml_escape(category)
-            ));
+            );
         }
         xml.push_str("</Notes:Categories>");
     }
@@ -208,10 +217,11 @@ pub fn render_eas_note(row: &NoteRow) -> String {
     if let Some(body) = row.body.as_deref()
         && !body.is_empty()
     {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<AirSyncBase:Body><AirSyncBase:Type>1</AirSyncBase:Type><AirSyncBase:Data>{}</AirSyncBase:Data></AirSyncBase:Body>",
             xml_escape(body)
-        ));
+        );
     }
 
     xml
@@ -2593,26 +2603,29 @@ pub fn render_mutation_responses(results: &[MutationResult]) -> String {
                 // Per MS-ASCMD §2.2.3.7.2, an Add response returns the client
                 // supplied ClientId alongside the assigned ServerId so the client
                 // can correlate its local item with the server item.
-                xml.push_str(&format!(
+                let _ = write!(
+                    xml,
                     r#"<Add><ClientId>{}</ClientId><ServerId>{}</ServerId><Status>{}</Status></Add>"#,
                     xml_escape(res.client_id.as_deref().unwrap_or_default()),
                     xml_escape(&res.server_id),
                     res.status
-                ));
+                );
             }
             MutationKind::Change => {
-                xml.push_str(&format!(
+                let _ = write!(
+                    xml,
                     r#"<Change><ServerId>{}</ServerId><Status>{}</Status></Change>"#,
                     xml_escape(&res.server_id),
                     res.status
-                ));
+                );
             }
             MutationKind::Delete => {
-                xml.push_str(&format!(
+                let _ = write!(
+                    xml,
                     r#"<Delete><ServerId>{}</ServerId><Status>{}</Status></Delete>"#,
                     xml_escape(&res.server_id),
                     res.status
-                ));
+                );
             }
         }
     }

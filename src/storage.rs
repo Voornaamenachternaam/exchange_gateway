@@ -3,6 +3,7 @@ use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use sqlx::{Executor, FromRow, Pool, Row, Sqlite};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use crate::error::{GatewayError, Result};
@@ -514,7 +515,7 @@ pub(crate) fn normalize_caldav_path(path: &str) -> String {
             if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'@') {
                 out.push(byte as char);
             } else {
-                out.push_str(&format!("%{byte:02X}"));
+                let _ = write!(out, "%{byte:02X}");
             }
             i += 3;
             raw_start = i;
@@ -522,7 +523,11 @@ pub(crate) fn normalize_caldav_path(path: &str) -> String {
             i += 1;
         }
     }
-    out.push_str(&utf8_percent_encode(&trimmed[raw_start..], &PATH_ENCODE_SET).to_string());
+    let _ = write!(
+        out,
+        "{}",
+        utf8_percent_encode(&trimmed[raw_start..], &PATH_ENCODE_SET)
+    );
     out
 }
 

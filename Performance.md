@@ -981,3 +981,132 @@ recompile; it passes 3/3 in isolation and 3/3 in three subsequent full-suite
 runs, and nothing in C1–C4 writes to SQLite on that path (C2 adds one READ per
 scan page). It is the documented timing sensitivity of that test, not a
 regression.
+
+# C5, C6, P1-7 and P1-8 delivered — EAS request parsing and response rendering (implementation record)
+
+Scope implemented: **C5, C6, P1-7 and P1-8** from `## Rewritten changes`, in the
+form written there. C7–C13 remain open.
+
+## C5 — one pass over an EAS request body instead of one pass per field (`src/xml_fields.rs`)
+
+`extract_first_tag_text` built a `quick_xml::Reader` and tokenised from the top
+of the document on **every call**, so a command that read *k* fields parsed the
+body *k* times: `parse_request` read seven (`WindowSize`, `GetChanges`,
+`FilterType`, `PolicyKey`, `SyncKey`, `Class`, `CollectionId`),
+`parse_device_information` six, `handle_resolve_recipients` five,
+`FolderCreate`/`FolderUpdate` five or six, `parse_eas_sendmail` five.
+
+The cost is worst exactly where the fields are ABSENT, because nothing
+short-circuits: a `SendMail` carries no `SyncKey`/`Class`/`CollectionId`, and its
+`Mime` element can be tens of MiB ([MS-ASCMD] §2.2.3.109), so the old code
+tokenised the whole MIME blob once per missing field. `email.rs` was worse still:
+its fallback was a literal `<tag>` search — `str::find` over the entire body —
+so every absent field also paid a full byte scan.
+
+Delivered: a new module `src/xml_fields.rs` with `RequestFields`, ONE pass per
+request:
+
+* `Reader::from_str(body)` + `read_event()` borrows from the input, so the walk
+  copies nothing (no `Reader::from_file`-style buffer, no `read_to_end`).
+* The walk records, per **local** name, the span of the first occurrence and the
+  span of the outermost occurrence. Element content is sliced out of the body
+  when a lookup asks for it, so a 40 MiB `Mime` that is never read is never
+  materialised — the index holds two `HashMap<&str, Span>` and nothing else.
+* Tag names are sliced straight out of the document (quick-xml ties
+  `local_name()` to the event value, not to the input), so the index does not
+  allocate a `String` per element.
+* Two lookups, because the two legacy helpers disagreed on nested same-name
+  elements: `first` reproduces `extract_first_tag_text` (any end tag closes the
+  capture, text at any depth is concatenated, `Text` + `CData` + `GeneralRef`
+  are resolved through `resolve_xml_reference`, edges trimmed) and `first_outer`
+  reproduces `extract_first_tag_text_local` (the outermost element's whole inner
+  span, untrimmed). Both keep the per-tag implementation as the fallback when
+  the document does not parse, so a malformed body answers exactly as before —
+  which is what `validate_payload` relies on.
+* A self-closing element, or an element with any child markup, has no value
+  (its "content" is not text), matching the helpers.
+
+Call sites migrated (each now builds ONE index and reads every field from it):
+`parse_request` (7→1), `parse_device_information` (6→1),
+`handle_resolve_recipients` (5→1), `handle_folder_create`,
+`handle_folder_delete`, `handle_folder_update`, `find_as_search_request`,
+`handle_find_mailbox`, `parse_search_request`, and `email::parse_eas_sendmail`
+(5→1). Left alone deliberately: `handle_get_attachment`, whose two lookups are
+an `or_else` chain over a body that carries at most a `FileReference`, on a
+command only 2.5/12.0/12.1 use.
+
+One deliberate behaviour change, in `email.rs`: the literal `<tag>` fallback is
+gone. It was a whole-body byte scan per field — precisely the cost C5 removes —
+and it could not match a prefixed (`<ComposeMail:Mime>`) or attributed tag
+anyway. A malformed `SendMail` body now answers "field absent", i.e. Status 2
+(protocol error), instead of recovering a value from markup that does not parse.
+
+## C6 — `extract_all_tag_blocks` scans in O(n), not O(n·m) (`src/eas.rs`)
+
+The block extractor searched for `<tag>` and `</tag>` with
+`bytes[pos..].windows(len).position(|w| w == needle)`, an O(n·m) walk per block,
+re-entered for every `OofMessage`, `Request` and `SendResponse` element. The two
+searches are now `memchr::memmem::find`. Everything else is unchanged and now
+pinned by a test: the delimiters are still built once per call, the first
+`</tag>` still closes the block (the scan is deliberately not nesting-aware),
+inner bytes are returned verbatim and lossily decoded, a block with no close tag
+still ends the scan, and a self-closing `<tag/>` is not a block.
+
+## P1-7 — the EAS request body is borrowed, not copied (`src/eas.rs`)
+
+`let payload = body.to_vec();` memcpy'd up to `MAX_BODY_SIZE` (40 MiB) on EVERY
+EAS request, for a buffer that is only ever read. `axum::body::Bytes` is already
+a refcounted handle and `Wbxml::decode` takes `&[u8]`, so it is now
+`let payload: &[u8] = body.as_ref();` — zero copies, same behaviour (the
+`is_empty()` / `first()` probes and the decode call are unchanged).
+
+## P1-8 — 276 append sites write in place (`src/*.rs`)
+
+`xml.push_str(&format!("<Status>{}</Status>", s))` allocated a temporary `String`
+per append and then copied it into the target: two allocations and two copies
+where one is needed. Every one of the 276 sites is now
+`let _ = write!(xml, "<Status>{}</Status>", s)`, which formats straight into the
+target's buffer (`fmt::Write` for `String` writes in place), with
+`use std::fmt::Write as _;` imported where it was missing.
+
+Touched files: `eas.rs` (already had the trait), `ews.rs`, `sync.rs`,
+`meeting/message.rs`, `tasks.rs`, `email.rs`, `contacts.rs`, `timezone.rs`,
+`oof.rs`, `wbxml.rs`, `ews_folders.rs`, `vcard.rs`, `storage.rs`,
+`permission/types.rs`, `mapi/rules.rs`, `jmap.rs`, `ews_folder_ops.rs`.
+Two sites sat in `match` arms rather than statements and were rewritten by hand
+into blocks; the single site whose format string ended in `\n` uses `writeln!`
+(clippy `write_with_newline`); three `push_str(&x.to_string())` sites pass the
+`Display` value straight to `write!` instead of materialising a `String`
+(`chrono` `DelayedFormat`, `percent_encoding`).
+
+Output is byte-identical: the EAS/EWS snapshot suites and the
+`protocol_fixtures` round-trip suite compare the rendered documents verbatim and
+all pass unchanged.
+
+## Evidence (executed, `rustc 1.99.1` / `cargo 1.99.1`)
+
+| measurement | before | after | delta |
+| --- | --- | --- | --- |
+| `parse_eas_sendmail`, 1 MiB `Mime` body, no `Source` refs (C5 + P1-7) | 577.75 µs | 83.62 µs | **−85.5 % (6.9×)** |
+| EAS body with 2000 elements, five absent fields (C5) | 3.833 ms | 1.462 ms | **−61.9 %** |
+| `render_jmap_email_as_eas_application_data_with_options` × 256 emails (P1-8, criterion, p < 0.05) | 1.6969 ms | 1.5195 ms | **−10.5 %** |
+| `extract_all_tag_blocks`, 2000 blocks / 197 KB body (C6) | 557.4 µs | 379.4 µs | **−31.9 %** |
+
+Method: the SendMail/EAS numbers come from a temporary `tests/measure.rs`
+harness (50 timed rounds over a pre-built body, deleted after the run) executed
+against the working tree and against the same tree with `git stash push -- src/`
+(the pre-change code); the render number is
+`cargo bench --bench hot_paths -- render_256_emails --warm-up-time 1
+--measurement-time 3` on the same two trees; the C6 number compares the old and
+new search algorithms side by side in one process on the same body (both
+including the per-block `String` allocation, which dominates the remainder).
+
+## Gate
+
+1635 tests green (1529 lib + 36 + 3 + 10 + 6 + 5 + 10 + 15 + 11 + 1 + 8 + 1),
+`cargo clippy --all-targets -- -D warnings` 0 warnings, release build
+warning-free, `rustfmt --edition 2024` clean on every touched file. New tests:
+`xml_fields` (8, including the differential `indexed_lookups_match_the_per_tag_helper`
+over prefixed/nested/entity/CDATA/self-closing corpora),
+`eas::tests::extract_all_tag_blocks_keeps_inner_text_and_first_close`, and
+`email::tests::test_parse_eas_sendmail_large_mime_without_source_references`.

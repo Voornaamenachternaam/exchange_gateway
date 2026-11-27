@@ -56,6 +56,7 @@ use roxmltree;
 use secrecy::{ExposeSecret, SecretString};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 use std::net::IpAddr;
 use std::str::FromStr;
 use std::sync::{Arc, LazyLock};
@@ -1039,16 +1040,18 @@ fn render_ews_attendees(item: &crate::calendar::CalendarItem) -> String {
     }
     let mut out = String::new();
     if !required.is_empty() {
-        out.push_str(&format!(
+        let _ = write!(
+            out,
             "<t:RequiredAttendees>{}</t:RequiredAttendees>",
             required
-        ));
+        );
     }
     if !optional.is_empty() {
-        out.push_str(&format!(
+        let _ = write!(
+            out,
             "<t:OptionalAttendees>{}</t:OptionalAttendees>",
             optional
-        ));
+        );
     }
     out
 }
@@ -1364,116 +1367,141 @@ fn render_ews_calendar_item_xml_with_shape(
         return xml;
     }
     if !item.location.is_empty() {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<t:Location>{}</t:Location>",
             xml_escape(&item.location)
-        ));
+        );
     }
     if !item.description.is_empty() {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             r#"<t:Body BodyType="Text">{}</t:Body>"#,
             xml_escape(&item.description)
-        ));
-        xml.push_str(&format!(
+        );
+        let _ = write!(
+            xml,
             "<t:TextBody>{}</t:TextBody>",
             xml_escape(&item.description)
-        ));
+        );
     }
     if let Some(v) = item.reminder {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<t:ReminderMinutesBeforeStart>{}</t:ReminderMinutesBeforeStart>",
             v
-        ));
+        );
     }
-    xml.push_str(&format!(
+    let _ = write!(
+        xml,
         "<t:ReminderIsSet>{}</t:ReminderIsSet>",
         if item.reminder.is_some() {
             "true"
         } else {
             "false"
         }
-    ));
+    );
     if let Some(v) = item.busy_status {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<t:LegacyFreeBusyStatus>{}</t:LegacyFreeBusyStatus>",
             busy_status_to_ews(v)
-        ));
+        );
     }
     if let Some(v) = item.sensitivity {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<t:Sensitivity>{}</t:Sensitivity>",
             sensitivity_to_ews(v)
-        ));
+        );
     }
     if let Some(v) = item.response_requested {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<t:ResponseRequested>{}</t:ResponseRequested>",
             if v { "true" } else { "false" }
-        ));
+        );
     }
     if let Some(v) = item.disallow_new_time_proposal {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<t:DisallowNewTimeProposal>{}</t:DisallowNewTimeProposal>",
             if v { "true" } else { "false" }
-        ));
+        );
     }
     if let Some(v) = &item.organizer_email {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             r#"<t:Organizer><t:Mailbox><t:Name>{}</t:Name><t:EmailAddress>{}</t:EmailAddress><t:RoutingType>SMTP</t:RoutingType></t:Mailbox></t:Organizer>"#,
-            xml_escape(item.organizer_name.as_deref().unwrap_or(v)), xml_escape(v)
-        ));
+            xml_escape(item.organizer_name.as_deref().unwrap_or(v)),
+            xml_escape(v)
+        );
     }
-    xml.push_str(&format!(
+    let _ = write!(
+        xml,
         "<t:DateTimeCreated>{}</t:DateTimeCreated><t:DateTimeReceived>{}</t:DateTimeReceived><t:DateTimeSent>{}</t:DateTimeSent><t:DateTimeStamp>{}</t:DateTimeStamp>",
-        format_ews_datetime(&created), format_ews_datetime(&created), format_ews_datetime(&created), format_ews_datetime(&created)
-    ));
-    xml.push_str(&format!(
-        "<t:Duration>PT{}H{}M</t:Duration>",
-        hours, minutes
-    ));
-    xml.push_str(&format!(
+        format_ews_datetime(&created),
+        format_ews_datetime(&created),
+        format_ews_datetime(&created),
+        format_ews_datetime(&created)
+    );
+    let _ = write!(xml, "<t:Duration>PT{}H{}M</t:Duration>", hours, minutes);
+    let _ = write!(
+        xml,
         "<t:CalendarItemType>{}</t:CalendarItemType>",
         ews_calendar_item_type(item)
-    ));
-    xml.push_str(&format!(
+    );
+    let _ = write!(
+        xml,
         "<t:MyResponseType>{}</t:MyResponseType>",
         ews_my_response_type(item)
-    ));
-    xml.push_str(&format!(
+    );
+    let _ = write!(
+        xml,
         "<t:IsMeeting>{}</t:IsMeeting><t:IsOrganizer>{}</t:IsOrganizer><t:IsRecurring>{}</t:IsRecurring><t:IsCancelled>{}</t:IsCancelled><t:HasAttachments>{}</t:HasAttachments>",
-        if is_meeting { "true" } else { "false" }, if is_organizer { "true" } else { "false" },
-        if item.rrule.is_some() { "true" } else { "false" }, if is_cancelled { "true" } else { "false" },
+        if is_meeting { "true" } else { "false" },
+        if is_organizer { "true" } else { "false" },
+        if item.rrule.is_some() {
+            "true"
+        } else {
+            "false"
+        },
+        if is_cancelled { "true" } else { "false" },
         if has_attachments { "true" } else { "false" }
-    ));
+    );
     if let Some(summaries) = attachment_summaries
         && !summaries.is_empty()
     {
         xml.push_str(&crate::attachment::render_ews_attachments_xml(summaries));
     }
-    xml.push_str(&format!(
+    let _ = write!(
+        xml,
         "<t:MeetingRequestWasSent>{}</t:MeetingRequestWasSent>",
         if is_meeting { "true" } else { "false" }
-    ));
-    xml.push_str(&format!(
+    );
+    let _ = write!(
+        xml,
         "<t:AllowNewTimeProposal>{}</t:AllowNewTimeProposal>",
         if item.disallow_new_time_proposal.unwrap_or(false) {
             "false"
         } else {
             "true"
         }
-    ));
-    xml.push_str(&format!(
+    );
+    let _ = write!(
+        xml,
         "<t:MeetingStatus>{}</t:MeetingStatus>",
         derived_meeting_status(item)
-    ));
+    );
     if let Some(v) = derived_response_type(item) {
-        xml.push_str(&format!("<t:ResponseType>{}</t:ResponseType>", v));
+        let _ = write!(xml, "<t:ResponseType>{}</t:ResponseType>", v);
     }
     if let Some(v) = item.appointment_reply_time {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<t:AppointmentReplyTime>{}</t:AppointmentReplyTime>",
             format_ews_datetime(&v)
-        ));
+        );
     }
     if let Some(v) = &item.timezone {
         // Outlook expects a Windows timezone id in StartTimeZone/EndTimeZone (per
@@ -1496,14 +1524,16 @@ fn render_ews_calendar_item_xml_with_shape(
         // child-element shape (Ids are attributes, not elements). Outlook
         // CreateItem/GetItem echo this attribute form, which the inbound
         // `extract_ews_timezone_field_doc` reads back via the `Id` attribute.
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<t:StartTimeZone Id=\"{}\" Name=\"{}\"/>",
             win_esc, display_esc
-        ));
-        xml.push_str(&format!(
+        );
+        let _ = write!(
+            xml,
             "<t:EndTimeZone Id=\"{}\" Name=\"{}\"/>",
             win_esc, display_esc
-        ));
+        );
         // <t:MeetingTimeZone> (MS-OXWSCORE §2.2.6, deprecated in favour of
         // StartTimeZone/EndTimeZone but still parsed by Outlook for back-compat)
         // is a `SerializableTimeZone` whose Windows id is the `TimeZoneName`
@@ -1512,25 +1542,24 @@ fn render_ews_calendar_item_xml_with_shape(
         // corrupt the EWS envelope if emitted as element text; emit the same
         // Windows id (in its attribute) so it agrees with the standalone
         // <t:StartTimeZone> above.
-        xml.push_str(&format!(
-            "<t:MeetingTimeZone TimeZoneName=\"{}\"/>",
-            win_esc
-        ));
+        let _ = write!(xml, "<t:MeetingTimeZone TimeZoneName=\"{}\"/>", win_esc);
     }
     if let Some(v) = &item.online_meeting_conf_link {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<t:OnlineMeetingConfLink>{}</t:OnlineMeetingConfLink>",
             xml_escape(v)
-        ));
+        );
     }
     if let Some(v) = &item.online_meeting_external_link {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<t:OnlineMeetingExternalLink>{}</t:OnlineMeetingExternalLink>",
             xml_escape(v)
-        ));
+        );
     }
     if let Some(v) = &item.client_uid {
-        xml.push_str(&format!("<t:ClientUid>{}</t:ClientUid>", xml_escape(v)));
+        let _ = write!(xml, "<t:ClientUid>{}</t:ClientUid>", xml_escape(v));
     }
     xml.push_str("<t:AdjacentMeetingCount>0</t:AdjacentMeetingCount><t:ConflictingMeetingCount>0</t:ConflictingMeetingCount>");
     if shape == ItemShape::Default {
@@ -1546,18 +1575,21 @@ fn render_ews_calendar_item_xml_with_shape(
                 .join("; "),
         ));
         xml.push_str("</t:DisplayTo>");
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<t:LastModifiedName>{}</t:LastModifiedName>",
             xml_escape(item.organizer_name.as_deref().unwrap_or("Unknown"))
-        ));
-        xml.push_str(&format!(
+        );
+        let _ = write!(
+            xml,
             "<t:LastModifiedTime>{}</t:LastModifiedTime>",
             format_ews_datetime(&item.dtstamp.unwrap_or_else(chrono::Utc::now))
-        ));
-        xml.push_str(&format!(
+        );
+        let _ = write!(
+            xml,
             "<t:Size>{}</t:Size>",
             item.subject.len() + item.description.len() + item.location.len() + 512
-        ));
+        );
         xml.push_str("<t:EffectiveRights><t:CreateAssociated>false</t:CreateAssociated><t:CreateContents>true</t:CreateContents><t:CreateHierarchy>false</t:CreateHierarchy><t:Delete>true</t:Delete><t:Modify>true</t:Modify><t:Read>true</t:Read></t:EffectiveRights>");
         xml.push_str("</t:CalendarItem>");
         return xml;
@@ -1581,18 +1613,21 @@ fn render_ews_calendar_item_xml_with_shape(
             .join("; "),
     ));
     xml.push_str("</t:DisplayTo>");
-    xml.push_str(&format!(
+    let _ = write!(
+        xml,
         "<t:LastModifiedName>{}</t:LastModifiedName>",
         xml_escape(item.organizer_name.as_deref().unwrap_or("Unknown"))
-    ));
-    xml.push_str(&format!(
+    );
+    let _ = write!(
+        xml,
         "<t:LastModifiedTime>{}</t:LastModifiedTime>",
         format_ews_datetime(&item.dtstamp.unwrap_or_else(chrono::Utc::now))
-    ));
-    xml.push_str(&format!(
+    );
+    let _ = write!(
+        xml,
         "<t:Size>{}</t:Size>",
         item.subject.len() + item.description.len() + item.location.len() + 512
-    ));
+    );
     xml.push_str("<t:EffectiveRights><t:CreateAssociated>false</t:CreateAssociated><t:CreateContents>true</t:CreateContents><t:CreateHierarchy>false</t:CreateHierarchy><t:Delete>true</t:Delete><t:Modify>true</t:Modify><t:Read>true</t:Read></t:EffectiveRights>");
     xml.push_str("</t:CalendarItem>");
     xml
@@ -1716,13 +1751,14 @@ async fn fetch_freebusy_jmap(
                 3 => "OOF",
                 _ => "Busy",
             };
-            events_xml_out.push_str(&format!(
-                    "<t:CalendarEvent><t:StartTime>{}</t:StartTime><t:EndTime>{}</t:EndTime><t:BusyType>{}</t:BusyType>{}</t:CalendarEvent>",
-                    format_ews_datetime(&item.start),
-                    format_ews_datetime(&item.end),
-                    busy_type,
-                    ews_calendar_event_details_xml(&item)
-                ));
+            let _ = write!(
+                events_xml_out,
+                "<t:CalendarEvent><t:StartTime>{}</t:StartTime><t:EndTime>{}</t:EndTime><t:BusyType>{}</t:BusyType>{}</t:CalendarEvent>",
+                format_ews_datetime(&item.start),
+                format_ews_datetime(&item.end),
+                busy_type,
+                ews_calendar_event_details_xml(&item)
+            );
         }
     }
 
@@ -1820,10 +1856,14 @@ async fn merged_freebusy_for_mailbox(
                             3 => "OOF",
                             _ => "Busy",
                         };
-                        events_xml_out.push_str(&format!(
+                        let _ = write!(
+                            events_xml_out,
                             "<t:CalendarEvent><t:StartTime>{}</t:StartTime><t:EndTime>{}</t:EndTime><t:BusyType>{}</t:BusyType>{}</t:CalendarEvent>",
-                            format_ews_datetime(&item.start), format_ews_datetime(&item.end), busy_type, ews_calendar_event_details_xml(&item)
-                        ));
+                            format_ews_datetime(&item.start),
+                            format_ews_datetime(&item.end),
+                            busy_type,
+                            ews_calendar_event_details_xml(&item)
+                        );
                     }
                 }
                 Ok(Event::Eof) => break,
@@ -2608,7 +2648,8 @@ async fn handle_find_folder(state: &Arc<AppState>, auth: &AuthContext, body: &st
                     .iter()
                     .filter(|c| c.parent_id.as_deref() == Some(id))
                     .count();
-                xml.push_str(&format!(
+                let _ = write!(
+                    xml,
                     "<t:Folder><t:FolderId Id=\"{}\" ChangeKey=\"1\"/>\
                          <t:ParentFolderId Id=\"{}\"/>\
                          <t:DisplayName>{}</t:DisplayName>\
@@ -2621,7 +2662,7 @@ async fn handle_find_folder(state: &Arc<AppState>, auth: &AuthContext, body: &st
                     m.total_emails.unwrap_or(0),
                     child_count,
                     m.unread_emails.unwrap_or(0),
-                ));
+                );
                 extra += 1;
             }
         }
@@ -2689,7 +2730,8 @@ async fn find_folder_custom_children(
             .iter()
             .filter(|c| c.parent_id.as_deref() == Some(id))
             .count();
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<t:Folder><t:FolderId Id=\"{}\" ChangeKey=\"1\"/>\
              <t:ParentFolderId Id=\"{}\"/>\
              <t:DisplayName>{}</t:DisplayName>\
@@ -2702,7 +2744,7 @@ async fn find_folder_custom_children(
             m.total_emails.unwrap_or(0),
             child_count,
             m.unread_emails.unwrap_or(0),
-        ));
+        );
         total += 1;
     }
     let response = format!(
@@ -3265,37 +3307,38 @@ fn render_ews_contact(
 
     let mut xml = String::new();
     xml.push_str("<t:Contact>");
-    xml.push_str(&format!(
+    let _ = write!(
+        xml,
         "<t:ItemId Id=\"{}\" ChangeKey=\"{}\"/>",
         xml_escape(server_id),
         xml_escape(change_key)
-    ));
+    );
     if !display_name.is_empty() {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<t:DisplayName>{}</t:DisplayName>",
             xml_escape(display_name)
-        ));
+        );
     }
     if !email.is_empty() {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<t:EmailAddresses><t:Entry Key=\"EmailAddress1\">{}</t:Entry></t:EmailAddresses>",
             xml_escape(email)
-        ));
+        );
     }
     if !phone.is_empty() {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<t:PhoneNumbers><t:Entry Key=\"Phone\">{}</t:Entry></t:PhoneNumbers>",
             xml_escape(phone)
-        ));
+        );
     }
     if !org.is_empty() {
-        xml.push_str(&format!(
-            "<t:CompanyName>{}</t:CompanyName>",
-            xml_escape(&org)
-        ));
+        let _ = write!(xml, "<t:CompanyName>{}</t:CompanyName>", xml_escape(&org));
     }
     if !title.is_empty() {
-        xml.push_str(&format!("<t:JobTitle>{}</t:JobTitle>", xml_escape(title)));
+        let _ = write!(xml, "<t:JobTitle>{}</t:JobTitle>", xml_escape(title));
     }
     // Add more fields as needed: Addresses, ImAddress, etc.
     xml.push_str("</t:Contact>");
@@ -5172,10 +5215,11 @@ async fn handle_sync_email_prime(
                 StatusCode::SERVICE_UNAVAILABLE,
             );
         }
-        changes_xml.push_str(&format!(
+        let _ = write!(
+            changes_xml,
             r#"<t:Create>{}</t:Create>"#,
             render_jmap_email_as_ews_message(email, &server_id, &change_key)
-        ));
+        );
         // Record DELIVERED membership for the prime's Create so the next delta's
         // overlap decision classifies a later added+removed for this id as a held
         // `Update`, not a duplicate `Create`. Written here (not only at the delta)
@@ -5762,10 +5806,11 @@ async fn handle_sync_email_folder_items(
                 let server_id = email_server_id_from_jmap_id(email_id);
                 let change_key = server_id.clone();
                 let tag = if is_update { "Update" } else { "Create" };
-                changes_xml.push_str(&format!(
+                let _ = write!(
+                    changes_xml,
                     "<t:{tag}>{}</t:{tag}>",
                     render_jmap_email_as_ews_message(email, &server_id, &change_key)
-                ));
+                );
                 rendered_ids.insert(email_id.clone());
                 // Stage the flag baseline for a delivered Create/Update, exactly
                 // as the EAS delta seeds a delivered `<Add>`: the bounded scan may
@@ -5844,19 +5889,21 @@ async fn handle_sync_email_folder_items(
             match fetched_overlap.get(email_id) {
                 Some(email) if !email_lives_in_mailbox(email, &mailbox_id) => {
                     rendered_ids.insert(email_id.clone());
-                    changes_xml.push_str(&format!(
+                    let _ = write!(
+                        changes_xml,
                         r#"<t:Delete><t:ItemId Id="{}" /></t:Delete>"#,
                         xml_escape(&server_id)
-                    ));
+                    );
                     left_ids.push(email_id.clone());
                 }
                 Some(email) => {
                     rendered_ids.insert(email_id.clone());
                     let change_key = server_id.clone();
-                    changes_xml.push_str(&format!(
+                    let _ = write!(
+                        changes_xml,
                         r#"<t:Update>{}</t:Update>"#,
                         render_jmap_email_as_ews_message(email, &server_id, &change_key)
-                    ));
+                    );
                     // Stage this delivered Update's flag baseline too. An overlap
                     // id is queued, so the scan never emits an op for it — but the
                     // bounded scan may not even REACH it, and a missing baseline
@@ -5873,10 +5920,11 @@ async fn handle_sync_email_folder_items(
                 }
             }
         } else {
-            changes_xml.push_str(&format!(
+            let _ = write!(
+                changes_xml,
                 r#"<t:Delete><t:ItemId Id="{}" /></t:Delete>"#,
                 xml_escape(&server_id)
-            ));
+            );
         }
     }
 
@@ -5932,10 +5980,11 @@ async fn handle_sync_email_folder_items(
             Some(email) => {
                 let server_id = email_server_id_from_jmap_id(&op.id);
                 let change_key = server_id.clone();
-                changes_xml.push_str(&format!(
+                let _ = write!(
+                    changes_xml,
                     r#"<t:Update>{}</t:Update>"#,
                     render_jmap_email_as_ews_message(email, &server_id, &change_key)
-                ));
+                );
             }
             None => {
                 undelivered_ids.insert(op.id.clone());
@@ -6214,10 +6263,11 @@ async fn handle_sync_contacts_folder_items(
         } else {
             "Create"
         };
-        changes_xml.push_str(&format!(
+        let _ = write!(
+            changes_xml,
             "<t:{tag}>{}</t:{tag}>",
             render_ews_contact(&entry.server_id, &entry.change_key, &vcard_parsed, shape)
-        ));
+        );
         next_state.push((entry.server_id.clone(), entry.change_key.clone()));
         emitted += 1;
     }
@@ -6232,10 +6282,11 @@ async fn handle_sync_contacts_folder_items(
             next_state.push((id.clone(), ck.clone()));
             continue;
         }
-        changes_xml.push_str(&format!(
+        let _ = write!(
+            changes_xml,
             r#"<t:Delete><t:ItemId Id="{}" /></t:Delete>"#,
             xml_escape(id)
-        ));
+        );
         if let Err(e) = state.storage.delete_contact(owner, id).await {
             tracing::warn!(server_id = %id, error = %e, "Failed to remove deleted contact mapping");
         }
@@ -6660,10 +6711,11 @@ async fn handle_sync_folder_items(
         }
         if row.op == "delete" {
             deleted_now.push(row.server_id.clone());
-            changes_xml.push_str(&format!(
+            let _ = write!(
+                changes_xml,
                 r#"<t:Delete><t:ItemId Id="{}" /></t:Delete>"#,
                 xml_escape(&row.server_id)
-            ));
+            );
             continue;
         }
         if let Some(item) = current_map.get(&row.server_id) {
@@ -6686,7 +6738,8 @@ async fn handle_sync_folder_items(
                 "Create"
             };
             delivered_now.push((item.row.server_id.clone(), ck.clone()));
-            changes_xml.push_str(&format!(
+            let _ = write!(
+                changes_xml,
                 r#"<t:{ct}>{}</t:{ct}>"#,
                 render_ews_calendar_item_xml_with_shape(
                     &item.row.server_id,
@@ -6697,12 +6750,13 @@ async fn handle_sync_folder_items(
                     att_ref
                 ),
                 ct = change_tag
-            ));
+            );
         } else if deleted_ids.contains(&row.server_id) {
-            changes_xml.push_str(&format!(
+            let _ = write!(
+                changes_xml,
                 r#"<t:Delete><t:ItemId Id="{}" /></t:Delete>"#,
                 xml_escape(&row.server_id)
-            ));
+            );
         } else {
             match state
                 .storage
@@ -6897,7 +6951,8 @@ async fn handle_sync_folder_items(
                         } else {
                             Some(att_summaries.as_slice())
                         };
-                        changes_xml.push_str(&format!(
+                        let _ = write!(
+                            changes_xml,
                             r#"<t:{ct}>{}</t:{ct}>"#,
                             render_ews_calendar_item_xml_with_shape(
                                 &row.server_id,
@@ -6908,7 +6963,7 @@ async fn handle_sync_folder_items(
                                 att_ref
                             ),
                             ct = change_tag
-                        ));
+                        );
                     } else {
                         // Event gone from CalDAV — treat as delete and clean up
                         tracing::debug!(
@@ -6930,18 +6985,20 @@ async fn handle_sync_folder_items(
                         {
                             tracing::warn!(server_id = %row.server_id, error = %e, "Failed to delete item by server_id");
                         }
-                        changes_xml.push_str(&format!(
+                        let _ = write!(
+                            changes_xml,
                             r#"<t:Delete><t:ItemId Id="{}" /></t:Delete>"#,
                             xml_escape(&row.server_id)
-                        ));
+                        );
                     }
                 }
                 Ok(None) => {
                     // Not in item_map either — item was already purged; emit as Delete
-                    changes_xml.push_str(&format!(
+                    let _ = write!(
+                        changes_xml,
                         r#"<t:Delete><t:ItemId Id="{}" /></t:Delete>"#,
                         xml_escape(&row.server_id)
-                    ));
+                    );
                 }
                 Err(e) => {
                     // A storage failure is NOT proof that the item is gone:
@@ -7207,10 +7264,11 @@ async fn handle_sync_folder_hierarchy(
                 // deleted is journaled too — deleting a FolderId this client was
                 // never given would be a protocol violation, so it is skipped.
                 if row.folder_type == Some(12) && !added_in_window.contains(server_id) {
-                    changes.push_str(&format!(
+                    let _ = write!(
+                        changes,
                         r#"<t:Delete><t:FolderId Id="{}" ChangeKey="1" /></t:Delete>"#,
                         xml_escape(&row.server_id)
-                    ));
+                    );
                 }
             } else if !deleted_in_window.contains(server_id)
                 && let Some(f) = custom.iter().find(|f| f.server_id == row.server_id)
@@ -8065,10 +8123,11 @@ async fn handle_get_events(state: &Arc<AppState>, auth: &AuthContext, body: &str
     // client knows the subscription is still alive (MS-OXWSNTIF 2.2.4.8).
     if events.is_empty() {
         let wm = encode_watermark(last_seq);
-        events_xml.push_str(&format!(
+        let _ = write!(
+            events_xml,
             "<t:StatusEvent><t:Watermark>{}</t:Watermark></t:StatusEvent>",
             wm
-        ));
+        );
     }
 
     let prev_wm = (prev_seq > 0).then(|| encode_watermark(prev_seq));
@@ -9569,11 +9628,14 @@ async fn handle_send_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
             None => resp_messages.push_str(
                 r#"<m:SendItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:SendItemResponseMessage>"#,
             ),
-            Some((code, text)) => resp_messages.push_str(&format!(
-                r#"<m:SendItemResponseMessage ResponseClass="Error"><m:MessageText>{}</m:MessageText><m:ResponseCode>{}</m:ResponseCode></m:SendItemResponseMessage>"#,
-                xml_escape(text),
-                code
-            )),
+            Some((code, text)) => {
+                let _ = write!(
+                    resp_messages,
+                    r#"<m:SendItemResponseMessage ResponseClass="Error"><m:MessageText>{}</m:MessageText><m:ResponseCode>{}</m:ResponseCode></m:SendItemResponseMessage>"#,
+                    xml_escape(text),
+                    code
+                );
+            }
         }
     }
 
@@ -10564,11 +10626,12 @@ async fn handle_resolve_names(state: &Arc<AppState>, auth: &AuthContext, body: &
 
     for contact in search_result.contacts {
         total_items += 1;
-        resolution_xml.push_str(&format!(
+        let _ = write!(
+            resolution_xml,
             r#"<t:Resolution><t:Mailbox><t:Name>{}</t:Name><t:EmailAddress>{}</t:EmailAddress><t:RoutingType>SMTP</t:RoutingType><t:MailboxType>Mailbox</t:MailboxType></t:Mailbox></t:Resolution>"#,
             xml_escape(&contact.display_name),
             xml_escape(&contact.email)
-        ));
+        );
     }
 
     // If the query resolved to no contacts, check whether it matches a
@@ -10583,11 +10646,12 @@ async fn handle_resolve_names(state: &Arc<AppState>, auth: &AuthContext, body: &
         .await
         {
             total_items += 1;
-            resolution_xml.push_str(&format!(
+            let _ = write!(
+                resolution_xml,
                 r#"<t:Resolution><t:Mailbox><t:Name>{}</t:Name><t:EmailAddress>{}</t:EmailAddress><t:RoutingType>SMTP</t:RoutingType><t:MailboxType>DistributionList</t:MailboxType></t:Mailbox></t:Resolution>"#,
                 xml_escape(&dl.display_name),
                 xml_escape(&dl.email)
-            ));
+            );
         }
     }
 
@@ -10706,9 +10770,10 @@ async fn handle_get_user_availability(
         } else {
             merge_merged_freebusy(&combined_merged, &merged)
         };
-        responses.push_str(&format!(
+        let _ = write!(
+            responses,
             r#"<m:FreeBusyResponse><m:ResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:ResponseMessage><m:FreeBusyView><t:FreeBusyViewType>{view_type}</t:FreeBusyViewType><t:MergedFreeBusy>{merged}</t:MergedFreeBusy><t:CalendarEventArray>{events_xml}</t:CalendarEventArray></m:FreeBusyView></m:FreeBusyResponse>"#,
-        ));
+        );
     }
     let suggestions_xml = if body.contains("SuggestionsViewOptions") {
         suggestions_xml_for_window(&combined_merged, start, end, interval, suggestion_minutes)
@@ -11149,11 +11214,12 @@ fn render_one_timezone_definition(
     // The Windows display name ("(UTC-09:00) Alaska") is the `Name` Exchange
     // itself serves — Outlook renders it directly in the timezone picker.
     let name = variant.description();
-    out.push_str(&format!(
+    let _ = write!(
+        out,
         r#"<t:TimeZoneDefinition Id="{}" Name="{}">"#,
         xml_escape(id),
         xml_escape(name)
-    ));
+    );
     if !full {
         out.push_str("</t:TimeZoneDefinition>");
         return;
@@ -11176,27 +11242,30 @@ fn render_one_timezone_definition(
     let has_dst = !dst_rule.is_zeroed();
 
     out.push_str("<t:Periods>");
-    out.push_str(&format!(
+    let _ = write!(
+        out,
         r#"<t:Period Bias="{}" Name="Standard" Id="{}"/>"#,
         windows_bias_duration(bias),
         xml_escape(&std_period_id)
-    ));
+    );
     if has_dst {
-        out.push_str(&format!(
+        let _ = write!(
+            out,
             r#"<t:Period Bias="{}" Name="Daylight" Id="{}"/>"#,
             windows_bias_duration(bias + _dst_bias),
             xml_escape(&dst_period_id)
-        ));
+        );
     }
     out.push_str("</t:Periods><t:TransitionsGroups><t:TransitionsGroup Id=\"0\">");
     if has_dst {
         out.push_str(&recurring_day_transition_xml(&dst_period_id, dst_rule));
         out.push_str(&recurring_day_transition_xml(&std_period_id, std_rule));
     } else {
-        out.push_str(&format!(
+        let _ = write!(
+            out,
             r#"<t:Transition><t:To Kind="Period">{}</t:To></t:Transition>"#,
             xml_escape(&std_period_id)
-        ));
+        );
     }
     out.push_str("</t:TransitionsGroup></t:TransitionsGroups><t:Transitions>");
     out.push_str(r#"<t:Transition><t:To Kind="Group">0</t:To></t:Transition>"#);
@@ -11237,7 +11306,7 @@ fn recurring_day_transition_xml(period_id: &str, rule: crate::timezone::TziSyste
     let occurrence = if rule.day == 5 { -1 } else { rule.day as i32 };
     let mut offset = format!("PT{}H", rule.hour);
     if rule.minute != 0 {
-        offset.push_str(&format!("{}M", rule.minute));
+        let _ = write!(offset, "{}M", rule.minute);
     }
     format!(
         r#"<t:RecurringDayTransition><t:To Kind="Period">{}</t:To><t:TimeOffset>{}</t:TimeOffset><t:Month>{}</t:Month><t:DayOfWeek>{}</t:DayOfWeek><t:Occurrence>{}</t:Occurrence></t:RecurringDayTransition>"#,
@@ -11319,11 +11388,12 @@ async fn handle_get_mail_tips(state: &Arc<AppState>, auth: &AuthContext, body: &
             "<t:OutOfOffice><t:ReplyBody/></t:OutOfOffice>".to_string()
         };
 
-        tips_xml.push_str(&format!(
+        let _ = write!(
+            tips_xml,
             "<m:MailTips><t:RecipientAddress><t:EmailAddress>{}</t:EmailAddress></t:RecipientAddress>{}</m:MailTips>",
             xml_escape(&recipient),
             oof_block
-        ));
+        );
     }
 
     let inner = format!(
@@ -11455,10 +11525,11 @@ async fn handle_find_people(state: &Arc<AppState>, auth: &AuthContext, body: &st
     let mut people_xml = String::new();
     let mut page_count = 0usize;
     for contact in page {
-        people_xml.push_str(&format!(
+        let _ = write!(
+            people_xml,
             "<t:Persona>{}</t:Persona>",
             persona_fields_from_contact(contact)
-        ));
+        );
         page_count += 1;
     }
 
@@ -11720,12 +11791,14 @@ async fn handle_get_conversation_items(
                                 &server_id,
                                 &change_key,
                             );
-                            nodes_xml.push_str(&format!(
+                            let _ = write!(
+                                nodes_xml,
                                 r#"<t:ConversationNode><t:InternetMessageId>{}</t:InternetMessageId><t:ParentInternetMessageId>{}</t:ParentInternetMessageId><t:Items>{}</t:Items></t:ConversationNode>"#,
                                 internet_message_id, parent_message_id, message_xml
-                            ));
+                            );
                         }
-                        resp_messages.push_str(&format!(
+                        let _ = write!(
+                            resp_messages,
                             // [MS-OXWSCONV] §3.1.4.3.3.6: the response message
                             // carries a DIRECT `Conversation` child
                             // (`t:ConversationResponseType`) — there is no
@@ -11737,7 +11810,7 @@ async fn handle_get_conversation_items(
                             r#"<m:GetConversationItemsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Conversation><t:ConversationId Id="{}" /><t:SyncState/><t:ConversationNodes>{}</t:ConversationNodes></m:Conversation></m:GetConversationItemsResponseMessage>"#,
                             xml_escape(&thread_id),
                             nodes_xml,
-                        ));
+                        );
                         continue;
                     }
                     Err(e) => {
@@ -11754,10 +11827,11 @@ async fn handle_get_conversation_items(
             // the conversation exists with no items, which the client would
             // cache as an authoritative (empty) conversation.
             Ok(None) => {
-                resp_messages.push_str(&format!(
+                let _ = write!(
+                    resp_messages,
                     r#"<m:GetConversationItemsResponseMessage ResponseClass="Error"><m:MessageText>The conversation no longer exists</m:MessageText><m:ResponseCode>ErrorItemNotFound</m:ResponseCode><m:DescriptiveLinkKey>0</m:DescriptiveLinkKey><m:Conversation><t:ConversationId Id="{}" /></m:Conversation></m:GetConversationItemsResponseMessage>"#,
                     xml_escape(&thread_id)
-                ));
+                );
                 continue;
             }
             Err(e) => {
@@ -11771,10 +11845,11 @@ async fn handle_get_conversation_items(
         // A failed lookup is not a whole-request failure: report an Error
         // message for THIS conversation and keep resolving the rest. An empty
         // Success would tell the client the thread has no messages.
-        resp_messages.push_str(&format!(
+        let _ = write!(
+            resp_messages,
             r#"<m:GetConversationItemsResponseMessage ResponseClass="Error"><m:MessageText>Failed to load the conversation</m:MessageText><m:ResponseCode>ErrorServerBusy</m:ResponseCode><m:DescriptiveLinkKey>0</m:DescriptiveLinkKey><m:Conversation><t:ConversationId Id="{}" /></m:Conversation></m:GetConversationItemsResponseMessage>"#,
             xml_escape(&thread_id)
-        ));
+        );
         continue;
     }
 
@@ -11839,12 +11914,13 @@ async fn handle_convert_id(auth: &AuthContext, body: &str) -> Response {
     // reject.
     let mut response_messages = String::new();
     for id in source_ids {
-        response_messages.push_str(&format!(
+        let _ = write!(
+            response_messages,
             r#"<m:ConvertIdResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:AlternateId Id="{}" Format="{}" Mailbox="{}"/></m:ConvertIdResponseMessage>"#,
             xml_escape(&id),
             xml_escape(&dest_format),
             xml_escape(&auth.username)
-        ));
+        );
     }
 
     let inner = format!(
@@ -12185,14 +12261,17 @@ async fn handle_mark_as_junk(state: &Arc<AppState>, auth: &AuthContext, body: &s
             JunkOutcome::Rejected => resp_messages.push_str(
                 r#"<m:MarkAsJunkResponseMessage ResponseClass="Error"><m:MessageText>Only messages can be marked as junk.</m:MessageText><m:ResponseCode>ErrorInvalidIdMalformed</m:ResponseCode><m:DescriptiveLinkKey>0</m:DescriptiveLinkKey></m:MarkAsJunkResponseMessage>"#,
             ),
-            JunkOutcome::Moved => resp_messages.push_str(&format!(
-                r#"<m:MarkAsJunkResponseMessage ResponseClass="Success">
+            JunkOutcome::Moved => {
+                let _ = write!(
+                    resp_messages,
+                    r#"<m:MarkAsJunkResponseMessage ResponseClass="Success">
 <m:ResponseCode>NoError</m:ResponseCode>
 <m:MovedItemIds><t:ItemId Id="{}" ChangeKey="{}" /></m:MovedItemIds>
 </m:MarkAsJunkResponseMessage>"#,
-                xml_escape(item_id),
-                xml_escape(item_id)
-            )),
+                    xml_escape(item_id),
+                    xml_escape(item_id)
+                );
+            }
             JunkOutcome::Failed => resp_messages.push_str(
                 r#"<m:MarkAsJunkResponseMessage ResponseClass="Error">
 <m:MessageText>The item could not be moved.</m:MessageText>
@@ -12329,12 +12408,12 @@ fn next_occurrence_start(
     // (`YYYYMMDDTHHMMSSZ`) for DTSTART/EXDATE, so format accordingly (format_ews
     // uses the extended YYYY-MM-DDTHH:MM:SSZ form which the parser rejects).
     let mut block = String::from("DTSTART:");
-    block.push_str(&start_utc.format("%Y%m%dT%H%M%SZ").to_string());
+    let _ = write!(block, "{}", start_utc.format("%Y%m%dT%H%M%SZ"));
     block.push_str("\nRRULE:");
     block.push_str(rrule);
     for ex in &item.exdates {
         block.push_str("\nEXDATE:");
-        block.push_str(&ex.format("%Y%m%dT%H%M%SZ").to_string());
+        let _ = write!(block, "{}", ex.format("%Y%m%dT%H%M%SZ"));
     }
 
     let parsed: Option<rrule::RRuleSet> = block.parse().ok();
@@ -12439,7 +12518,8 @@ async fn handle_get_reminders(state: &Arc<AppState>, auth: &AuthContext, body: &
             &reminder_occurrence_key(occurrence.reminder_due),
         );
         let mut xml = String::new();
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             r#"<t:Reminder><t:Subject>{}</t:Subject><t:ReminderTime>{}</t:ReminderTime><t:StartDate>{}</t:StartDate><t:EndDate>{}</t:EndDate><t:ItemId Id="{}" ChangeKey="{}" /><t:ReminderGroup>Calendar</t:ReminderGroup><t:UID>{}</t:UID>"#,
             xml_escape(&item.subject),
             crate::util::format_ews_datetime(&occurrence.show_at),
@@ -12448,12 +12528,13 @@ async fn handle_get_reminders(state: &Arc<AppState>, auth: &AuthContext, body: &
             xml_escape(&current.row.server_id),
             xml_escape(&ck),
             xml_escape(&item.uid),
-        ));
+        );
         if !item.location.is_empty() {
-            xml.push_str(&format!(
+            let _ = write!(
+                xml,
                 "<t:Location>{}</t:Location>",
                 xml_escape(&item.location)
-            ));
+            );
         }
         xml.push_str("</t:Reminder>");
         reminders_xml.push_str(&xml);
@@ -12878,11 +12959,12 @@ async fn handle_perform_reminder_action(
             }
         };
         let ck = changekey_for_item(&row);
-        updated_xml.push_str(&format!(
+        let _ = write!(
+            updated_xml,
             r#"<t:ItemId Id="{}" ChangeKey="{}" />"#,
             xml_escape(item_id),
             xml_escape(&ck)
-        ));
+        );
         let echoed_occurrence = split_reminder_item_ref(&action.change_key)
             .map(|(_, occurrence)| occurrence.to_string())
             .filter(|occurrence| {
@@ -13092,10 +13174,11 @@ async fn handle_get_attachment(state: &Arc<AppState>, auth: &AuthContext, body: 
                 attachments_xml.push_str(&render_file_attachment_xml(&attachment, true));
             }
             Ok(None) => {
-                attachments_xml.push_str(&format!(
+                let _ = write!(
+                    attachments_xml,
                     r#"<t:FileAttachment><t:AttachmentId Id="{}"/><t:Name>NotFound</t:Name></t:FileAttachment>"#,
                     xml_escape(id)
-                ));
+                );
             }
             Err(e) => {
                 tracing::warn!("GetAttachment error for {}: {}", id, e);

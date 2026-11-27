@@ -36,6 +36,7 @@ use secrecy::SecretString;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::sync::Arc;
 use tracing::info;
 
@@ -510,14 +511,15 @@ fn render_ews_attachments_xml(
             }
             None => String::new(),
         };
-        out.push_str(&format!(
+        let _ = write!(
+            out,
             r#"<t:FileAttachment><t:AttachmentId Id="{}"/><t:Name>{}</t:Name><t:ContentType>{}</t:ContentType><t:Size>{}</t:Size>{}</t:FileAttachment>"#,
             xml_escape(&key),
             xml_escape(&name),
             xml_escape(&content_type),
             size,
             content_xml,
-        ));
+        );
     }
     out.push_str("</t:Attachments>");
     out
@@ -586,11 +588,12 @@ fn render_ews_internet_headers_xml(email: &JmapEmail) -> String {
         if SUPPRESSED.iter().any(|s| s.eq_ignore_ascii_case(&name)) {
             continue;
         }
-        out.push_str(&format!(
+        let _ = write!(
+            out,
             r#"<t:InternetMessageHeader HeaderName="{}">{}</t:InternetMessageHeader>"#,
             xml_escape(&sanitize_for_xml(&name)),
             xml_escape(&sanitize_for_xml(&value)),
-        ));
+        );
     }
     if out == "<t:InternetMessageHeaders>" {
         return String::new();
@@ -709,14 +712,16 @@ pub(crate) fn render_negotiated_eas_body(
     };
 
     let mut xml = String::with_capacity(512);
-    xml.push_str(&format!(
+    let _ = write!(
+        xml,
         "<AirSyncBase:Body><AirSyncBase:Type>{}</AirSyncBase:Type>",
         negotiated.body_type
-    ));
-    xml.push_str(&format!(
+    );
+    let _ = write!(
+        xml,
         "<AirSyncBase:EstimatedDataSize>{}</AirSyncBase:EstimatedDataSize>",
         true_size
-    ));
+    );
     if truncated {
         xml.push_str("<AirSyncBase:Truncated>1</AirSyncBase:Truncated>");
     }
@@ -724,10 +729,11 @@ pub(crate) fn render_negotiated_eas_body(
         // Data is XML character data ([MS-ASDTYPE] §2.3): strip the
         // characters XML 1.0 forbids even in escaped form before escaping
         // the remainder.
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<AirSyncBase:Data>{}</AirSyncBase:Data>",
             xml_escape(&sanitize_for_xml(&data))
-        ));
+        );
     }
     // [MS-ASAIRS] §2.2.2.35.1: the Preview element is not returned with a
     // Type 1 (plain text) body that carries valid Data — the body itself is
@@ -737,10 +743,11 @@ pub(crate) fn render_negotiated_eas_body(
     if let Some(chars) = negotiated.preview
         && !(negotiated.body_type == 1 && include_data && !data.is_empty())
     {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<AirSyncBase:Preview>{}</AirSyncBase:Preview>",
             xml_escape(&preview_text(&sanitize_for_xml(&plain_for_preview), chars))
-        ));
+        );
     }
     xml.push_str("</AirSyncBase:Body>");
     xml
@@ -776,30 +783,34 @@ pub(crate) fn render_eas_body_part(email: &JmapEmail, pref: &EasBodyPartPreferen
     };
 
     let mut xml = String::with_capacity(512);
-    xml.push_str(&format!(
+    let _ = write!(
+        xml,
         "<AirSyncBase:BodyPart><AirSyncBase:Status>{}</AirSyncBase:Status>",
         if withheld { 176 } else { 1 }
-    ));
+    );
     xml.push_str("<AirSyncBase:Type>2</AirSyncBase:Type>");
-    xml.push_str(&format!(
+    let _ = write!(
+        xml,
         "<AirSyncBase:EstimatedDataSize>{}</AirSyncBase:EstimatedDataSize>",
         estimated
-    ));
+    );
     if truncated {
         xml.push_str("<AirSyncBase:Truncated>1</AirSyncBase:Truncated>");
     }
     if !withheld {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<AirSyncBase:Data>{}</AirSyncBase:Data>",
             xml_escape(&sanitize_for_xml(data))
-        ));
+        );
     }
     if let Some(chars) = pref.preview {
         let plain = html_to_plain_text(message_part);
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<AirSyncBase:Preview>{}</AirSyncBase:Preview>",
             xml_escape(&preview_text(&sanitize_for_xml(&plain), chars))
-        ));
+        );
     }
     xml.push_str("</AirSyncBase:BodyPart>");
     xml
@@ -1213,13 +1224,14 @@ fn render_eas_attachments_xml(email: &JmapEmail) -> String {
                 .unwrap_or("application/octet-stream"),
         );
         let size = a.size.unwrap_or(0);
-        out.push_str(&format!(
+        let _ = write!(
+            out,
             "<AirSyncBase:Attachment><AirSyncBase:DisplayName>{}</AirSyncBase:DisplayName><AirSyncBase:FileReference>{}</AirSyncBase:FileReference><AirSyncBase:Method>1</AirSyncBase:Method><AirSyncBase:Content-type>{}</AirSyncBase:Content-type><AirSyncBase:EstimatedDataSize>{}</AirSyncBase:EstimatedDataSize></AirSyncBase:Attachment>",
             xml_escape(&name),
             xml_escape(&ref_id),
             xml_escape(&content_type),
             size,
-        ));
+        );
     }
     if out.is_empty() {
         String::new()
@@ -2121,82 +2133,6 @@ pub fn eas_email_folders_xml() -> String {
     .collect()
 }
 
-/// Extract text content from the first occurrence of an XML tag.
-/// Simple helper for EAS XML parsing - not namespace-aware.
-fn extract_first_tag_text(xml: &str, tag: &[u8]) -> Option<String> {
-    let _tag_str = std::str::from_utf8(tag).ok()?;
-    let open_tag = format!("<{}>", std::str::from_utf8(tag).unwrap_or(""));
-    let close_tag = format!("</{}>", std::str::from_utf8(tag).unwrap_or(""));
-    if let Some(start) = xml.find(&open_tag) {
-        let content_start = start + open_tag.len();
-        if let Some(end) = xml[content_start..].find(&close_tag) {
-            return Some(xml[content_start..content_start + end].to_string());
-        }
-    }
-    None
-}
-
-/// Extract the text of the first element whose LOCAL name matches `local`,
-/// ignoring any namespace prefix.
-///
-/// Raw XML SendMail bodies reach the parser without WBXML decoding, and the
-/// protocol does not fix namespace prefixes, so a client may send
-/// `<ComposeMail:Mime>` rather than a default-namespaced `<Mime>`. A literal
-/// `<Mime>` search would miss it and the message would never be sent.
-fn extract_first_tag_text_local(xml: &str, local: &str) -> Option<String> {
-    use quick_xml::events::Event;
-    use quick_xml::reader::Reader;
-
-    let mut reader = Reader::from_str(xml);
-    let mut buf = Vec::new();
-    let mut depth = 0usize;
-    let mut capturing = false;
-    let mut out = String::new();
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) => {
-                if capturing {
-                    depth += 1;
-                } else if e.name().local_name().as_ref() == local {
-                    capturing = true;
-                }
-            }
-            Ok(Event::End(_)) => {
-                if capturing {
-                    if depth == 0 {
-                        return Some(out);
-                    }
-                    depth -= 1;
-                }
-            }
-            Ok(Event::Text(e)) => {
-                if capturing {
-                    out.push_str(e.as_ref());
-                }
-            }
-            Ok(Event::CData(e)) => {
-                if capturing {
-                    // CDATA is literal by definition — no reference decoding.
-                    out.push_str(e.as_ref());
-                }
-            }
-            Ok(Event::GeneralRef(r)) => {
-                // quick-xml 0.42 reports every reference (`&#68;`, `&amp;`) as
-                // its own event rather than folding it into the surrounding
-                // Text. Dropping it truncated the value (`QUJ&#68;` → `QUJ`
-                // instead of `QUJD`) and the caller base64-decodes the result
-                // before submission, so the message body was corrupted.
-                if capturing {
-                    out.push_str(&crate::util::resolve_xml_reference(r.as_ref()));
-                }
-            }
-            Ok(Event::Eof) | Err(_) => return None,
-            _ => {}
-        }
-        buf.clear();
-    }
-}
-
 /// Parse EAS SendMail request to extract MIME message and recipients.
 ///
 /// Per MS-ASCMD §2.2.1.17, SendMail contains a ClientId and either
@@ -2205,28 +2141,40 @@ pub fn parse_eas_sendmail(xml: &str) -> Option<EasSendMailRequest> {
     // Raw-XML SendMail bodies are never WBXML-decoded, so a client may send the
     // whole document namespace-qualified: every lookup below matches by LOCAL
     // name first, with the literal helper as a fallback for malformed markup.
-    let client_id = extract_first_tag_text_local(xml, "ClientId")
-        .or_else(|| extract_first_tag_text(xml, b"ClientId"));
+    //
+    // ONE index for all five fields: this is the largest body the gateway
+    // accepts (a `Mime` element can be tens of MiB), and the per-tag helpers
+    // restarted at the top of the document for each field — so a SendMail
+    // without CollectionId/ItemId tokenised the whole MIME blob twice more,
+    // once per absent field. The index also never materialises the MIME text
+    // unless `Mime`/`MIMEData` is actually read.
+    let fields = crate::xml_fields::RequestFields::parse(xml);
+    let client_id = fields
+        .first_outer("ClientId")
+        .or_else(|| fields.first(b"ClientId"));
     // `Mime` is the [MS-ASCMD] §2.2.3.109 element; `MIMEData` is the legacy
     // name older clients still send. Match either by LOCAL name so a
     // namespace-qualified raw-XML body is parsed too, and keep the literal
     // helpers as a fallback for malformed markup.
-    let mime_data = extract_first_tag_text_local(xml, "MIMEData")
-        .or_else(|| extract_first_tag_text_local(xml, "Mime"))
-        .or_else(|| extract_first_tag_text(xml, b"MIMEData"))
-        .or_else(|| extract_first_tag_text(xml, b"Mime"));
+    let mime_data = fields
+        .first_outer("MIMEData")
+        .or_else(|| fields.first_outer("Mime"))
+        .or_else(|| fields.first(b"MIMEData"))
+        .or_else(|| fields.first(b"Mime"));
     let save_in_sent = xml.contains("<SaveInSentItems") || xml.contains(":SaveInSentItems");
     // Per MS-ASCMD §2.2.1.19/20, SmartReply and SmartForward reference the
     // original message via CollectionId + ItemId so the gateway can wire
     // In-Reply-To/References threading headers.
     // MS-ASCMD §2.2.1.19/20: EAS 14.x clients name the source folder tag
     // `airsync:CollectionId`; older clients use `FolderId`. Accept both.
-    let collection_id = extract_first_tag_text_local(xml, "CollectionId")
-        .or_else(|| extract_first_tag_text_local(xml, "FolderId"))
-        .or_else(|| extract_first_tag_text(xml, b"CollectionId"))
-        .or_else(|| extract_first_tag_text(xml, b"FolderId"));
-    let item_id = extract_first_tag_text_local(xml, "ItemId")
-        .or_else(|| extract_first_tag_text(xml, b"ItemId"));
+    let collection_id = fields
+        .first_outer("CollectionId")
+        .or_else(|| fields.first_outer("FolderId"))
+        .or_else(|| fields.first(b"CollectionId"))
+        .or_else(|| fields.first(b"FolderId"));
+    let item_id = fields
+        .first_outer("ItemId")
+        .or_else(|| fields.first(b"ItemId"));
 
     Some(EasSendMailRequest {
         client_id,
@@ -2775,18 +2723,20 @@ pub fn render_eas_email_mutation_responses(results: &[EasEmailMutationResult]) -
     for result in results {
         match result {
             EasEmailMutationResult::Change { server_id, status } => {
-                xml.push_str(&format!(
+                let _ = write!(
+                    xml,
                     "<Change><Class>Email</Class><ServerId>{}</ServerId><Status>{}</Status></Change>",
                     xml_escape(server_id),
                     status
-                ));
+                );
             }
             EasEmailMutationResult::Delete { server_id, status } => {
-                xml.push_str(&format!(
+                let _ = write!(
+                    xml,
                     "<Delete><ServerId>{}</ServerId><Status>{}</Status></Delete>",
                     xml_escape(server_id),
                     status
-                ));
+                );
             }
         }
     }
@@ -3901,6 +3851,33 @@ mod tests {
             r#"<SendMail xmlns="ComposeMail:"><MIMEData>From: x@y.z</MIMEData></SendMail>"#;
         let req = parse_eas_sendmail(legacy).expect("must parse");
         assert_eq!(req.mime_data.as_deref(), Some("From: x@y.z"));
+    }
+
+    /// C5 hot path: the common SendMail has a large `Mime` and NO
+    /// `Source`/`CollectionId`/`ItemId`. Every field must still resolve — the
+    /// single-pass index is what keeps the absent ones from re-tokenising the
+    /// whole MIME blob, and this pins the values it returns.
+    #[test]
+    fn test_parse_eas_sendmail_large_mime_without_source_references() {
+        let payload = "QUJD".repeat(256 * 1024); // 1 MiB of base64
+        let xml = format!(
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<SendMail xmlns="ComposeMail:"><ClientId>c-large</ClientId><SaveInSentItems/><Mime>{payload}</Mime></SendMail>"#
+        );
+        let req = parse_eas_sendmail(&xml).expect("must parse");
+        assert_eq!(req.client_id.as_deref(), Some("c-large"));
+        assert_eq!(req.mime_data.as_deref(), Some(payload.as_str()));
+        assert!(req.save_in_sent);
+        assert_eq!(req.collection_id, None);
+        assert_eq!(req.item_id, None);
+
+        // Same document, prefixed elements: local-name matching still applies.
+        let prefixed = format!(
+            r#"<ComposeMail:SendMail xmlns:ComposeMail="ComposeMail:"><ComposeMail:ClientId>p</ComposeMail:ClientId><ComposeMail:Mime>{payload}</ComposeMail:Mime></ComposeMail:SendMail>"#
+        );
+        let req = parse_eas_sendmail(&prefixed).expect("must parse");
+        assert_eq!(req.client_id.as_deref(), Some("p"));
+        assert_eq!(req.mime_data.as_deref(), Some(payload.as_str()));
     }
 
     /// A prefixed `Mime` carrying XML character references must decode to the

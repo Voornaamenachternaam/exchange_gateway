@@ -51,6 +51,7 @@ pub mod version;
 
 pub mod validation;
 pub mod wbxml;
+pub mod xml_fields;
 
 pub use autodiscover::AutodiscoverJsonParams;
 pub use config::Config;

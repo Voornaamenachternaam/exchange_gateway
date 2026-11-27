@@ -10,6 +10,7 @@ use crate::jmap::{JMAP_SIEVE_CAPABILITY, JmapClient};
 use serde_json::json;
 
 use serde::{Deserialize, Serialize};
+use std::fmt::Write as _;
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -169,37 +170,41 @@ pub fn build_sieve_script(
     match external_audience {
         ExternalAudience::All => {
             if !internal_escaped.is_empty() {
-                rule_blocks.push_str(&format!(
+                let _ = write!(
+                    rule_blocks,
                     "if allof ({}) {{\n  {}\n}}\n",
                     audience_cond(true),
                     vacation_cmd(&internal_escaped)
-                ));
+                );
             }
             if !external_escaped.is_empty() {
-                rule_blocks.push_str(&format!(
+                let _ = write!(
+                    rule_blocks,
                     "if allof ({}) {{\n  {}\n}}\n",
                     audience_cond(false),
                     vacation_cmd(&external_escaped)
-                ));
+                );
             }
         }
         // No external audience: only the internal rule (if any) applies.
         ExternalAudience::None => {
             if !internal_escaped.is_empty() {
-                rule_blocks.push_str(&format!(
+                let _ = write!(
+                    rule_blocks,
                     "if allof ({}) {{\n  {}\n}}\n",
                     audience_cond(true),
                     vacation_cmd(&internal_escaped)
-                ));
+                );
             }
         }
         ExternalAudience::External => {
             if !external_escaped.is_empty() {
-                rule_blocks.push_str(&format!(
+                let _ = write!(
+                    rule_blocks,
                     "if allof ({}) {{\n  {}\n}}\n",
                     audience_cond(false),
                     vacation_cmd(&external_escaped)
-                ));
+                );
             }
         }
         ExternalAudience::KnownExternal => {
@@ -211,11 +216,12 @@ pub fn build_sieve_script(
             // external replies entirely would silently ignore a configured
             // absence message.
             if !external_escaped.is_empty() {
-                rule_blocks.push_str(&format!(
+                let _ = write!(
+                    rule_blocks,
                     "if allof ({}) {{\n  {}\n}}\n",
                     audience_cond(false),
                     vacation_cmd(&external_escaped)
-                ));
+                );
             }
         }
     }

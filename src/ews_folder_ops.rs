@@ -23,6 +23,7 @@ use axum::{http::StatusCode, response::Response};
 use secrecy::SecretString;
 use serde_json::json;
 use std::collections::VecDeque;
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use crate::ews::{AuthContext, EwsAction, operation_error_response, owner_from_username, soap_ok};
@@ -2264,7 +2265,8 @@ pub(crate) async fn handle_find_conversation(
         // which feeds it verbatim into a JMAP Email/query `threadId` filter,
         // so it must be the raw JMAP threadId, not a prefixed variant.
         let conv_id = thread_id;
-        convs.push_str(&format!(
+        let _ = write!(
+            convs,
             "<t:Conversation>\
              <t:ConversationId Id=\"{id}\"/>\
              <t:ConversationTopic>{topic}</t:ConversationTopic>\
@@ -2294,7 +2296,7 @@ pub(crate) async fn handle_find_conversation(
             count = msgs.len(),
             unread = unread,
             preview = xml_escape(&preview),
-        ));
+        );
     }
 
     success_response(

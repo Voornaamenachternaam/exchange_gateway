@@ -2,6 +2,7 @@
 use crate::util::{resolve_xml_reference_strict, xml_escape_text};
 use anyhow::{Result, anyhow};
 use base64::Engine;
+use std::fmt::Write as _;
 
 const SWITCH_PAGE: u8 = 0x00;
 const END: u8 = 0x01;
@@ -1477,7 +1478,7 @@ impl Wbxml {
                     let Some(tag) = xml_stack.pop() else {
                         return Err(anyhow!("WBXML END with no open element"));
                     };
-                    output.push_str(&format!("</{tag}>"));
+                    let _ = write!(output, "</{tag}>");
                 }
                 STR_I => {
                     let content = Self::read_inline_str(bytes, &mut pos)?;
@@ -1498,7 +1499,7 @@ impl Wbxml {
                 }
                 ENTITY => {
                     let ent = Self::read_mb_uint(bytes, &mut pos)?;
-                    output.push_str(&format!("&#{ent};"));
+                    let _ = write!(output, "&#{ent};");
                 }
                 OPAQUE => {
                     let len = usize::try_from(Self::read_mb_uint(bytes, &mut pos)?)
@@ -1576,11 +1577,11 @@ impl Wbxml {
                     } else {
                         name
                     };
-                    output.push_str(&format!("<{display_name}>"));
+                    let _ = write!(output, "<{display_name}>");
                     if has_content {
                         xml_stack.push(display_name.to_string());
                     } else {
-                        output.push_str(&format!("</{display_name}>"));
+                        let _ = write!(output, "</{display_name}>");
                     }
                 }
             }

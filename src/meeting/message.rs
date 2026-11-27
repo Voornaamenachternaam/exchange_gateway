@@ -3,6 +3,7 @@ use crate::calendar::{Attendee, CalendarItem};
 use crate::meeting::attendee::{AttendeeRole, AttendeeStatus};
 use crate::util::xml_escape;
 use chrono::{DateTime, Utc};
+use std::fmt::Write as _;
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub enum MeetingMessageType {
@@ -405,32 +406,37 @@ impl MeetingMessageGenerator {
     ) -> String {
         let mut items_xml = String::with_capacity(4096);
 
-        items_xml.push_str(&format!(
+        let _ = write!(
+            items_xml,
             "<t:CalendarItem><t:ItemId Id=\"{}\" ChangeKey=\"{}\"/>",
             xml_escape(message_id),
             xml_escape(change_key)
-        ));
+        );
 
-        items_xml.push_str(&format!(
+        let _ = write!(
+            items_xml,
             "<t:Subject>{}</t:Subject>",
             xml_escape(&item.subject)
-        ));
+        );
 
-        items_xml.push_str(&format!(
+        let _ = write!(
+            items_xml,
             "<t:Start>{}</t:Start>",
             item.start.format("%Y-%m-%dT%H:%M:%SZ")
-        ));
+        );
 
-        items_xml.push_str(&format!(
+        let _ = write!(
+            items_xml,
             "<t:End>{}</t:End>",
             item.end.format("%Y-%m-%dT%H:%M:%SZ")
-        ));
+        );
 
         if !item.location.is_empty() {
-            items_xml.push_str(&format!(
+            let _ = write!(
+                items_xml,
                 "<t:Location>{}</t:Location>",
                 xml_escape(&item.location)
-            ));
+            );
         }
 
         if !item.attendees.is_empty() {
@@ -448,12 +454,13 @@ impl MeetingMessageGenerator {
             if !required.is_empty() {
                 items_xml.push_str("<t:RequiredAttendees>");
                 for att in required {
-                    items_xml.push_str(&format!(
+                    let _ = write!(
+                        items_xml,
                         "<t:Attendee><t:Mailbox><t:EmailAddress>{}</t:EmailAddress>",
                         xml_escape(&att.email)
-                    ));
+                    );
                     if let Some(ref name) = att.name {
-                        items_xml.push_str(&format!("<t:Name>{}</t:Name>", xml_escape(name)));
+                        let _ = write!(items_xml, "<t:Name>{}</t:Name>", xml_escape(name));
                     }
                     items_xml.push_str("</t:Mailbox></t:Attendee>");
                 }
@@ -463,12 +470,13 @@ impl MeetingMessageGenerator {
             if !optional.is_empty() {
                 items_xml.push_str("<t:OptionalAttendees>");
                 for att in optional {
-                    items_xml.push_str(&format!(
+                    let _ = write!(
+                        items_xml,
                         "<t:Attendee><t:Mailbox><t:EmailAddress>{}</t:EmailAddress>",
                         xml_escape(&att.email)
-                    ));
+                    );
                     if let Some(ref name) = att.name {
-                        items_xml.push_str(&format!("<t:Name>{}</t:Name>", xml_escape(name)));
+                        let _ = write!(items_xml, "<t:Name>{}</t:Name>", xml_escape(name));
                     }
                     items_xml.push_str("</t:Mailbox></t:Attendee>");
                 }
@@ -485,62 +493,64 @@ impl MeetingMessageGenerator {
         let mut xml = String::with_capacity(4096);
 
         xml.push_str("<ApplicationData>");
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<Calendar:Subject xmlns:Calendar=\"Calendar:\">{}</Calendar:Subject>",
             xml_escape(&item.subject)
-        ));
-        xml.push_str(&format!(
+        );
+        let _ = write!(
+            xml,
             "<Calendar:Location xmlns:Calendar=\"Calendar:\">{}</Calendar:Location>",
             xml_escape(&item.location)
-        ));
-        xml.push_str(&format!(
+        );
+        let _ = write!(
+            xml,
             "<Calendar:StartTime xmlns:Calendar=\"Calendar:\">{}</Calendar:StartTime>",
             item.start.format("%Y-%m-%dT%H:%M:%SZ")
-        ));
-        xml.push_str(&format!(
+        );
+        let _ = write!(
+            xml,
             "<Calendar:EndTime xmlns:Calendar=\"Calendar:\">{}</Calendar:EndTime>",
             item.end.format("%Y-%m-%dT%H:%M:%SZ")
-        ));
+        );
 
         if !item.attendees.is_empty() {
             xml.push_str("<Calendar:Attendees xmlns:Calendar=\"Calendar:\">");
             for att in &item.attendees {
                 xml.push_str("<Calendar:Attendee>");
-                xml.push_str(&format!(
+                let _ = write!(
+                    xml,
                     "<Calendar:Email>{}</Calendar:Email>",
                     xml_escape(&att.email)
-                ));
+                );
                 if let Some(ref name) = att.name {
-                    xml.push_str(&format!(
-                        "<Calendar:Name>{}</Calendar:Name>",
-                        xml_escape(name)
-                    ));
+                    let _ = write!(xml, "<Calendar:Name>{}</Calendar:Name>", xml_escape(name));
                 }
-                xml.push_str(&format!(
+                let _ = write!(
+                    xml,
                     "<Calendar:AttendeeType>{}</Calendar:AttendeeType>",
                     att.attendee_type.unwrap_or(1)
-                ));
+                );
                 xml.push_str("</Calendar:Attendee>");
             }
             xml.push_str("</Calendar:Attendees>");
         }
 
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<Calendar:MeetingStatus xmlns:Calendar=\"Calendar:\">{}</Calendar:MeetingStatus>",
             item.meeting_status.unwrap_or(1)
-        ));
+        );
 
         if let Some(ref organizer) = item.organizer_email {
             xml.push_str("<Calendar:Organizer xmlns:Calendar=\"Calendar:\">");
-            xml.push_str(&format!(
+            let _ = write!(
+                xml,
                 "<Calendar:Email>{}</Calendar:Email>",
                 xml_escape(organizer)
-            ));
+            );
             if let Some(ref name) = item.organizer_name {
-                xml.push_str(&format!(
-                    "<Calendar:Name>{}</Calendar:Name>",
-                    xml_escape(name)
-                ));
+                let _ = write!(xml, "<Calendar:Name>{}</Calendar:Name>", xml_escape(name));
             }
             xml.push_str("</Calendar:Organizer>");
         }
@@ -570,23 +580,14 @@ impl MeetingMessageGenerator {
         for result in results {
             xml.push_str("<Result>");
             if let Some(request_id) = &result.request_id {
-                xml.push_str(&format!(
-                    "<RequestId>{}</RequestId>",
-                    xml_escape(request_id)
-                ));
+                let _ = write!(xml, "<RequestId>{}</RequestId>", xml_escape(request_id));
             }
-            xml.push_str(&format!("<Status>{}</Status>", result.status));
+            let _ = write!(xml, "<Status>{}</Status>", result.status);
             if let Some(calendar_id) = &result.calendar_id {
-                xml.push_str(&format!(
-                    "<CalendarId>{}</CalendarId>",
-                    xml_escape(calendar_id)
-                ));
+                let _ = write!(xml, "<CalendarId>{}</CalendarId>", xml_escape(calendar_id));
             }
             if let Some(instance_id) = &result.instance_id {
-                xml.push_str(&format!(
-                    "<InstanceId>{}</InstanceId>",
-                    xml_escape(instance_id)
-                ));
+                let _ = write!(xml, "<InstanceId>{}</InstanceId>", xml_escape(instance_id));
             }
             xml.push_str("</Result>\n");
         }

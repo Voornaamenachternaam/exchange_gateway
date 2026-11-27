@@ -3,6 +3,7 @@ use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use chrono::{Datelike, Offset, TimeZone};
 use chrono_tz::Tz;
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::str::FromStr;
 use std::sync::{LazyLock, Mutex};
 use strum::IntoEnumIterator;
@@ -831,29 +832,29 @@ pub fn render_vtimezone_block(iana: &str) -> Option<String> {
     let tzid = canonical_iana(iana);
     let mut out = String::with_capacity(256);
     out.push_str("BEGIN:VTIMEZONE\r\n");
-    out.push_str(&format!("TZID:{tzid}\r\n"));
+    let _ = write!(out, "TZID:{tzid}\r\n");
 
     let std_off = format_offset(zt.standard_offset);
     if let Some(dst_off) = zt.dst_offset {
         let dst_str = format_offset(dst_off);
         out.push_str("BEGIN:DAYLIGHT\r\n");
-        out.push_str(&format!("TZOFFSETFROM:{std_off}\r\n"));
-        out.push_str(&format!("TZOFFSETTO:{dst_str}\r\n"));
-        out.push_str(&format!("DTSTART:{}\r\n", vtimezone_dtstart(zt.dst_rule)));
+        let _ = write!(out, "TZOFFSETFROM:{std_off}\r\n");
+        let _ = write!(out, "TZOFFSETTO:{dst_str}\r\n");
+        let _ = write!(out, "DTSTART:{}\r\n", vtimezone_dtstart(zt.dst_rule));
         out.push_str(&vtimezone_rrule(zt.dst_rule));
         out.push_str("END:DAYLIGHT\r\n");
 
         out.push_str("BEGIN:STANDARD\r\n");
-        out.push_str(&format!("TZOFFSETFROM:{dst_str}\r\n"));
-        out.push_str(&format!("TZOFFSETTO:{std_off}\r\n"));
-        out.push_str(&format!("DTSTART:{}\r\n", vtimezone_dtstart(zt.std_rule)));
+        let _ = write!(out, "TZOFFSETFROM:{dst_str}\r\n");
+        let _ = write!(out, "TZOFFSETTO:{std_off}\r\n");
+        let _ = write!(out, "DTSTART:{}\r\n", vtimezone_dtstart(zt.std_rule));
         out.push_str(&vtimezone_rrule(zt.std_rule));
         out.push_str("END:STANDARD\r\n");
     } else {
         // Fixed-offset zone: a single STANDARD subcomponent with no RRULE.
         out.push_str("BEGIN:STANDARD\r\n");
-        out.push_str(&format!("TZOFFSETFROM:{std_off}\r\n"));
-        out.push_str(&format!("TZOFFSETTO:{std_off}\r\n"));
+        let _ = write!(out, "TZOFFSETFROM:{std_off}\r\n");
+        let _ = write!(out, "TZOFFSETTO:{std_off}\r\n");
         out.push_str("DTSTART:19700101T000000\r\n");
         out.push_str("END:STANDARD\r\n");
     }

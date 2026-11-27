@@ -24,6 +24,7 @@ use base64::Engine as _;
 use futures_util::StreamExt as _;
 use reqwest::StatusCode;
 use std::collections::HashSet;
+use std::fmt::Write as _;
 use uuid::Uuid;
 
 // --------------------------------------------------------------------------
@@ -253,37 +254,40 @@ pub fn render_eas_contact(_server_id: &str, carddav_contact: &CarddavContact) ->
     {
         let escaped = xml_escape_str(note);
         xml.push_str("<AirSyncBase:Body><AirSyncBase:Type>1</AirSyncBase:Type>");
-        xml.push_str(&format!("<AirSyncBase:Data>{escaped}</AirSyncBase:Data>"));
-        xml.push_str(&format!(
+        let _ = write!(xml, "<AirSyncBase:Data>{escaped}</AirSyncBase:Data>");
+        let _ = write!(
+            xml,
             "<AirSyncBase:EstimatedDataSize>{}</AirSyncBase:EstimatedDataSize>",
             note.len(),
-        ));
+        );
         xml.push_str("<AirSyncBase:Truncated>0</AirSyncBase:Truncated></AirSyncBase:Body>");
     }
 
     // Picture (base64 image payload).
     if let Some(p) = vcard.photo().and_then(extract_photo_base64) {
-        xml.push_str(&format!("<Contacts:Picture>{}</Contacts:Picture>", p));
+        let _ = write!(xml, "<Contacts:Picture>{}</Contacts:Picture>", p);
     }
 
     // Misc simple fields.
     eas_field(&mut xml, "WebPage", vcard.url().unwrap_or_default());
     eas_field(&mut xml, "Spouse", vcard.spouse().unwrap_or_default());
     if let Some(nick) = vcard.nicknames().first() {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<Contacts2:NickName>{}</Contacts2:NickName>",
             xml_escape_str(nick)
-        ));
+        );
     }
     let children = vcard.children();
     if !children.is_empty() {
         xml.push_str("<Contacts:Children>");
         for child in children {
             if !child.is_empty() {
-                xml.push_str(&format!(
+                let _ = write!(
+                    xml,
                     "<Contacts:Child>{}</Contacts:Child>",
                     xml_escape_str(child)
-                ));
+                );
             }
         }
         xml.push_str("</Contacts:Children>");
@@ -299,10 +303,11 @@ fn xml_escape_str(s: &str) -> String {
 /// Append a non-empty `Contacts:` field.
 fn eas_field(xml: &mut String, tag: &str, val: &str) {
     if !val.is_empty() {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<Contacts:{tag}>{}</Contacts:{tag}>",
             xml_escape_str(val)
-        ));
+        );
     }
 }
 
@@ -1018,16 +1023,17 @@ fn track_appdata_text(out: &mut String, stack: &[String], text: &str) {
         return;
     };
     for p in parents {
-        out.push_str(&format!("<{}>", p));
+        let _ = write!(out, "<{}>", p);
     }
-    out.push_str(&format!(
+    let _ = write!(
+        out,
         "<{}>{}</{}>",
         leaf,
         crate::util::escape_xml_text(text),
         leaf
-    ));
+    );
     for p in parents.iter().rev() {
-        out.push_str(&format!("</{}>", p));
+        let _ = write!(out, "</{}>", p);
     }
 }
 
@@ -1252,10 +1258,11 @@ async fn diff_contacts(
         // Remove the row only once the delete is delivered; an undelivered
         // delete keeps its row and re-diffs next Sync.
         state.storage.delete_contact(username, &server_id).await?;
-        response.push_str(&format!(
+        let _ = write!(
+            response,
             r#"<Delete><ServerId>{}</ServerId></Delete>"#,
             xml_escape(&server_id)
-        ));
+        );
         delivered += 1;
     }
 
@@ -1989,25 +1996,28 @@ pub fn render_contacts_mutation_responses(results: &[ContactsMutationResult]) ->
     for res in results {
         match res.op_kind {
             ContactsOpKind::Add => {
-                xml.push_str(&format!(
+                let _ = write!(
+                    xml,
                     r#"<Add><ServerId>{}</ServerId><Status>{}</Status></Add>"#,
                     xml_escape(&res.server_id),
                     xml_escape(res.status)
-                ));
+                );
             }
             ContactsOpKind::Change => {
-                xml.push_str(&format!(
+                let _ = write!(
+                    xml,
                     r#"<Change><ServerId>{}</ServerId><Status>{}</Status></Change>"#,
                     xml_escape(&res.server_id),
                     xml_escape(res.status)
-                ));
+                );
             }
             ContactsOpKind::Delete => {
-                xml.push_str(&format!(
+                let _ = write!(
+                    xml,
                     r#"<Delete><ServerId>{}</ServerId><Status>{}</Status></Delete>"#,
                     xml_escape(&res.server_id),
                     xml_escape(res.status)
-                ));
+                );
             }
         }
     }

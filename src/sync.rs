@@ -15,6 +15,7 @@ use hmac::{Hmac, Mac};
 use secrecy::SecretString;
 use sha2::Sha256;
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -826,26 +827,28 @@ pub fn render_client_mutation_responses(results: &[ClientMutationResult]) -> Str
             } => {
                 xml.push_str("<Add>");
                 if let Some(client_id) = client_id {
-                    xml.push_str(&format!("<ClientId>{}</ClientId>", xml_escape(client_id)));
+                    let _ = write!(xml, "<ClientId>{}</ClientId>", xml_escape(client_id));
                 }
                 if let Some(server_id) = server_id {
-                    xml.push_str(&format!("<ServerId>{}</ServerId>", xml_escape(server_id)));
+                    let _ = write!(xml, "<ServerId>{}</ServerId>", xml_escape(server_id));
                 }
-                xml.push_str(&format!("<Status>{}</Status></Add>", status));
+                let _ = write!(xml, "<Status>{}</Status></Add>", status);
             }
             ClientMutationResult::Change { server_id, status } => {
-                xml.push_str(&format!(
+                let _ = write!(
+                    xml,
                     "<Change><ServerId>{}</ServerId><Status>{}</Status></Change>",
                     xml_escape(server_id),
                     status
-                ));
+                );
             }
             ClientMutationResult::Delete { server_id, status } => {
-                xml.push_str(&format!(
+                let _ = write!(
+                    xml,
                     "<Delete><ServerId>{}</ServerId><Status>{}</Status></Delete>",
                     xml_escape(server_id),
                     status
-                ));
+                );
             }
         }
     }
@@ -950,21 +953,21 @@ pub(crate) fn map_rrule_to_recurrence_xml(rrule: &str) -> Option<String> {
     }
     let mut xml = String::with_capacity(512);
     xml.push_str("<Calendar:Recurrence>");
-    xml.push_str(&format!("<Calendar:Type>{freq_val}</Calendar:Type>"));
-    xml.push_str(&format!(
-        "<Calendar:Interval>{interval}</Calendar:Interval>"
-    ));
+    let _ = write!(xml, "<Calendar:Type>{freq_val}</Calendar:Type>");
+    let _ = write!(xml, "<Calendar:Interval>{interval}</Calendar:Interval>");
     if !day_of_week.is_empty() {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<Calendar:DayOfWeek>{}</Calendar:DayOfWeek>",
             day_of_week
-        ));
+        );
     }
     if matches!(freq_val, 2 | 3 | 5 | 6) {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<Calendar:DayOfMonth>{}</Calendar:DayOfMonth>",
             day_of_month
-        ));
+        );
     }
     if matches!(freq_val, 3 | 6) && week_of_month != 0 {
         let normalized = if week_of_month < 0 {
@@ -972,37 +975,34 @@ pub(crate) fn map_rrule_to_recurrence_xml(rrule: &str) -> Option<String> {
         } else {
             week_of_month as u32
         };
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<Calendar:WeekOfMonth>{}</Calendar:WeekOfMonth>",
             normalized
-        ));
+        );
     }
     if matches!(freq_val, 5 | 6) {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<Calendar:MonthOfYear>{}</Calendar:MonthOfYear>",
             month_of_year
-        ));
+        );
     }
     if matches!(freq_val, 2 | 3 | 5 | 6) {
         xml.push_str("<Calendar:CalendarType>0</Calendar:CalendarType>");
     }
     if let Some(v) = until {
-        xml.push_str(&format!(
-            "<Calendar:Until>{}</Calendar:Until>",
-            xml_escape(&v)
-        ));
+        let _ = write!(xml, "<Calendar:Until>{}</Calendar:Until>", xml_escape(&v));
     }
     if let Some(v) = occurrences {
-        xml.push_str(&format!(
-            "<Calendar:Occurrences>{}</Calendar:Occurrences>",
-            v
-        ));
+        let _ = write!(xml, "<Calendar:Occurrences>{}</Calendar:Occurrences>", v);
     }
     if let Some(v) = first_day_of_week {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<Calendar:FirstDayOfWeek>{}</Calendar:FirstDayOfWeek>",
             v
-        ));
+        );
     }
     // NOTE: <Calendar:StartTimeZone>/<EndTimeZone> are item-level calendar
     // properties (rendered standalone from the item's zone in
@@ -1020,33 +1020,30 @@ fn render_attendee_xml(attendee: &Attendee) -> String {
     let mut xml = String::with_capacity(256);
     xml.push_str("<Calendar:Attendee>");
     if !attendee.email.is_empty() {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<Calendar:Email>{}</Calendar:Email>",
             xml_escape(&attendee.email)
-        ));
+        );
     }
     if let Some(name) = attendee.name.as_deref().filter(|v| !v.is_empty()) {
-        xml.push_str(&format!(
-            "<Calendar:Name>{}</Calendar:Name>",
-            xml_escape(name)
-        ));
+        let _ = write!(xml, "<Calendar:Name>{}</Calendar:Name>", xml_escape(name));
     } else if !attendee.email.is_empty() {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<Calendar:Name>{}</Calendar:Name>",
             xml_escape(&attendee.email)
-        ));
+        );
     }
     if let Some(v) = attendee.attendee_type {
-        xml.push_str(&format!(
-            "<Calendar:AttendeeType>{}</Calendar:AttendeeType>",
-            v
-        ));
+        let _ = write!(xml, "<Calendar:AttendeeType>{}</Calendar:AttendeeType>", v);
     }
     if let Some(v) = attendee.attendee_status {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<Calendar:AttendeeStatus>{}</Calendar:AttendeeStatus>",
             v
-        ));
+        );
     }
     xml.push_str("</Calendar:Attendee>");
     xml
@@ -1094,31 +1091,35 @@ fn render_exception_xml(
 ) -> String {
     let mut xml = String::with_capacity(1024);
     xml.push_str("<Calendar:Exception>");
-    xml.push_str(&format!(
+    let _ = write!(
+        xml,
         "<Calendar:ExceptionStartTime>{}</Calendar:ExceptionStartTime>",
         exception.exception_start.format("%Y-%m-%dT%H:%M:%SZ")
-    ));
+    );
     if exception.deleted {
         xml.push_str("<Calendar:Deleted>1</Calendar:Deleted></Calendar:Exception>");
         return xml;
     }
     if let Some(v) = &exception.subject {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<Calendar:Subject>{}</Calendar:Subject>",
             xml_escape(v)
-        ));
+        );
     }
     if let Some(v) = exception.start {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<Calendar:StartTime>{}</Calendar:StartTime>",
             v.format("%Y-%m-%dT%H:%M:%SZ")
-        ));
+        );
     }
     if let Some(v) = exception.end {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<Calendar:EndTime>{}</Calendar:EndTime>",
             v.format("%Y-%m-%dT%H:%M:%SZ")
-        ));
+        );
     }
     if let Some(v) = exception.all_day {
         xml.push_str(if v {
@@ -1128,64 +1129,67 @@ fn render_exception_xml(
         });
     }
     if let Some(v) = &exception.location {
-        xml.push_str(&format!("<AirSyncBase:Location><AirSyncBase:DisplayName>{}</AirSyncBase:DisplayName></AirSyncBase:Location>", xml_escape(v)));
+        let _ = write!(
+            xml,
+            "<AirSyncBase:Location><AirSyncBase:DisplayName>{}</AirSyncBase:DisplayName></AirSyncBase:Location>",
+            xml_escape(v)
+        );
     }
     if let Some(v) = exception.busy_status {
-        xml.push_str(&format!("<Calendar:BusyStatus>{}</Calendar:BusyStatus>", v));
+        let _ = write!(xml, "<Calendar:BusyStatus>{}</Calendar:BusyStatus>", v);
     }
     if let Some(v) = exception.sensitivity {
-        xml.push_str(&format!(
-            "<Calendar:Sensitivity>{}</Calendar:Sensitivity>",
-            v
-        ));
+        let _ = write!(xml, "<Calendar:Sensitivity>{}</Calendar:Sensitivity>", v);
     }
     if let Some(v) = exception.reminder {
-        xml.push_str(&format!("<Calendar:Reminder>{}</Calendar:Reminder>", v));
+        let _ = write!(xml, "<Calendar:Reminder>{}</Calendar:Reminder>", v);
     }
     if let Some(v) = exception.appointment_reply_time {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<Calendar:AppointmentReplyTime>{}</Calendar:AppointmentReplyTime>",
             v.format("%Y-%m-%dT%H:%M:%SZ")
-        ));
+        );
     }
     if let Some(v) = exception.meeting_status {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<Calendar:MeetingStatus>{}</Calendar:MeetingStatus>",
             v
-        ));
+        );
     } else {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<Calendar:MeetingStatus>{}</Calendar:MeetingStatus>",
             derived_meeting_status(item)
-        ));
+        );
     }
     if let Some(v) = exception
         .response_type
         .or_else(|| derived_response_type(item))
     {
-        xml.push_str(&format!(
-            "<Calendar:ResponseType>{}</Calendar:ResponseType>",
-            v
-        ));
+        let _ = write!(xml, "<Calendar:ResponseType>{}</Calendar:ResponseType>", v);
     }
     if let Some(cats) = &exception.categories
         && !cats.is_empty()
     {
         xml.push_str("<Calendar:Categories>");
         for cat in cats {
-            xml.push_str(&format!(
+            let _ = write!(
+                xml,
                 "<Calendar:Category>{}</Calendar:Category>",
                 xml_escape(cat)
-            ));
+            );
         }
         xml.push_str("</Calendar:Categories>");
     } else if !item.categories.is_empty() {
         xml.push_str("<Calendar:Categories>");
         for cat in &item.categories {
-            xml.push_str(&format!(
+            let _ = write!(
+                xml,
                 "<Calendar:Category>{}</Calendar:Category>",
                 xml_escape(cat)
-            ));
+            );
         }
         xml.push_str("</Calendar:Categories>");
     }
@@ -1284,14 +1288,16 @@ fn render_calendar_body_xml(
     };
 
     let mut xml = String::with_capacity(256);
-    xml.push_str(&format!(
+    let _ = write!(
+        xml,
         "<AirSyncBase:Body><AirSyncBase:Type>{}</AirSyncBase:Type>",
         body_type
-    ));
-    xml.push_str(&format!(
+    );
+    let _ = write!(
+        xml,
         "<AirSyncBase:EstimatedDataSize>{}</AirSyncBase:EstimatedDataSize>",
         true_size
-    ));
+    );
     if truncated {
         xml.push_str("<AirSyncBase:Truncated>1</AirSyncBase:Truncated>");
     }
@@ -1299,10 +1305,11 @@ fn render_calendar_body_xml(
         // Data is XML character data ([MS-ASDTYPE] §2.3): strip the
         // characters XML 1.0 forbids even in escaped form before escaping
         // the remainder. A withheld body (data_withheld) emits no Data.
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<AirSyncBase:Data>{}</AirSyncBase:Data>",
             xml_escape(&crate::email::sanitize_for_xml(&data))
-        ));
+        );
     }
     // [MS-ASAIRS] §2.2.2.35.1: no Preview alongside a Type 1 body carrying
     // valid Data — the body itself is the preview source. The preview is
@@ -1318,13 +1325,14 @@ fn render_calendar_body_xml(
         } else {
             full_content.clone()
         };
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<AirSyncBase:Preview>{}</AirSyncBase:Preview>",
             xml_escape(&crate::eas_sync_options::preview_text(
                 &crate::email::sanitize_for_xml(&preview_source),
                 chars
             ))
-        ));
+        );
     }
     xml.push_str("</AirSyncBase:Body>");
     xml
@@ -1349,24 +1357,28 @@ pub(crate) fn render_calendar_app_data_with_options(
 /// block for a calendar item.
 fn render_calendar_app_data_prefix(item: &CalendarItem) -> String {
     let mut xml = String::with_capacity(1024);
-    xml.push_str(&format!(
+    let _ = write!(
+        xml,
         "<Calendar:Subject>{}</Calendar:Subject>",
         xml_escape(&item.subject)
-    ));
-    xml.push_str(&format!(
+    );
+    let _ = write!(
+        xml,
         "<Calendar:StartTime>{}</Calendar:StartTime>",
         item.start.format("%Y-%m-%dT%H:%M:%SZ")
-    ));
-    xml.push_str(&format!(
+    );
+    let _ = write!(
+        xml,
         "<Calendar:EndTime>{}</Calendar:EndTime>",
         item.end.format("%Y-%m-%dT%H:%M:%SZ")
-    ));
-    xml.push_str(&format!(
+    );
+    let _ = write!(
+        xml,
         "<Calendar:DtStamp>{}</Calendar:DtStamp>",
         item.dtstamp
             .unwrap_or_else(Utc::now)
             .format("%Y-%m-%dT%H:%M:%SZ")
-    ));
+    );
     xml.push_str(if item.all_day {
         "<Calendar:AllDayEvent>1</Calendar:AllDayEvent>"
     } else {
@@ -1383,38 +1395,42 @@ fn render_calendar_app_data_prefix(item: &CalendarItem) -> String {
         // omitted for them too (`is_utc_zone`), keeping the element OPTIONAL
         // per spec and avoiding a zeroed-TZI that some clients reject.
         if let Some(blob) = crate::timezone::iana_to_eas_timezone_blob(v) {
-            xml.push_str(&format!(
+            let _ = write!(
+                xml,
                 "<Calendar:Timezone>{}</Calendar:Timezone>",
                 xml_escape(&blob)
-            ));
+            );
         }
     }
     if let Some(v) = item.busy_status {
-        xml.push_str(&format!("<Calendar:BusyStatus>{}</Calendar:BusyStatus>", v));
+        let _ = write!(xml, "<Calendar:BusyStatus>{}</Calendar:BusyStatus>", v);
     }
     if let Some(v) = item.sensitivity {
-        xml.push_str(&format!(
-            "<Calendar:Sensitivity>{}</Calendar:Sensitivity>",
-            v
-        ));
+        let _ = write!(xml, "<Calendar:Sensitivity>{}</Calendar:Sensitivity>", v);
     }
     if let Some(v) = item.reminder {
-        xml.push_str(&format!("<Calendar:Reminder>{}</Calendar:Reminder>", v));
+        let _ = write!(xml, "<Calendar:Reminder>{}</Calendar:Reminder>", v);
     }
     if !item.location.is_empty() {
-        xml.push_str(&format!("<AirSyncBase:Location><AirSyncBase:DisplayName>{}</AirSyncBase:DisplayName></AirSyncBase:Location>", xml_escape(&item.location)));
+        let _ = write!(
+            xml,
+            "<AirSyncBase:Location><AirSyncBase:DisplayName>{}</AirSyncBase:DisplayName></AirSyncBase:Location>",
+            xml_escape(&item.location)
+        );
     }
     if let Some(v) = &item.organizer_name {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<Calendar:OrganizerName>{}</Calendar:OrganizerName>",
             xml_escape(v)
-        ));
+        );
     }
     if let Some(v) = &item.organizer_email {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<Calendar:OrganizerEmail>{}</Calendar:OrganizerEmail>",
             xml_escape(v)
-        ));
+        );
     }
     if !item.attendees.is_empty() {
         xml.push_str("<Calendar:Attendees>");
@@ -1426,10 +1442,11 @@ fn render_calendar_app_data_prefix(item: &CalendarItem) -> String {
     if !item.categories.is_empty() {
         xml.push_str("<Calendar:Categories>");
         for c in &item.categories {
-            xml.push_str(&format!(
+            let _ = write!(
+                xml,
                 "<Calendar:Category>{}</Calendar:Category>",
                 xml_escape(c)
-            ));
+            );
         }
         xml.push_str("</Calendar:Categories>");
     }
@@ -1452,10 +1469,11 @@ fn render_calendar_app_data_suffix(
     // as structured calendar data ([MS-ASCAL] §2.2.3.12/§2.2.3.13 define the
     // elements for protocols that carry them, but nothing in the 16.0/16.1
     // client wire shape consumes them here).
-    xml.push_str(&format!(
+    let _ = write!(
+        xml,
         "<Calendar:UID>{}</Calendar:UID>",
         xml_escape(&item.uid)
-    ));
+    );
     if let Some(rrule) = &item.rrule
         && let Some(rec_xml) = map_rrule_to_recurrence_xml(rrule)
     {
@@ -1469,51 +1487,55 @@ fn render_calendar_app_data_suffix(
         xml.push_str("</Calendar:Exceptions>");
     }
     xml.push_str("<Calendar:FirstDayOfWeek>1</Calendar:FirstDayOfWeek>");
-    xml.push_str(&format!(
+    let _ = write!(
+        xml,
         "<Calendar:MeetingStatus>{}</Calendar:MeetingStatus>",
         derived_meeting_status(item)
-    ));
+    );
     if let Some(v) = item.response_requested {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<Calendar:ResponseRequested>{}</Calendar:ResponseRequested>",
             if v { 1 } else { 0 }
-        ));
+        );
     }
     if let Some(v) = item.disallow_new_time_proposal {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<Calendar:DisallowNewTimeProposal>{}</Calendar:DisallowNewTimeProposal>",
             if v { 1 } else { 0 }
-        ));
+        );
     }
     if let Some(v) = item.appointment_reply_time {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<Calendar:AppointmentReplyTime>{}</Calendar:AppointmentReplyTime>",
             v.format("%Y-%m-%dT%H:%M:%SZ")
-        ));
+        );
     }
     if let Some(v) = derived_response_type(item) {
-        xml.push_str(&format!(
-            "<Calendar:ResponseType>{}</Calendar:ResponseType>",
-            v
-        ));
+        let _ = write!(xml, "<Calendar:ResponseType>{}</Calendar:ResponseType>", v);
     }
     if let Some(v) = &item.online_meeting_conf_link {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<Calendar:OnlineMeetingConfLink>{}</Calendar:OnlineMeetingConfLink>",
             xml_escape(v)
-        ));
+        );
     }
     if let Some(v) = &item.online_meeting_external_link {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<Calendar:OnlineMeetingExternalLink>{}</Calendar:OnlineMeetingExternalLink>",
             xml_escape(v)
-        ));
+        );
     }
     if let Some(v) = &item.client_uid {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<Calendar:ClientUid>{}</Calendar:ClientUid>",
             xml_escape(v)
-        ));
+        );
     }
     xml
 }
@@ -2835,10 +2857,11 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                 let summaries: Vec<_> = att_list.iter().map(|a| a.to_eas_summary()).collect();
                 app_data.push_str(&crate::attachment::render_eas_attachments_xml(&summaries));
             }
-            commands.push_str(&format!(
+            let _ = write!(
+                commands,
                 "<Add><ServerId>{}</ServerId><ApplicationData>{}</ApplicationData></Add>",
                 pi.server_id, app_data
-            ));
+            );
         } else {
             let mut app_data =
                 render_calendar_app_data_with_options(&pi.item, &params.opts.body_options);
@@ -2852,10 +2875,11 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                 let summaries: Vec<_> = att_list.iter().map(|a| a.to_eas_summary()).collect();
                 app_data.push_str(&crate::attachment::render_eas_attachments_xml(&summaries));
             }
-            commands.push_str(&format!(
+            let _ = write!(
+                commands,
                 "<Change><ServerId>{}</ServerId><ApplicationData>{}</ApplicationData></Change>",
                 pi.server_id, app_data
-            ));
+            );
         }
         items_included += 1;
     }
@@ -2867,10 +2891,11 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                 more_available = true;
                 break;
             }
-            commands.push_str(&format!(
+            let _ = write!(
+                commands,
                 "<Delete><ServerId>{}</ServerId></Delete>",
                 xml_escape(server_id)
-            ));
+            );
             items_included += 1;
             // The push of this delete above is the moment the item_map row may
             // finally be removed. Deleting it any earlier (e.g. in the sweep
@@ -3656,14 +3681,15 @@ mod tests {
                     .collect();
                 let mut responses = String::new();
                 for name in names {
-                    responses.push_str(&format!(
+                    let _ = write!(
+                        responses,
                         "<D:response><D:href>{}/{}/</D:href><D:propstat><D:prop>\
 <D:resourcetype><D:collection/><C:calendar/></D:resourcetype>\
 <D:displayname>{name}</D:displayname></D:prop><D:status>HTTP/1.1 200 OK</D:status>\
 </D:propstat></D:response>",
                         uri.path().trim_end_matches('/'),
                         name
-                    ));
+                    );
                 }
                 let body = format!(
                     "<?xml version=\"1.0\" encoding=\"utf-8\"?>\
@@ -5404,14 +5430,16 @@ mod tests {
                 "<?xml version=\"1.0\" encoding=\"utf-8\"?><D:multistatus xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\">",
             );
             if let Some(data) = calendar_data {
-                body.push_str(&format!(
+                let _ = write!(
+                    body,
                     "<D:response><D:href>{HREF}</D:href><D:propstat><D:prop><D:getetag>\"e1\"</D:getetag><C:calendar-data>{data}</C:calendar-data></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>"
-                ));
+                );
             }
             for href in hrefs {
-                body.push_str(&format!(
+                let _ = write!(
+                    body,
                     "<D:response><D:href>{href}</D:href><D:propstat><D:prop><D:getetag>\"e1\"</D:getetag></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>"
-                ));
+                );
             }
             body.push_str("</D:multistatus>");
             body

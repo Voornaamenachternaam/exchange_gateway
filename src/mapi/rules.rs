@@ -36,6 +36,7 @@
 use crate::mapi::data::{PropertyTag, PropertyType, PropertyValue, TaggedPropertyValue};
 use crate::mapi::restrict::SRestriction;
 use crate::mapi::rops::{Buf, DecodeError};
+use std::fmt::Write as _;
 
 // ---- rule property tags (MS-OXORULE §2.2.1.3.1) ---------------------------
 
@@ -392,7 +393,7 @@ pub fn render_script(
             requires.sort_unstable();
             requires.dedup();
             let quoted: Vec<String> = requires.iter().map(|c| format!("\"{c}\"")).collect();
-            out.push_str(&format!("require [{}];\n", quoted.join(",")));
+            let _ = writeln!(out, "require [{}];", quoted.join(","));
         }
         for line in &body {
             out.push_str(line);

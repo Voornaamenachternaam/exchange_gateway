@@ -19,6 +19,7 @@ pub enum DistinguishedFolder {
     Journal,
 }
 
+use std::fmt::Write as _;
 use std::str::FromStr;
 
 impl DistinguishedFolder {
@@ -246,15 +247,15 @@ pub fn render_folder_hierarchy_creates(owner: &str, calendar_item_count: usize) 
     let mut creates = String::new();
     // MsgFolderRoot must come first — clients need its FolderId for GetUserConfiguration
     let root_xml = render_folder_xml(owner, DistinguishedFolder::MsgFolderRoot, 0);
-    creates.push_str(&format!("<t:Create>{}</t:Create>", root_xml));
+    let _ = write!(creates, "<t:Create>{}</t:Create>", root_xml);
     // Calendar folder with actual item count
     let cal_xml = render_folder_xml(owner, DistinguishedFolder::Calendar, calendar_item_count);
-    creates.push_str(&format!("<t:Create>{}</t:Create>", cal_xml));
+    let _ = write!(creates, "<t:Create>{}</t:Create>", cal_xml);
     // All other children
     for &f in DistinguishedFolder::root_children() {
         if f != DistinguishedFolder::Calendar {
             let xml = render_folder_xml(owner, f, 0);
-            creates.push_str(&format!("<t:Create>{}</t:Create>", xml));
+            let _ = write!(creates, "<t:Create>{}</t:Create>", xml);
         }
     }
     creates

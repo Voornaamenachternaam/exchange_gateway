@@ -12,6 +12,7 @@ use crate::util::{
     xml_escape,
 };
 use crate::wbxml::Wbxml;
+use crate::xml_fields::RequestFields;
 use anyhow::Context;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue};
@@ -705,31 +706,31 @@ fn extract_root_command(xml: &str) -> Option<String> {
 
 /// Extract the inner content of every occurrence of `<tag>...</tag>` in
 /// `xml`. Used for repeated sibling blocks such as Settings OofMessage nodes.
+///
+/// Deliberately NOT nesting-aware and NOT XML-aware: the first `</tag>` closes
+/// the block, the inner bytes are returned verbatim (lossy UTF-8), and a block
+/// with no close tag ends the scan. Callers rely on that (it is how the legacy
+/// Settings/OofMessage shape is read); `ews::extract_all_tag_blocks_checked`
+/// is the nesting-aware, whole-block variant.
+///
+/// The search is `memchr::memmem`, so the body is scanned in O(n); the
+/// `windows().position()` walk this replaced was O(n·m) per block and ran on
+/// every OofMessage/Request/SendResponse element.
 fn extract_all_tag_blocks(xml: &str, tag: &[u8]) -> Vec<String> {
-    let open = b"<"
-        .iter()
-        .chain(tag.iter())
-        .chain(b">".iter())
-        .copied()
-        .collect::<Vec<u8>>();
-    let close = b"</"
-        .iter()
-        .chain(tag.iter())
-        .chain(b">".iter())
-        .copied()
-        .collect::<Vec<u8>>();
+    let mut open = Vec::with_capacity(tag.len() + 2);
+    open.push(b'<');
+    open.extend_from_slice(tag);
+    open.push(b'>');
+    let mut close = Vec::with_capacity(tag.len() + 3);
+    close.extend_from_slice(b"</");
+    close.extend_from_slice(tag);
+    close.push(b'>');
     let mut blocks = Vec::new();
     let bytes = xml.as_bytes();
     let mut pos = 0;
-    while let Some(rel) = bytes[pos..]
-        .windows(open.len())
-        .position(|w| w == open.as_slice())
-    {
+    while let Some(rel) = memchr::memmem::find(&bytes[pos..], &open) {
         let start = pos + rel + open.len();
-        if let Some(rel_end) = bytes[start..]
-            .windows(close.len())
-            .position(|w| w == close.as_slice())
-        {
+        if let Some(rel_end) = memchr::memmem::find(&bytes[start..], &close) {
             blocks.push(String::from_utf8_lossy(&bytes[start..start + rel_end]).into_owned());
             pos = start + rel_end + close.len();
         } else {
@@ -740,46 +741,7 @@ fn extract_all_tag_blocks(xml: &str, tag: &[u8]) -> Vec<String> {
 }
 
 fn extract_first_tag_text(xml: &str, tag: &[u8]) -> Option<String> {
-    let mut reader = Reader::from_str(xml);
-    // Text is NOT trimmed per event: quick-xml emits a separate `Text` event
-    // around every character reference, so per-event trimming would delete the
-    // spaces that surround an entity (`R &amp; D` -> `R&D`). Only the finished
-    // value's boundaries are trimmed.
-    reader.config_mut().trim_text(false);
-    let mut buf = Vec::new();
-    let mut inside = false;
-    let mut value = String::new();
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) if e.name().local_name().as_ref().as_bytes() == tag => {
-                inside = true;
-                value.clear();
-            }
-            Ok(Event::Text(t)) if inside => value.push_str(t.as_ref()),
-            Ok(Event::CData(t)) if inside => value.push_str(t.as_ref()),
-            Ok(Event::GeneralRef(r)) if inside => {
-                value.push_str(&resolve_xml_reference(r.as_ref()))
-            }
-            Ok(Event::End(e)) if e.name().local_name().as_ref().as_bytes() == tag => {
-                return Some(trim_owned(value));
-            }
-            Ok(Event::Eof) | Err(_) => return None,
-            _ => {}
-        }
-        buf.clear();
-    }
-}
-
-/// Trim a `String` in place, without the extra allocation `trim().to_string()`
-/// makes on every extracted field.
-fn trim_owned(mut value: String) -> String {
-    let end = value.trim_end().len();
-    value.truncate(end);
-    let start = value.len() - value.trim_start().len();
-    if start > 0 {
-        value.drain(..start);
-    }
-    value
+    crate::xml_fields::first_tag_text(xml, tag)
 }
 
 fn extract_all_tag_text(xml: &str, tag: &[u8]) -> Vec<String> {
@@ -1301,9 +1263,12 @@ fn parse_search_request(xml: &str) -> SearchRequest {
         .unwrap_or((0, 99));
     let range_end = range_end.min(usize::MAX - 1);
     let range_start = range_start.min(range_end);
+    let fields = RequestFields::parse(xml);
     SearchRequest {
-        store_name: extract_first_tag_text(xml, b"Name").unwrap_or_else(|| "Mailbox".to_string()),
-        query_text: extract_first_tag_text(xml, b"Query").map(|v| v.trim().to_string()),
+        store_name: fields
+            .first(b"Name")
+            .unwrap_or_else(|| "Mailbox".to_string()),
+        query_text: fields.first(b"Query").map(|v| v.trim().to_string()),
         range_start,
         range_end,
         max_items,
@@ -1336,42 +1301,52 @@ fn make_request_id() -> String {
 }
 
 fn parse_device_information(xml: &str) -> DeviceInfo {
+    let fields = RequestFields::parse(xml);
     (
-        extract_first_tag_text(xml, b"FriendlyName"),
-        extract_first_tag_text(xml, b"Model"),
-        extract_first_tag_text(xml, b"OS"),
-        extract_first_tag_text(xml, b"PhoneNumber"),
-        extract_first_tag_text(xml, b"IMEI"),
-        extract_first_tag_text(xml, b"UserAgent"),
+        fields.first(b"FriendlyName"),
+        fields.first(b"Model"),
+        fields.first(b"OS"),
+        fields.first(b"PhoneNumber"),
+        fields.first(b"IMEI"),
+        fields.first(b"UserAgent"),
     )
 }
 
 fn parse_request(query: &HashMap<String, String>, xml: &str, headers: &HeaderMap) -> EasRequest {
+    // ONE index for every field this function reads: the per-tag helper
+    // restarted at the top of the document for each one, so an absent field
+    // (SyncKey on a SendMail, say) tokenised the whole body — including a
+    // 40 MiB `MIMEData` — once per lookup.
+    let fields = RequestFields::parse(xml);
     // MS-ASCMD §2.2.3.199: the server interprets the value 0 (zero) and
     // values above 512 as 512. This path only feeds the legacy
     // single-collection fallback, where the request's WindowSize is the
     // collection's own window.
-    let window_size = extract_first_tag_text(xml, b"WindowSize")
+    let window_size = fields
+        .first(b"WindowSize")
         .and_then(|v| v.parse::<usize>().ok())
         .map(|v| if v == 0 || v > 512 { 512 } else { v });
-    let get_changes = extract_first_tag_text(xml, b"GetChanges")
+    let get_changes = fields
+        .first(b"GetChanges")
         .map(|v| v.trim() != "0")
         .unwrap_or(true);
-    let filter_type = extract_first_tag_text(xml, b"FilterType").and_then(|v| v.parse::<u8>().ok());
+    let filter_type = fields
+        .first(b"FilterType")
+        .and_then(|v| v.parse::<u8>().ok());
 
     let policy_key = headers
         .get("X-MS-PolicyKey")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string())
-        .or_else(|| extract_first_tag_text(xml, b"PolicyKey"));
+        .or_else(|| fields.first(b"PolicyKey"));
 
     EasRequest {
         command: extract_root_command(xml)
             .or_else(|| command_from_query(query))
             .unwrap_or_default(),
-        sync_key: extract_first_tag_text(xml, b"SyncKey"),
-        class: extract_first_tag_text(xml, b"Class"),
-        collection_id: extract_first_tag_text(xml, b"CollectionId"),
+        sync_key: fields.first(b"SyncKey"),
+        class: fields.first(b"Class"),
+        collection_id: fields.first(b"CollectionId"),
         device_id: value_from_query(query, "DeviceId"),
         policy_key,
         window_size,
@@ -2060,13 +2035,14 @@ fn render_user_folders_add(folders: &[crate::storage::FolderRow]) -> String {
     for row in folders {
         let (server_id, parent_id, display_name, folder_type) =
             crate::eas_folders::folder_wire_tuple(row);
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<Add><ServerId>{}</ServerId><ParentId>{}</ParentId><DisplayName>{}</DisplayName><Type>{}</Type></Add>",
             xml_escape(&server_id),
             xml_escape(&parent_id),
             xml_escape(&display_name),
             folder_type,
-        ));
+        );
     }
     xml
 }
@@ -2139,20 +2115,22 @@ async fn render_folder_hierarchy_changes(
         let op = latest.get(server_id).map(String::as_str).unwrap_or("");
         match op {
             "folder-delete" => {
-                deletes.push_str(&format!(
+                let _ = write!(
+                    deletes,
                     "<Delete><ServerId>{}</ServerId></Delete>",
                     xml_escape(server_id)
-                ));
+                );
                 count += 1;
             }
             "folder-add" | "folder-update" => {
                 let Some(row) = by_id.get(server_id.as_str()) else {
                     // The folder vanished before this delta was built; report a
                     // delete rather than a stale add.
-                    deletes.push_str(&format!(
+                    let _ = write!(
+                        deletes,
                         "<Delete><ServerId>{}</ServerId></Delete>",
                         xml_escape(server_id)
-                    ));
+                    );
                     count += 1;
                     continue;
                 };
@@ -2169,13 +2147,14 @@ async fn render_folder_hierarchy_changes(
                 } else {
                     "Update"
                 };
-                target.push_str(&format!(
+                let _ = write!(
+                    target,
                     "<{tag}><ServerId>{}</ServerId><ParentId>{}</ParentId><DisplayName>{}</DisplayName><Type>{}</Type></{tag}>",
                     xml_escape(&row.server_id),
                     xml_escape(&row.parent_id),
                     xml_escape(&row.display_name),
                     row.folder_type,
-                ));
+                );
                 count += 1;
             }
             _ => {}
@@ -3363,7 +3342,8 @@ async fn handle_settings(
             .into_iter()
             .map(|email| format!("<SMTPAddress>{}</SMTPAddress>", xml_escape(&email)))
             .collect::<String>();
-        sections.push_str(&format!(
+        let _ = write!(
+            sections,
             r#"<UserInformation>
     <Status>1</Status>
     <Get>
@@ -3383,7 +3363,7 @@ async fn handle_settings(
             xml_escape(&primary_email),
             smtp_addresses,
             xml_escape(&primary_email)
-        ));
+        );
     }
     if has_oof {
         // Query OOF settings for this user. The Oof Get response carries
@@ -4377,10 +4357,11 @@ async fn handle_item_operations(ctx: &ItemOperationsCtx<'_>) -> Response {
                     } else {
                         ""
                     };
-                    responses.push_str(&format!(
+                    let _ = write!(
+                        responses,
                         "<Fetch><Status>{}</Status>{}{}{}</Fetch>",
                         status, address_xml, class_xml, properties
-                    ));
+                    );
                 }
                 Err(status) => {
                     responses.push_str(&item_operations_fetch_error_xml(&address_xml, status));
@@ -4450,10 +4431,11 @@ async fn handle_item_operations(ctx: &ItemOperationsCtx<'_>) -> Response {
             } else {
                 properties
             };
-            responses.push_str(&format!(
+            let _ = write!(
+                responses,
                 "<Fetch><Status>1</Status>{}<AirSync:Class>Email</AirSync:Class><Properties>{}</Properties></Fetch>",
                 address_xml, properties
-            ));
+            );
             continue;
         }
 
@@ -4569,10 +4551,11 @@ async fn handle_item_operations(ctx: &ItemOperationsCtx<'_>) -> Response {
             let summaries: Vec<_> = att_list.iter().map(|a| a.to_eas_summary()).collect();
             app_data.push_str(&crate::attachment::render_eas_attachments_xml(&summaries));
         }
-        responses.push_str(&format!(
+        let _ = write!(
+            responses,
             "<Fetch><Status>1</Status>{}<AirSync:Class>Calendar</AirSync:Class><Properties>{}</Properties></Fetch>",
             address_xml, app_data
-        ));
+        );
     }
     let response = format!(
         r#"<?xml version="1.0" encoding="utf-8"?><ItemOperations xmlns="ItemOperations:" xmlns:AirSync="AirSync:" xmlns:Search="Search:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Status>1</Status><Response>{}</Response></ItemOperations>"#,
@@ -4691,11 +4674,12 @@ async fn handle_move_items(
             // 2 = invalid destination collection ID. A malformed request is
             // item-scoped, not "the source and destination are the same" (4).
             overall_status = if src_msg_id.is_empty() { 1 } else { 2 };
-            responses.push_str(&format!(
+            let _ = write!(
+                responses,
                 r#"<Response><SrcMsgId>{}</SrcMsgId><Status>{}</Status></Response>"#,
                 xml_escape(&src_msg_id),
                 overall_status
-            ));
+            );
             continue;
         }
 
@@ -4706,11 +4690,12 @@ async fn handle_move_items(
         if is_email {
             if !state.email_available() {
                 overall_status = 5; // ErrorInvalidRequest?
-                responses.push_str(&format!(
+                let _ = write!(
+                    responses,
                     r#"<Response><SrcMsgId>{}</SrcMsgId><Status>{}</Status></Response>"#,
                     xml_escape(&src_msg_id),
                     overall_status
-                ));
+                );
                 continue;
             }
 
@@ -4732,10 +4717,11 @@ async fn handle_move_items(
                     // Outbox is not a real mailbox: an invalid destination
                     // collection ID is status 2, not 4 ("source and destination
                     // are the same").
-                    responses.push_str(&format!(
+                    let _ = write!(
+                        responses,
                         r#"<Response><SrcMsgId>{}</SrcMsgId><Status>2</Status></Response>"#,
                         xml_escape(&src_msg_id)
-                    ));
+                    );
                     continue;
                 }
                 "12" => MoveDest::Role("junk"),
@@ -4763,10 +4749,11 @@ async fn handle_move_items(
                                     // The destination folder exists but has no
                                     // JMAP mapping: the item is not movable to
                                     // it under this collection.
-                                    responses.push_str(&format!(
+                                    let _ = write!(
+                                        responses,
                                         r#"<Response><SrcMsgId>{}</SrcMsgId><Status>2</Status></Response>"#,
                                         xml_escape(&src_msg_id)
-                                    ));
+                                    );
                                     continue;
                                 }
                                 Err(e) => {
@@ -4775,10 +4762,11 @@ async fn handle_move_items(
                                         dst_fld_id = %dst_fld_id,
                                         "MoveItems: folder_map lookup failed for the destination"
                                     );
-                                    responses.push_str(&format!(
+                                    let _ = write!(
+                                        responses,
                                         r#"<Response><SrcMsgId>{}</SrcMsgId><Status>7</Status></Response>"#,
                                         xml_escape(&src_msg_id)
-                                    ));
+                                    );
                                     continue;
                                 }
                             }
@@ -4790,10 +4778,11 @@ async fn handle_move_items(
             // Get JMAP client and account ID. Both failures are transient
             // server conditions: status 7 ("Retry the MoveItems command").
             let Some(jmap) = state.jmap_client.as_ref() else {
-                responses.push_str(&format!(
+                let _ = write!(
+                    responses,
                     r#"<Response><SrcMsgId>{}</SrcMsgId><Status>7</Status></Response>"#,
                     xml_escape(&src_msg_id)
-                ));
+                );
                 continue;
             };
 
@@ -4801,10 +4790,11 @@ async fn handle_move_items(
                 Ok(id) => id,
                 Err(e) => {
                     tracing::error!(error = %e, "MoveItems: failed to get JMAP account ID");
-                    responses.push_str(&format!(
+                    let _ = write!(
+                        responses,
                         r#"<Response><SrcMsgId>{}</SrcMsgId><Status>7</Status></Response>"#,
                         xml_escape(&src_msg_id)
-                    ));
+                    );
                     continue;
                 }
             };
@@ -4823,10 +4813,11 @@ async fn handle_move_items(
             // instead of removing exactly the named source, so the request is
             // rejected before anything is touched (status 5, invalid request).
             let Some(src_folder_id) = src_fld_id.as_deref().filter(|s| !s.is_empty()) else {
-                responses.push_str(&format!(
+                let _ = write!(
+                    responses,
                     r#"<Response><SrcMsgId>{}</SrcMsgId><Status>5</Status></Response>"#,
                     xml_escape(&src_msg_id)
-                ));
+                );
                 continue;
             };
             let source_mailbox: Option<String> = match eas_mail_collection_mailbox_id(
@@ -4841,10 +4832,11 @@ async fn handle_move_items(
             {
                 Ok(Some(mb)) => Some(mb),
                 Ok(None) => {
-                    responses.push_str(&format!(
+                    let _ = write!(
+                        responses,
                         r#"<Response><SrcMsgId>{}</SrcMsgId><Status>1</Status></Response>"#,
                         xml_escape(&src_msg_id)
-                    ));
+                    );
                     continue;
                 }
                 Err(e) => {
@@ -4853,10 +4845,11 @@ async fn handle_move_items(
                         src_fld_id = %src_folder_id,
                         "MoveItems: source collection resolution failed"
                     );
-                    responses.push_str(&format!(
+                    let _ = write!(
+                        responses,
                         r#"<Response><SrcMsgId>{}</SrcMsgId><Status>7</Status></Response>"#,
                         xml_escape(&src_msg_id)
-                    ));
+                    );
                     continue;
                 }
             };
@@ -4880,10 +4873,11 @@ async fn handle_move_items(
                         Ok(ids) => match ids.into_iter().next() {
                             Some(id) => Some(id),
                             None => {
-                                responses.push_str(&format!(
+                                let _ = write!(
+                                    responses,
                                     r#"<Response><SrcMsgId>{}</SrcMsgId><Status>2</Status></Response>"#,
                                     xml_escape(&src_msg_id)
-                                ));
+                                );
                                 continue;
                             }
                         },
@@ -4893,10 +4887,11 @@ async fn handle_move_items(
                                 role = %role,
                                 "MoveItems: destination role resolution failed"
                             );
-                            responses.push_str(&format!(
+                            let _ = write!(
+                                responses,
                                 r#"<Response><SrcMsgId>{}</SrcMsgId><Status>7</Status></Response>"#,
                                 xml_escape(&src_msg_id)
-                            ));
+                            );
                             continue;
                         }
                     }
@@ -4906,19 +4901,21 @@ async fn handle_move_items(
                 (source_mailbox.as_deref(), dest_mailbox.as_deref())
                 && src_mb == dst_mb
             {
-                responses.push_str(&format!(
+                let _ = write!(
+                    responses,
                     r#"<Response><SrcMsgId>{}</SrcMsgId><Status>4</Status></Response>"#,
                     xml_escape(&src_msg_id)
-                ));
+                );
                 continue;
             }
 
             if let Some(src_mb) = source_mailbox.as_deref() {
                 let Some(jmap_id) = crate::email::jmap_id_from_email_server_id(&src_msg_id) else {
-                    responses.push_str(&format!(
+                    let _ = write!(
+                        responses,
                         r#"<Response><SrcMsgId>{}</SrcMsgId><Status>1</Status></Response>"#,
                         xml_escape(&src_msg_id)
-                    ));
+                    );
                     continue;
                 };
                 match jmap
@@ -4930,10 +4927,11 @@ async fn handle_move_items(
                         crate::jmap::EmailMailboxMembership::NotMember
                         | crate::jmap::EmailMailboxMembership::Absent,
                     ) => {
-                        responses.push_str(&format!(
+                        let _ = write!(
+                            responses,
                             r#"<Response><SrcMsgId>{}</SrcMsgId><Status>1</Status></Response>"#,
                             xml_escape(&src_msg_id)
-                        ));
+                        );
                         continue;
                     }
                     Err(e) => {
@@ -4942,10 +4940,11 @@ async fn handle_move_items(
                             src_msg_id = %src_msg_id,
                             "MoveItems: source membership check failed"
                         );
-                        responses.push_str(&format!(
+                        let _ = write!(
+                            responses,
                             r#"<Response><SrcMsgId>{}</SrcMsgId><Status>7</Status></Response>"#,
                             xml_escape(&src_msg_id)
-                        ));
+                        );
                         continue;
                     }
                 }
@@ -4987,21 +4986,23 @@ async fn handle_move_items(
                     // Status 3 = success ([MS-ASCMD] §2.2.3.177.8); Status 1
                     // means invalid source folder. Return Status 3 and
                     // preserve DstMsgId.
-                    responses.push_str(&format!(
+                    let _ = write!(
+                        responses,
                         r#"<Response><SrcMsgId>{}</SrcMsgId><Status>3</Status><DstMsgId>{}</DstMsgId></Response>"#,
                         xml_escape(&src_msg_id),
                         xml_escape(&src_msg_id) // DstMsgId equals moved item id
-                    ));
+                    );
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "MoveItems email move failed");
                     // [MS-ASCMD] §2.2.3.177.10 status 7: a transient server
                     // condition ("Retry the MoveItems command"). 8 is not a
                     // MoveItems status at all.
-                    responses.push_str(&format!(
+                    let _ = write!(
+                        responses,
                         r#"<Response><SrcMsgId>{}</SrcMsgId><Status>7</Status></Response>"#,
                         xml_escape(&src_msg_id)
-                    ));
+                    );
                 }
             }
         } else {
@@ -5030,10 +5031,11 @@ async fn handle_move_items(
             } else {
                 1
             };
-            responses.push_str(&format!(
+            let _ = write!(
+                responses,
                 r#"<Response><SrcMsgId>{}</SrcMsgId><Status>{status}</Status></Response>"#,
                 xml_escape(&src_msg_id)
-            ));
+            );
         }
     }
 
@@ -5304,6 +5306,7 @@ async fn handle_resolve_recipients(
     as_wbxml: bool,
     request_id: &str,
 ) -> Response {
+    let fields = RequestFields::parse(xml);
     let recipients = {
         let parsed = extract_all_tag_text(xml, b"To")
             .into_iter()
@@ -5320,10 +5323,7 @@ async fn handle_resolve_recipients(
     // block; MaxAmbiguousRecipients (§2.2.3.100) bounds the suggestions
     // list. All are optional; CertificateRetrieval defaults to 1
     // ("do not retrieve certificates").
-    let certificate_retrieval: Option<u32> = match extract_first_tag_text(
-        xml,
-        b"CertificateRetrieval",
-    ) {
+    let certificate_retrieval: Option<u32> = match fields.first(b"CertificateRetrieval") {
         Some(v) => match v.trim().parse::<u32>() {
             Ok(n @ 1..=3) => Some(n),
             _ => {
@@ -5339,7 +5339,7 @@ async fn handle_resolve_recipients(
         },
         None => Some(1),
     };
-    let max_certificates: Option<u32> = match extract_first_tag_text(xml, b"MaxCertificates") {
+    let max_certificates: Option<u32> = match fields.first(b"MaxCertificates") {
         Some(v) => match v.trim().parse::<u32>() {
             // MS-ASCMD §2.2.3.101: value is limited to 0-9999.
             Ok(n) if n <= 9999 => Some(n),
@@ -5354,7 +5354,7 @@ async fn handle_resolve_recipients(
         },
         None => None,
     };
-    let max_ambiguous: u32 = match extract_first_tag_text(xml, b"MaxAmbiguousRecipients") {
+    let max_ambiguous: u32 = match fields.first(b"MaxAmbiguousRecipients") {
         Some(v) => match v.trim().parse::<u32>() {
             // MS-ASCMD §2.2.3.100: value is limited to 0-9999.
             Ok(n) if n <= 9999 => n,
@@ -5372,16 +5372,15 @@ async fn handle_resolve_recipients(
 
     let availability_requested = xml.contains("<Availability>");
     let availability_window = if availability_requested {
-        let Some(start) =
-            extract_first_tag_text(xml, b"StartTime").and_then(|v| parse_datetime(&v))
-        else {
+        let Some(start) = fields.first(b"StartTime").and_then(|v| parse_datetime(&v)) else {
             return bad_request_response(
                 request_id,
                 "ResolveRecipients Availability requires StartTime",
             );
         };
         let end = {
-            let pe = extract_first_tag_text(xml, b"EndTime")
+            let pe = fields
+                .first(b"EndTime")
                 .and_then(|v| parse_datetime(&v))
                 .unwrap_or_else(|| start + ChronoDuration::days(7));
             let max_end = start + ChronoDuration::days(MAX_FREEBUSY_DAYS);
@@ -5520,38 +5519,42 @@ async fn handle_resolve_recipients(
                     );
                     use base64::Engine;
                     for cert in &certs {
-                        block.push_str(&format!(
+                        let _ = write!(
+                            block,
                             "<Certificate>{}</Certificate>",
                             base64::engine::general_purpose::STANDARD.encode(&cert.cert_der)
-                        ));
+                        );
                     }
                     block.push_str("</Certificates>");
                     block
                 };
             }
 
-            recipient_xml.push_str(&format!(
+            let _ = write!(
+                recipient_xml,
                 "<Recipient><Type>1</Type><DisplayName>{}</DisplayName><EmailAddress>{}</EmailAddress>{}{}</Recipient>",
                 xml_escape(display_name),
                 xml_escape(email),
                 avail_xml,
                 certificates_xml
-            ));
+            );
         }
-        responses_xml.push_str(&format!(
+        let _ = write!(
+            responses_xml,
             "<Response><To>{}</To><Status>{}</Status><RecipientCount>{}</RecipientCount>{}</Response>",
             xml_escape(&requested),
             response_status,
             matches.len(),
             recipient_xml
-        ));
+        );
     }
     if recipients.is_empty() {
         let claimed = username.to_string();
-        responses_xml.push_str(&format!(
+        let _ = write!(
+            responses_xml,
             "<Response><To>{}</To><Status>1</Status><RecipientCount>0</RecipientCount></Response>",
             xml_escape(&claimed)
-        ));
+        );
     }
     let response = format!(
         r#"<?xml version="1.0" encoding="utf-8"?><ResolveRecipients xmlns="ResolveRecipients:"><Status>1</Status>{}</ResolveRecipients>"#,
@@ -5766,12 +5769,15 @@ async fn handle_folder_create(ctx: &FolderCmdCtx<'_>) -> Response {
         as_wbxml,
         request_id,
     } = *ctx;
+    // ONE index for the whole command: SyncKey, ServerId, ParentId,
+    // DisplayName and Type all live in the same (small) request body.
+    let fields = RequestFields::parse(xml);
     // [MS-ASCMD] §2.2.3.181.1: validate the supplied SyncKey against this
     // device's stored hierarchy key BEFORE any mutation. A mismatch answers a
     // bare Status 9 (no `SyncKey` element on a failed command), so an obsolete
     // key can never create a folder or rotate the device's current key. An
     // unreadable stored key is a retryable Status 6, never a mismatch.
-    let supplied_key = extract_first_tag_text(xml, b"SyncKey").unwrap_or_default();
+    let supplied_key = fields.first(b"SyncKey").unwrap_or_default();
     match crate::eas_folders::folder_sync_key_matches(state, owner, device_id, &supplied_key).await
     {
         crate::eas_folders::FolderSyncKeyVerdict::Match => {}
@@ -5784,29 +5790,33 @@ async fn handle_folder_create(ctx: &FolderCmdCtx<'_>) -> Response {
             return wbxml_response(&body, as_wbxml, wbxml, request_id);
         }
     }
-    let parent_id = extract_first_tag_text(xml, b"ParentId")
+    let parent_id = fields
+        .first(b"ParentId")
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
-    let display_name = extract_first_tag_text(xml, b"DisplayName")
+    let display_name = fields
+        .first(b"DisplayName")
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
     // `<Type>` is a required child ([MS-ASCMD] §2.2.3.186.2). A missing or
     // non-numeric value is a malformed request (Status 10), NOT an invitation
     // to default to a mail folder — defaulting would create a mailbox the
     // client never asked for.
-    let folder_type =
-        match extract_first_tag_text(xml, b"Type").and_then(|s| s.trim().parse::<i64>().ok()) {
-            Some(t) => t,
-            None => {
-                let sync_key =
-                    crate::eas_folders::current_hierarchy_sync_key(state, owner, device_id).await;
-                let body = crate::eas_folders::render_create_response(
-                    &crate::eas_folders::FolderMutationResult::status(10),
-                    &sync_key,
-                );
-                return wbxml_response(&body, as_wbxml, wbxml, request_id);
-            }
-        };
+    let folder_type = match fields
+        .first(b"Type")
+        .and_then(|s| s.trim().parse::<i64>().ok())
+    {
+        Some(t) => t,
+        None => {
+            let sync_key =
+                crate::eas_folders::current_hierarchy_sync_key(state, owner, device_id).await;
+            let body = crate::eas_folders::render_create_response(
+                &crate::eas_folders::FolderMutationResult::status(10),
+                &sync_key,
+            );
+            return wbxml_response(&body, as_wbxml, wbxml, request_id);
+        }
+    };
     let result = crate::eas_folders::create_folder(
         state,
         owner,
@@ -5839,11 +5849,14 @@ async fn handle_folder_delete(ctx: &FolderCmdCtx<'_>) -> Response {
         as_wbxml,
         request_id,
     } = *ctx;
+    // ONE index for the whole command: SyncKey, ServerId, ParentId,
+    // DisplayName and Type all live in the same (small) request body.
+    let fields = RequestFields::parse(xml);
     // [MS-ASCMD] §2.2.3.181.1: validate the SyncKey before deleting. A mismatch
     // answers a bare Status 9 (no `SyncKey` on a failed command); an obsolete
     // key must never delete a folder. An unreadable stored key is a retryable
     // Status 6, never a mismatch.
-    let supplied_key = extract_first_tag_text(xml, b"SyncKey").unwrap_or_default();
+    let supplied_key = fields.first(b"SyncKey").unwrap_or_default();
     match crate::eas_folders::folder_sync_key_matches(state, owner, device_id, &supplied_key).await
     {
         crate::eas_folders::FolderSyncKeyVerdict::Match => {}
@@ -5856,7 +5869,8 @@ async fn handle_folder_delete(ctx: &FolderCmdCtx<'_>) -> Response {
             return wbxml_response(&body, as_wbxml, wbxml, request_id);
         }
     }
-    let server_id = extract_first_tag_text(xml, b"ServerId")
+    let server_id = fields
+        .first(b"ServerId")
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
     let result = crate::eas_folders::delete_folder(state, owner, password, &server_id).await;
@@ -5882,11 +5896,14 @@ async fn handle_folder_update(ctx: &FolderCmdCtx<'_>) -> Response {
         as_wbxml,
         request_id,
     } = *ctx;
+    // ONE index for the whole command: SyncKey, ServerId, ParentId,
+    // DisplayName and Type all live in the same (small) request body.
+    let fields = RequestFields::parse(xml);
     // [MS-ASCMD] §2.2.3.181.1: validate the SyncKey before updating. A mismatch
     // answers a bare Status 9 (no `SyncKey` on a failed command); an obsolete
     // key must never rename/move a folder. An unreadable stored key is a
     // retryable Status 6, never a mismatch.
-    let supplied_key = extract_first_tag_text(xml, b"SyncKey").unwrap_or_default();
+    let supplied_key = fields.first(b"SyncKey").unwrap_or_default();
     match crate::eas_folders::folder_sync_key_matches(state, owner, device_id, &supplied_key).await
     {
         crate::eas_folders::FolderSyncKeyVerdict::Match => {}
@@ -5899,17 +5916,20 @@ async fn handle_folder_update(ctx: &FolderCmdCtx<'_>) -> Response {
             return wbxml_response(&body, as_wbxml, wbxml, request_id);
         }
     }
-    let server_id = extract_first_tag_text(xml, b"ServerId")
+    let server_id = fields
+        .first(b"ServerId")
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
     // [MS-ASCMD] §6.16 (FolderUpdateRequest.xsd) requires BOTH `ParentId` and
     // `DisplayName` (minLength 1). A request missing either carries no update
     // intent, so it is answered with Status 10 ("Incorrectly formatted request")
     // rather than being silently turned into a no-op that reports success.
-    let parent_id = extract_first_tag_text(xml, b"ParentId")
+    let parent_id = fields
+        .first(b"ParentId")
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
-    let display_name = extract_first_tag_text(xml, b"DisplayName")
+    let display_name = fields
+        .first(b"DisplayName")
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
     let (Some(parent_id), Some(display_name)) = (parent_id, display_name) else {
@@ -5975,9 +5995,10 @@ async fn handle_get_hierarchy(ctx: &FolderCmdCtx<'_>) -> Response {
         ("6", "0", "Outbox", 6),
         ("12", "0", "Junk Email", 1),
     ] {
-        folders.push_str(&format!(
+        let _ = write!(
+            folders,
             "<Folder><DisplayName>{display_name}</DisplayName><ServerId>{id}</ServerId><Type>{folder_type}</Type><ParentId>{parent_id}</ParentId></Folder>"
-        ));
+        );
     }
     // User-created folders persisted by FolderCreate ([MS-ASCMD] §2.2.1.3).
     // A read failure must NOT be answered with a hierarchy that silently omits
@@ -6007,13 +6028,14 @@ async fn handle_get_hierarchy(ctx: &FolderCmdCtx<'_>) -> Response {
             continue;
         }
         let get_hierarchy_type: i64 = 1;
-        folders.push_str(&format!(
+        let _ = write!(
+            folders,
             "<Folder><DisplayName>{}</DisplayName><ServerId>{}</ServerId><Type>{}</Type><ParentId>{}</ParentId></Folder>",
             xml_escape(&row.display_name),
             xml_escape(&row.server_id),
             get_hierarchy_type,
             xml_escape(&row.parent_id),
-        ));
+        );
     }
     // [MS-ASCMD] §2.2.1.8/§6.19: `<Folders>` is the top-level element (there is
     // no `GetHierarchy` response root), with bare `<Folder>` children.
@@ -6173,13 +6195,17 @@ async fn handle_find(
 /// Convert a Find request body into the SearchRequest the GAL path
 /// consumes (query text + window), so the GAL dispatch is shared.
 fn find_as_search_request(xml: &str) -> SearchRequest {
-    let query = extract_first_tag_text(xml, b"Query")
+    let fields = RequestFields::parse(xml);
+    let query = fields
+        .first(b"Query")
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
-    let range_start = extract_first_tag_text(xml, b"RowStart")
+    let range_start = fields
+        .first(b"RowStart")
         .and_then(|s| s.trim().parse::<usize>().ok())
         .unwrap_or(0);
-    let range_end = extract_first_tag_text(xml, b"NumRows")
+    let range_end = fields
+        .first(b"NumRows")
         .and_then(|s| s.trim().parse::<usize>().ok())
         .map(|n| range_start + n.saturating_sub(1))
         .unwrap_or(usize::MAX);
@@ -6203,13 +6229,17 @@ async fn handle_find_mailbox(
     as_wbxml: bool,
     request_id: &str,
 ) -> Response {
-    let query = extract_first_tag_text(xml, b"Query")
+    let fields = RequestFields::parse(xml);
+    let query = fields
+        .first(b"Query")
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
-    let range_start = extract_first_tag_text(xml, b"RowStart")
+    let range_start = fields
+        .first(b"RowStart")
         .and_then(|s| s.trim().parse::<usize>().ok())
         .unwrap_or(0);
-    let range_end = extract_first_tag_text(xml, b"NumRows")
+    let range_end = fields
+        .first(b"NumRows")
         .and_then(|s| s.trim().parse::<usize>().ok())
         .map(|n| range_start + n.saturating_sub(1))
         .unwrap_or(usize::MAX);
@@ -6287,9 +6317,10 @@ async fn handle_find_mailbox(
         }
         let subject = xml_escape(&subject);
         let from = xml_escape(&from);
-        results.push_str(&format!(
+        let _ = write!(
+            results,
             "<Result><airsync:Class>Email</airsync:Class><airsync:CollectionId>2</airsync:CollectionId><email:DisplayName>{from}</email:DisplayName><email:Subject>{subject}</email:Subject><email:EmailAddress>{from}</email:EmailAddress></Result>"
-        ));
+        );
         shown += 1;
     }
     let _ = total;
@@ -8029,10 +8060,11 @@ async fn handle_local_content_sync(ctx: &LocalContentSyncCtx<'_>) -> String {
                 break;
             }
             if op == "delete" {
-                commands_xml.push_str(&format!(
+                let _ = write!(
+                    commands_xml,
                     "<Delete><ServerId>{}</ServerId></Delete>",
                     xml_escape(server_id)
-                ));
+                );
                 items_included += 1;
             } else {
                 let add = match kind {
@@ -9786,10 +9818,11 @@ async fn handle_email_initial_sync(
             conversation_mode,
             true,
         );
-        commands_xml.push_str(&format!(
+        let _ = write!(
+            commands_xml,
             "<Add><ServerId>{}</ServerId><ApplicationData>{}</ApplicationData></Add>",
             server_id, app_data,
-        ));
+        );
     }
 
     tracing::info!(
@@ -10486,7 +10519,11 @@ pub async fn handle(
         }
     }
     let wbxml = Wbxml::new();
-    let payload = body.to_vec();
+    // `Bytes` is already a cheap refcounted handle and `Wbxml::decode` takes a
+    // slice, so the body is borrowed, not copied: this used to memcpy up to
+    // `MAX_BODY_SIZE` (40 MiB) on EVERY EAS request, for a buffer that is only
+    // ever read.
+    let payload: &[u8] = body.as_ref();
     let wants_wbxml = headers
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
@@ -10504,7 +10541,7 @@ pub async fn handle(
     let xml = if payload.is_empty() {
         String::new()
     } else {
-        match wbxml.decode(&payload) {
+        match wbxml.decode(payload) {
             Ok(s) => s,
             Err(e) => return bad_request_response(&request_id, &format!("Invalid body: {}", e)),
         }
@@ -10828,6 +10865,53 @@ mod tests {
             extract_first_tag_text(multiline, b"Body").as_deref(),
             Some("line one\n  line two")
         );
+    }
+
+    /// C6: `extract_all_tag_blocks` keeps its exact (non-nesting-aware,
+    /// inner-text, lossy-UTF-8) semantics after the `memchr::memmem` rewrite.
+    #[test]
+    fn extract_all_tag_blocks_keeps_inner_text_and_first_close() {
+        // Inner text only, one entry per block, in document order.
+        let xml = "<OofMessage><Enabled>1</Enabled></OofMessage>\
+                   <OofMessage><Enabled>0</Enabled></OofMessage>";
+        assert_eq!(
+            extract_all_tag_blocks(xml, b"OofMessage"),
+            vec![
+                "<Enabled>1</Enabled>".to_string(),
+                "<Enabled>0</Enabled>".to_string()
+            ]
+        );
+        // NOT nesting-aware: the first `</R>` closes the block, so the nested
+        // open tag is part of the returned text.
+        let nested = "<R><R>x</R>y</R>";
+        assert_eq!(
+            extract_all_tag_blocks(nested, b"R"),
+            vec!["<R>x".to_string()]
+        );
+        // A block with no close tag ends the scan; earlier blocks survive.
+        let unclosed = "<R>a</R><R>b";
+        assert_eq!(
+            extract_all_tag_blocks(unclosed, b"R"),
+            vec!["a".to_string()]
+        );
+        // Verbatim bytes, entities NOT resolved (unlike the text helpers).
+        assert_eq!(
+            extract_all_tag_blocks("<R>a &amp; b</R>", b"R"),
+            vec!["a &amp; b".to_string()]
+        );
+        // Invalid UTF-8 is replaced, not dropped.
+        assert_eq!(
+            extract_all_tag_blocks("<R>\u{FFFD}</R>", b"R"),
+            vec!["\u{FFFD}".to_string()]
+        );
+        assert!(extract_all_tag_blocks("<R/>", b"R").is_empty());
+        assert!(extract_all_tag_blocks("", b"R").is_empty());
+        // A long body with many blocks: every block is found, in order.
+        let body: String = (0..200).map(|i| format!("<R>{i}</R>")).collect();
+        let blocks = extract_all_tag_blocks(&body, b"R");
+        assert_eq!(blocks.len(), 200);
+        assert_eq!(blocks[0], "0");
+        assert_eq!(blocks[199], "199");
     }
 
     #[test]
