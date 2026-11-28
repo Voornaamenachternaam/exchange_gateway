@@ -9,6 +9,7 @@
 // UIDs (UID). Unknown properties are preserved verbatim so a round-trip
 // through the gateway never silently drops data.
 use anyhow::Result;
+use std::fmt::Write as _;
 
 /// A vCard with a list of properties.
 #[derive(Debug, Clone, Default)]
@@ -167,10 +168,8 @@ impl Email {
 }
 
 /// Well-known TYPE labels used by the EAS/JSCard mappings.
-#[allow(dead_code)]
 pub struct Type;
 
-#[allow(dead_code)]
 impl Type {
     pub const WORK: &'static str = "work";
     pub const HOME: &'static str = "home";
@@ -440,10 +439,10 @@ fn params_to_string(params: &[Parameter]) -> String {
     }
     let mut out = String::new();
     for t in parts {
-        out.push_str(&format!(";TYPE={}", t));
+        let _ = write!(out, ";TYPE={}", t);
     }
     if let Some(n) = pref {
-        out.push_str(&format!(";PREF={}", n));
+        let _ = write!(out, ";PREF={}", n);
     }
     out
 }

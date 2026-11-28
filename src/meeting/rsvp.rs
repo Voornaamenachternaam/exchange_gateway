@@ -345,8 +345,8 @@ async fn read_calendar_row_ics(
             })?;
         Ok((ics, Some(returned_etag)))
     } else {
-        let caldav = crate::caldav::CaldavClient::new(&state.cfg).map_err(|e| {
-            tracing::error!(target: "meeting", error = %e, "RSVP: CalDAV client init failed");
+        let caldav = state.caldav().map_err(|e| {
+            tracing::error!(target: "meeting", error = %e, "RSVP: CalDAV client unavailable");
             ResolveFailure::ServerError
         })?;
         let (ics, returned_etag) = caldav
@@ -1086,7 +1086,9 @@ async fn write_existing_copy(
             )
             .await?;
     } else {
-        let caldav = crate::caldav::CaldavClient::new(&state.cfg)?;
+        let caldav = state
+            .caldav()
+            .map_err(|e| anyhow!("CalDAV client unavailable: {e}"))?;
         let (resource_href, etag) = caldav
             .put_event(
                 "",
@@ -1161,7 +1163,9 @@ async fn create_attendee_copy(
     }
 
     // CalDAV fallback / primary.
-    let caldav = crate::caldav::CaldavClient::new(&state.cfg)?;
+    let caldav = state
+        .caldav()
+        .map_err(|e| anyhow!("CalDAV client unavailable: {e}"))?;
     let calendars = caldav
         .find_user_calendars(username, password.expose_secret())
         .await?;

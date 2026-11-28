@@ -440,17 +440,19 @@ fn extract_email_from_v1_xml(body: &str) -> Option<String> {
 }
 
 fn extract_email_from_soap(body: &str) -> Option<String> {
-    for (open, close) in [
-        ("<EMailAddress>", "</EMailAddress>"),
-        ("<a:EMailAddress>", "</a:EMailAddress>"),
-        ("<Mailbox>", "</Mailbox>"),
-    ] {
-        if let Some(end) = body.find(open).and_then(|i| {
-            let start = i + open.len();
-            body[start..].find(close).map(|j| start + j)
-        }) {
-            let start = body.find(open).map(|i| i + open.len()).unwrap_or(0);
-            let email = nfc(body[start..end].trim());
+    // Match on the LOCAL name: [MS-OXWSADISC] §2.2.1.1 puts both the Outlook
+    // `EMailAddress` and the SOAP `Mailbox` elements in the Autodiscover
+    // namespace, so clients send them prefixed (`<a:Mailbox>`); a literal tag
+    // scan would silently drop the address and answer an empty
+    // `AutoDiscoverSMTPAddress`.
+    let doc = roxmltree::Document::parse(body).ok()?;
+    for wanted in ["EMailAddress", "Mailbox"] {
+        let value = doc
+            .descendants()
+            .find(|node| node.is_element() && node.tag_name().name().eq_ignore_ascii_case(wanted))
+            .and_then(|node| node.text());
+        if let Some(value) = value {
+            let email = nfc(value.trim());
             if email.contains('@') {
                 return Some(email);
             }

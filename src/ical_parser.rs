@@ -343,9 +343,216 @@ pub fn unescape_ical_text(input: &str) -> String {
     result
 }
 
+/// RFC 5545 §3.3.6 `DURATION` split into the two parts the spec gives
+/// DIFFERENT meanings: whole days/weeks are NOMINAL (a `P1D` event keeps its
+/// wall-clock end across a DST transition — the day is one calendar day in the
+/// start's zone), while hours/minutes/seconds are ELAPSED time (`PT24H` is
+/// always 86 400 seconds).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct IcalDurationParts {
+    pub negative: bool,
+    /// NOMINAL calendar days (`P1W` = 7). Years/months are not permitted by the
+    /// RFC 5545 grammar but the ISO parser accepts them; they fold in with the
+    /// same nominal approximation the minute parser uses.
+    pub days: i64,
+    /// ELAPSED seconds from the time part (`PT24H` = 86 400).
+    pub seconds: i64,
+}
+
+impl IcalDurationParts {
+    /// The whole duration as elapsed seconds, or `None` when it does not fit in
+    /// an `i64` (a `chrono::Duration` built from such a value panics).
+    pub fn total_seconds(&self) -> Option<i64> {
+        let secs = self.days.checked_mul(86_400)?.checked_add(self.seconds)?;
+        if self.negative {
+            secs.checked_neg()
+        } else {
+            Some(secs)
+        }
+    }
+}
+
+/// Split `input` into its nominal (days/weeks) and elapsed (h/m/s) parts.
+///
+/// Accepts one optional leading `+` or `-` (RFC 5545 §3.3.6 `dur-value`
+/// allows `["+"] / "-"`). Every arithmetic step is checked: an absurd duration
+/// (`P99999999999Y`) is a parse ERROR, never a saturating cast that later
+/// panics when turned into a `chrono::Duration`.
+pub fn parse_ical_duration_parts(
+    input: &str,
+) -> Result<IcalDurationParts, nom::Err<nom::error::Error<&str>>> {
+    // RFC 5545 §3.3.6 allows only INTEGER components, so the exact scanner
+    // handles every conformant value without a floating-point round trip
+    // (`PT16777217S` is beyond `f32`'s exact range and the ISO fallback below
+    // would truncate it by one second).
+    if let Some(parts) = parse_rfc5545_duration_exact(input) {
+        return Ok(parts);
+    }
+    parse_ical_duration_parts_iso(input)
+}
+
+/// Strict RFC 5545 §3.3.6 duration scanner: `["+"]/"-" "P" (n "W" / n "D"
+/// ["T" [n "H"] [n "M"] [n "S"]])`, integer components only, in order, each at
+/// most once. `None` means "not conformant" — the caller then falls back to the
+/// lenient ISO-8601 parser for producer extensions (fractions, `P1Y`, …).
+fn parse_rfc5545_duration_exact(input: &str) -> Option<IcalDurationParts> {
+    // Longest conformant value is far below 64 digits; reject runaway input
+    // before scanning it.
+    if input.len() > 40 {
+        return None;
+    }
+    let (negative, rest) = match input.as_bytes().first() {
+        Some(b'-') => (true, &input[1..]),
+        Some(b'+') => (false, &input[1..]),
+        _ => (false, input),
+    };
+    let rest = rest.strip_prefix('P')?;
+    let bytes = rest.as_bytes();
+    if bytes.is_empty() {
+        return None;
+    }
+    let mut days: i64 = 0;
+    let mut seconds: i64 = 0;
+    let mut in_time = false;
+    let mut saw_component = false;
+    // Ordering guard: designators must appear in D < T < H < M < S order, at
+    // most once each (`P1D1D`, `PT1M1H` and `P1W1D` are not conformant).
+    let mut last_rank = 0u8;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'T' {
+            // A time-only duration (`PT1H`) is conformant, so the designator
+            // only has to be unrepeated; an EMPTY time part is rejected by the
+            // trailing `last_rank == 1` check.
+            if in_time {
+                return None;
+            }
+            in_time = true;
+            last_rank = 1;
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i == start || i == bytes.len() {
+            return None;
+        }
+        let n: i64 = rest[start..i].parse().ok()?;
+        i += 1;
+        let rank = if in_time {
+            match bytes[i - 1] {
+                b'H' => 2,
+                b'M' => 3,
+                b'S' => 4,
+                _ => return None,
+            }
+        } else {
+            match bytes[i - 1] {
+                // A week duration is `1*DIGIT "W"` on its own.
+                b'W' if n == 0 || i != bytes.len() => return None,
+                b'W' => 1,
+                b'D' => 5,
+                _ => return None,
+            }
+        };
+        if rank <= last_rank {
+            return None;
+        }
+        last_rank = rank;
+        saw_component = true;
+        match bytes[i - 1] {
+            b'W' => days = n.checked_mul(7)?,
+            b'D' => days = days.checked_add(n)?,
+            b'H' => seconds = seconds.checked_add(n.checked_mul(3_600)?)?,
+            b'M' => seconds = seconds.checked_add(n.checked_mul(60)?)?,
+            _ => seconds = seconds.checked_add(n)?,
+        }
+    }
+    if !saw_component || (in_time && last_rank == 1) {
+        return None;
+    }
+    // Same reachability bound as the ISO path: a duration longer than chrono's
+    // calendar span can never be added to a timestamp.
+    const MAX_DURATION_DAYS: i64 = 262_143 * 366;
+    if days.abs() > MAX_DURATION_DAYS || seconds.abs() > MAX_DURATION_DAYS * 86_400 {
+        return None;
+    }
+    Some(IcalDurationParts {
+        negative,
+        days,
+        seconds,
+    })
+}
+
+fn parse_ical_duration_parts_iso(
+    input: &str,
+) -> Result<IcalDurationParts, nom::Err<nom::error::Error<&str>>> {
+    let (negative, to_parse) = match input.as_bytes().first() {
+        Some(b'-') => (true, &input[1..]),
+        Some(b'+') => (false, &input[1..]),
+        _ => (false, input),
+    };
+    let parse_error =
+        || nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Verify));
+
+    // Only ONE leading sign is part of the grammar. `--PT1H` would otherwise be
+    // read as a NEGATED duration whose own components are already negative,
+    // i.e. a positive duration — the opposite of what the producer wrote.
+    if to_parse.starts_with(['-', '+']) {
+        return Err(parse_error());
+    }
+    let duration: IsoDuration = to_parse.parse().map_err(|_| parse_error())?;
+
+    // The ISO parser folds weeks into `day` (P1W = 7 days).
+    let days_f = f64::from(duration.year) * 365.2425
+        + f64::from(duration.month) * 30.436_875
+        + f64::from(duration.day);
+    // Chrono's calendar spans years ±262 143, so no duration longer than that
+    // can ever be added to a timestamp: reject it here (a parse error) instead
+    // of letting the VEVENT end derivation overflow later. This bound is far
+    // below i64's exact f64 range, so the casts below stay exact.
+    const MAX_DURATION_DAYS: f64 = 262_143.0 * 366.0;
+    if !days_f.is_finite() || days_f.abs() > MAX_DURATION_DAYS {
+        return Err(parse_error());
+    }
+    let seconds_f = f64::from(duration.hour) * 3_600.0
+        + f64::from(duration.minute) * 60.0
+        + f64::from(duration.second);
+    if !seconds_f.is_finite() || seconds_f.abs() > MAX_DURATION_DAYS * 86_400.0 {
+        return Err(parse_error());
+    }
+    Ok(IcalDurationParts {
+        negative,
+        days: days_f.round() as i64,
+        seconds: seconds_f.round() as i64,
+    })
+}
+
+/// RFC 5545 §3.3.6 `DURATION` as whole SECONDS, keeping the second-level
+/// precision a VEVENT needs (`PT30S` is a 30-second event; the minute-based
+/// parser truncates it to zero). [`parse_ical_duration_minutes`] stays for
+/// VALARM triggers, whose precision is minutes. Callers that must preserve
+/// nominal day/week semantics use [`parse_ical_duration_parts`] instead.
+pub fn parse_ical_duration_seconds(input: &str) -> Result<i64, nom::Err<nom::error::Error<&str>>> {
+    let parts = parse_ical_duration_parts(input)?;
+    parts.total_seconds().ok_or_else(|| {
+        nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Verify))
+    })
+}
+
 pub fn parse_ical_duration_minutes(input: &str) -> Result<i32, nom::Err<nom::error::Error<&str>>> {
     let negative = input.starts_with('-');
     let to_parse = if negative { &input[1..] } else { input };
+    // A second sign (`--PT1H`) negates a value the ISO parser already treats as
+    // negative and would flip a reminder trigger to the opposite direction.
+    if to_parse.starts_with(['-', '+']) {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::Verify,
+        )));
+    }
 
     let duration: IsoDuration = to_parse.parse().map_err(|_| {
         nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Verify))
@@ -389,6 +596,29 @@ mod tests {
         );
         assert_eq!(parse_ical_param(key, "VALUE"), Some("DATE".to_string()));
         assert_eq!(parse_ical_param(key, "NONEXISTENT"), None);
+    }
+
+    /// RFC 5545 §3.3.6 components are integers. `IsoDuration` stores them in
+    /// `f32`, which cannot represent every integer second — the exact scanner
+    /// must be used so a long duration is not truncated by a second, and a
+    /// doubled sign must never flip the direction.
+    #[test]
+    fn duration_parts_are_exact_for_large_integer_seconds() {
+        let parts = parse_ical_duration_parts("PT16777217S").unwrap();
+        assert_eq!(parts.total_seconds(), Some(16_777_217));
+        let neg = parse_ical_duration_parts("-PT1H").unwrap();
+        assert_eq!(neg.total_seconds(), Some(-3_600));
+        let mixed = parse_ical_duration_parts("P1DT2H30M15S").unwrap();
+        assert_eq!(mixed.total_seconds(), Some(86_400 + 9_015));
+        let week = parse_ical_duration_parts("P2W").unwrap();
+        assert_eq!(week.total_seconds(), Some(14 * 86_400));
+        assert!(parse_ical_duration_parts("P").is_err());
+        assert!(parse_ical_duration_parts("PT").is_err());
+        assert!(parse_ical_duration_parts("P1D1D").is_err());
+        assert!(parse_ical_duration_parts("PT1M1H").is_err());
+        assert!(parse_ical_duration_parts("P1W1D").is_err());
+        assert!(parse_ical_duration_minutes("--PT1H").is_err());
+        assert!(parse_ical_duration_parts("--PT1H").is_err());
     }
 
     #[test]

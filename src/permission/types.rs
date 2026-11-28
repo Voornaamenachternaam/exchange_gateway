@@ -2,6 +2,7 @@
 use bitflags::bitflags;
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::fmt::Write as _;
 use std::str::FromStr;
 
 bitflags! {
@@ -191,7 +192,7 @@ impl fmt::Display for PermissionRights {
             if !res.is_empty() {
                 res.push('|');
             }
-            res.push_str(&format!("Unknown(0x{:08X})", unknown_bits));
+            let _ = write!(res, "Unknown(0x{:08X})", unknown_bits);
         }
         write!(f, "{}", res)
     }

@@ -36,6 +36,7 @@ use secrecy::SecretString;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::sync::Arc;
 use tracing::info;
 
@@ -510,14 +511,15 @@ fn render_ews_attachments_xml(
             }
             None => String::new(),
         };
-        out.push_str(&format!(
+        let _ = write!(
+            out,
             r#"<t:FileAttachment><t:AttachmentId Id="{}"/><t:Name>{}</t:Name><t:ContentType>{}</t:ContentType><t:Size>{}</t:Size>{}</t:FileAttachment>"#,
             xml_escape(&key),
             xml_escape(&name),
             xml_escape(&content_type),
             size,
             content_xml,
-        ));
+        );
     }
     out.push_str("</t:Attachments>");
     out
@@ -586,11 +588,12 @@ fn render_ews_internet_headers_xml(email: &JmapEmail) -> String {
         if SUPPRESSED.iter().any(|s| s.eq_ignore_ascii_case(&name)) {
             continue;
         }
-        out.push_str(&format!(
+        let _ = write!(
+            out,
             r#"<t:InternetMessageHeader HeaderName="{}">{}</t:InternetMessageHeader>"#,
             xml_escape(&sanitize_for_xml(&name)),
             xml_escape(&sanitize_for_xml(&value)),
-        ));
+        );
     }
     if out == "<t:InternetMessageHeaders>" {
         return String::new();
@@ -709,14 +712,16 @@ pub(crate) fn render_negotiated_eas_body(
     };
 
     let mut xml = String::with_capacity(512);
-    xml.push_str(&format!(
+    let _ = write!(
+        xml,
         "<AirSyncBase:Body><AirSyncBase:Type>{}</AirSyncBase:Type>",
         negotiated.body_type
-    ));
-    xml.push_str(&format!(
+    );
+    let _ = write!(
+        xml,
         "<AirSyncBase:EstimatedDataSize>{}</AirSyncBase:EstimatedDataSize>",
         true_size
-    ));
+    );
     if truncated {
         xml.push_str("<AirSyncBase:Truncated>1</AirSyncBase:Truncated>");
     }
@@ -724,10 +729,11 @@ pub(crate) fn render_negotiated_eas_body(
         // Data is XML character data ([MS-ASDTYPE] §2.3): strip the
         // characters XML 1.0 forbids even in escaped form before escaping
         // the remainder.
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<AirSyncBase:Data>{}</AirSyncBase:Data>",
             xml_escape(&sanitize_for_xml(&data))
-        ));
+        );
     }
     // [MS-ASAIRS] §2.2.2.35.1: the Preview element is not returned with a
     // Type 1 (plain text) body that carries valid Data — the body itself is
@@ -737,10 +743,11 @@ pub(crate) fn render_negotiated_eas_body(
     if let Some(chars) = negotiated.preview
         && !(negotiated.body_type == 1 && include_data && !data.is_empty())
     {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<AirSyncBase:Preview>{}</AirSyncBase:Preview>",
             xml_escape(&preview_text(&sanitize_for_xml(&plain_for_preview), chars))
-        ));
+        );
     }
     xml.push_str("</AirSyncBase:Body>");
     xml
@@ -776,30 +783,34 @@ pub(crate) fn render_eas_body_part(email: &JmapEmail, pref: &EasBodyPartPreferen
     };
 
     let mut xml = String::with_capacity(512);
-    xml.push_str(&format!(
+    let _ = write!(
+        xml,
         "<AirSyncBase:BodyPart><AirSyncBase:Status>{}</AirSyncBase:Status>",
         if withheld { 176 } else { 1 }
-    ));
+    );
     xml.push_str("<AirSyncBase:Type>2</AirSyncBase:Type>");
-    xml.push_str(&format!(
+    let _ = write!(
+        xml,
         "<AirSyncBase:EstimatedDataSize>{}</AirSyncBase:EstimatedDataSize>",
         estimated
-    ));
+    );
     if truncated {
         xml.push_str("<AirSyncBase:Truncated>1</AirSyncBase:Truncated>");
     }
     if !withheld {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<AirSyncBase:Data>{}</AirSyncBase:Data>",
             xml_escape(&sanitize_for_xml(data))
-        ));
+        );
     }
     if let Some(chars) = pref.preview {
         let plain = html_to_plain_text(message_part);
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<AirSyncBase:Preview>{}</AirSyncBase:Preview>",
             xml_escape(&preview_text(&sanitize_for_xml(&plain), chars))
-        ));
+        );
     }
     xml.push_str("</AirSyncBase:BodyPart>");
     xml
@@ -1037,7 +1048,6 @@ pub fn render_jmap_email_as_eas_application_data(
 /// ([MS-ASWBXML]: AttMethod 0x0A is followed by Body 0x0C). Its only EAS
 /// definition is in the Find namespace (§2.2.3.87). Attachment presence is
 /// conveyed by the `<AirSyncBase:Attachments>` roster below.
-#[allow(clippy::too_many_arguments)]
 pub fn render_jmap_email_as_eas_application_data_with_options(
     email: &JmapEmail,
     server_id: &str,
@@ -1214,13 +1224,14 @@ fn render_eas_attachments_xml(email: &JmapEmail) -> String {
                 .unwrap_or("application/octet-stream"),
         );
         let size = a.size.unwrap_or(0);
-        out.push_str(&format!(
+        let _ = write!(
+            out,
             "<AirSyncBase:Attachment><AirSyncBase:DisplayName>{}</AirSyncBase:DisplayName><AirSyncBase:FileReference>{}</AirSyncBase:FileReference><AirSyncBase:Method>1</AirSyncBase:Method><AirSyncBase:Content-type>{}</AirSyncBase:Content-type><AirSyncBase:EstimatedDataSize>{}</AirSyncBase:EstimatedDataSize></AirSyncBase:Attachment>",
             xml_escape(&name),
             xml_escape(&ref_id),
             xml_escape(&content_type),
             size,
-        ));
+        );
     }
     if out.is_empty() {
         String::new()
@@ -1263,6 +1274,19 @@ pub async fn send_email(
     if let Some(jmap) = &state.jmap_client {
         match send_email_jmap(state, jmap, msg, username, password).await {
             Ok(id) => return Ok(id),
+            Err(e)
+                if e.downcast_ref::<crate::jmap::SubmissionUnconfirmed>()
+                    .is_some() =>
+            {
+                // The submission outcome is UNKNOWN: the message may already be
+                // on its way, so an SMTP retry could deliver it twice. Report the
+                // failure and let the client retry the send instead.
+                tracing::error!(
+                    error = %e,
+                    "JMAP submission is unconfirmed; not retrying over SMTP"
+                );
+                return Err(e);
+            }
             Err(e) => {
                 tracing::warn!(
                     error = %e,
@@ -1534,7 +1558,7 @@ pub async fn save_draft_via_jmap(
         VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
         "#,
     )
-    .bind(&owner)
+    .bind(owner.as_ref())
     .bind(&server_id)
     .bind(&jmap_id)
     .bind::<Option<&str>>(None) // uid not available for drafts
@@ -1560,12 +1584,66 @@ pub async fn save_draft_via_jmap(
 /// This implements MoveItem by updating the email's mailboxIds.
 /// `server_id` is the gateway's server ID (em-<jmap_id>).
 /// `target_folder` is the distinguished folder name (e.g., "inbox", "sent", "drafts", "trash").
+/// `source_mailbox_id` is the mailbox the item is being moved OUT of, when the
+/// caller knows it (see [`move_email_to_mailbox_via_jmap`]).
+#[allow(clippy::too_many_arguments)]
 pub async fn move_email_via_jmap(
-    _state: &Arc<AppState>,
+    state: &Arc<AppState>,
     jmap: &Arc<crate::jmap::JmapClient>,
     account_id: &str,
     server_id: &str,
     target_folder: &str,
+    source_mailbox_id: Option<&str>,
+    username: &str,
+    password: &SecretString,
+) -> anyhow::Result<String> {
+    // Resolve the destination ROLE to its concrete JMAP mailbox id, then reuse
+    // the mailbox-scoped move so that logic lives in one place.
+    let target_mailbox_ids = jmap
+        .get_mailbox_ids_for_role(account_id, target_folder, username, password)
+        .await?;
+    let Some(target_mb_id) = target_mailbox_ids.into_iter().next() else {
+        return Err(anyhow!("Target folder '{}' not found", target_folder));
+    };
+    move_email_to_mailbox_via_jmap(
+        state,
+        jmap,
+        account_id,
+        server_id,
+        &target_mb_id,
+        source_mailbox_id,
+        username,
+        password,
+    )
+    .await
+}
+
+/// Move an email to a concrete JMAP mailbox id via `Email/set`.
+///
+/// Used for user-created folders whose EAS ServerId *is* the JMAP mailbox id
+/// (they have no JMAP role, so role resolution cannot find them).
+/// `server_id` is the gateway's server ID (em-<jmap_id>).
+///
+/// A MOVE, not a re-file: `mailboxIds` is REPLACED wholesale by the JMAP
+/// `Email/set` update (RFC 8621 §4.6 — a full property value replaces the set;
+/// Stalwart implements it as `set_mailboxes`), so the patch is the current
+/// memberships MINUS `source_mailbox_id` PLUS the destination. Omitting the
+/// removal would leave the message in the folder the client moved it out of.
+/// `source_mailbox_id == None` means the caller does not know the source (EWS
+/// `MoveItem` carries only the destination), so the move replaces the whole set
+/// — Exchange folders are single-membership. With a KNOWN source the move fails
+/// closed when the read omits `mailboxIds` or no longer shows that membership:
+/// the replacement would otherwise drop memberships it could not see.
+///
+/// Returns the (unchanged) server ID of the moved message.
+#[allow(clippy::too_many_arguments)]
+pub async fn move_email_to_mailbox_via_jmap(
+    _state: &Arc<AppState>,
+    jmap: &Arc<crate::jmap::JmapClient>,
+    account_id: &str,
+    server_id: &str,
+    target_mb_id: &str,
+    source_mailbox_id: Option<&str>,
     username: &str,
     password: &SecretString,
 ) -> anyhow::Result<String> {
@@ -1575,42 +1653,158 @@ pub async fn move_email_via_jmap(
         None => return Err(anyhow!("Invalid server ID format: {}", server_id)),
     };
 
-    // Get the mailbox ID for the target folder role
-    let target_mailbox_ids = jmap
-        .get_mailbox_ids_for_role(account_id, target_folder, username, password)
-        .await?;
+    // Read the email's current mailboxIds so we can drop the source membership
+    // and preserve every unrelated one.
+    let Some(email) = jmap
+        .get_email(account_id, &jmap_id, username, password, false)
+        .await?
+    else {
+        return Err(anyhow!("Email not found for JMAP id {jmap_id}"));
+    };
+    let current_mailboxes: Option<&HashMap<String, bool>> = email.mailbox_ids.as_ref();
 
-    if target_mailbox_ids.is_empty() {
-        return Err(anyhow!("Target folder '{}' not found", target_folder));
+    // A known-source move is expressed as a FULL replacement of `mailboxIds`
+    // (RFC 8621 §4.6), built by dropping the source and keeping every other
+    // membership. Without the current set that patch would contain only the
+    // destination, silently removing the message from every unrelated folder
+    // (e.g. a project mailbox). Fail closed: the caller answers a retryable
+    // error and the message keeps its memberships.
+    if source_mailbox_id.is_some() && current_mailboxes.is_none() {
+        return Err(anyhow!(
+            "Email/get returned no mailboxIds for JMAP id {jmap_id}; refusing a move that would replace unknown memberships"
+        ));
     }
 
-    // For simplicity, use the first mailbox ID (servers may return multiple with same role)
-    let target_mb_id = &target_mailbox_ids[0];
+    // The source membership must be visible in THIS read — the same read the
+    // replacement is built from. If the message already left the source (a
+    // concurrent move), the request is stale: reporting success would move it
+    // out of a folder it no longer belongs to.
+    if let (Some(ids), Some(src)) = (current_mailboxes, source_mailbox_id)
+        && !ids.get(src).copied().unwrap_or(false)
+    {
+        return Err(anyhow!(
+            "Email {jmap_id} is no longer a member of the source mailbox {src}; stale move"
+        ));
+    }
 
-    // Build the update: set mailboxIds to contain only the target folder
-    // This effectively moves the email (removes from other mailboxes)
-    let update_patch = json!({
-        "mailboxIds": { (target_mb_id): true },
-    });
+    // Already at the destination and no longer in the source: nothing to write.
+    if let Some(ids) = current_mailboxes {
+        let in_target = ids.get(target_mb_id).copied().unwrap_or(false);
+        let in_source = source_mailbox_id
+            .and_then(|src| ids.get(src).copied())
+            .unwrap_or(false);
+        let only_target = ids.len() == 1 && in_target;
+        if in_target && !in_source && (source_mailbox_id.is_some() || only_target) {
+            return Ok(server_id.to_string());
+        }
+    }
 
-    jmap.update_email(
-        account_id,
-        &json!({
-            (jmap_id): update_patch,
+    // A KNOWN-source move is written as an RFC 8621 §4.5 per-key patch
+    // (`mailboxIds/<src>: null`, `mailboxIds/<dst>: true`). Unlike a full
+    // `mailboxIds` REPLACEMENT built from the read above, the patch cannot
+    // clobber a concurrent edit to an UNRELATED membership: it names exactly
+    // the two keys it changes, so no read-modify-write window (and no
+    // `ifInState` + retry loop) is needed.
+    // Two DIFFERENT request shapes (RFC 8621 §4.6):
+    //  * a known source is a per-key PATCH (`mailboxIds/<src>: null`,
+    //    `mailboxIds/<dst>: true`) that names exactly the two memberships it
+    //    changes;
+    //  * no source is a full `mailboxIds` REPLACEMENT (a whole-value object)
+    //    that drops every unrelated membership, per Exchange single-folder
+    //    semantics. The replacement MUST be nested under `mailboxIds` — top
+    //    level keys would be written as unrelated Email properties.
+    let patch = match source_mailbox_id {
+        Some(src) => {
+            let mut mailbox_ids_patch = serde_json::Map::new();
+            mailbox_ids_patch.insert(format!("mailboxIds/{src}"), serde_json::Value::Null);
+            mailbox_ids_patch.insert(
+                format!("mailboxIds/{target_mb_id}"),
+                serde_json::Value::Bool(true),
+            );
+            serde_json::Value::Object(mailbox_ids_patch)
+        }
+        None => serde_json::json!({
+            "mailboxIds": { (target_mb_id): true },
         }),
-        username,
-        password,
-    )
-    .await?;
+    };
+
+    // Clone jmap_id: the `json!` macro below moves it into the `Value`,
+    // but we still need it afterward to verify the `updated` collection.
+    let jmap_id_check = jmap_id.clone();
+
+    let outcome = jmap
+        .update_email_checked(
+            account_id,
+            &json!({
+                (jmap_id): patch,
+            }),
+            username,
+            password,
+        )
+        .await?;
+
+    // A confirmed move requires the Email/set response's `updated` collection
+    // to contain the extracted JMAP email id. A `notUpdated` rejection (e.g.
+    // a move to a forbidden destination) leaves the message in its original
+    // mailbox and must surface as an error, not a silent success.
+    if !outcome.updated.iter().any(|id| id == &jmap_id_check) {
+        return Err(anyhow!(
+            "Email/set did not confirm move for JMAP email id {jmap_id_check}"
+        ));
+    }
 
     // Return a new change key; could be same as server_id for simplicity
     Ok(server_id.to_string())
 }
 
-/// Copy an email to another folder via JMAP Email/set.
+/// The `Message-ID` header value of a raw MIME message (angle brackets kept),
+/// or `None` when the message carries no usable one. A client retry re-sends
+/// the SAME MIME bytes, so this value identifies the earlier attempt.
+pub fn mime_message_id(mime: &[u8]) -> Option<String> {
+    let parsed = mail_parser::MessageParser::default().parse(mime)?;
+    parsed
+        .message_id()
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+}
+
+/// Whether an earlier SendMail attempt with this `Message-ID` actually reached
+/// the backend: the Sent copy the gateway imports on success is the evidence.
+/// `Ok(false)` means no copy was found (a resend is safe); an `Err` means the
+/// check could not be made and the caller must NOT resend yet.
+pub async fn reconcile_sent_copy(
+    state: &Arc<AppState>,
+    username: &str,
+    password: &SecretString,
+    message_id: &str,
+) -> anyhow::Result<bool> {
+    let Some(jmap) = state.jmap_client.as_ref() else {
+        return Err(anyhow!("no JMAP client to reconcile a SendMail retry"));
+    };
+    let account_id = jmap.get_account_id(username, password).await?;
+    let sent = jmap
+        .get_mailbox_ids_for_role(&account_id, "sent", username, password)
+        .await?;
+    let Some(sent_id) = sent.first() else {
+        return Err(anyhow!("no Sent mailbox to reconcile a SendMail retry"));
+    };
+    let ids = jmap
+        .email_ids_matching_message_id(&account_id, sent_id, message_id, username, password)
+        .await?;
+    Ok(!ids.is_empty())
+}
+
+/// Copy an email to another folder by re-importing its raw blob through JMAP
+/// `Email/import` (RFC 8621 §4.8) — see [`JmapClient::copy_email`], which reads
+/// the source `blobId` with `Email/get` and creates a new message from it.
 ///
-/// This implements CopyItem by adding the target mailboxId without removing from the current mailbox(es).
-/// `server_id` is the gateway's server ID (em-<jmap_id>).
+/// `Email/set` with `copyFrom` is deliberately NOT used: it cannot express a
+/// same-account copy under the capability the gateway negotiates, and a
+/// `mailboxIds` patch would MOVE the original instead of copying it.
+///
+/// A copy is a NEW message in the destination; the source keeps its own
+/// mailbox membership. Returns the gateway ServerId of the COPY.
+/// `server_id` is the gateway's server ID (em-<jmap_id>) of the source.
 /// `dest_folder` is the distinguished folder name (e.g., "inbox", "sent", "drafts", "trash").
 pub async fn copy_email_via_jmap(
     _state: &Arc<AppState>,
@@ -1637,27 +1831,16 @@ pub async fn copy_email_via_jmap(
     }
 
     // Use first mailbox ID for simplicity
-    let dest_mb_id = &dest_mailbox_ids[0];
+    let dest_mb_ids = vec![dest_mailbox_ids[0].clone()];
 
-    // Build the update patch: add the destination mailboxId to the existing set.
-    // We use "mailboxIds": { dest_mb_id: true } which does not remove existing ones
-    // unless we explicitly clear them. Per JMAP, setting to true adds, false removes.
-    let update_patch = json!({
-        "mailboxIds": { (dest_mb_id): true },
-    });
-
-    jmap.update_email(
-        account_id,
-        &json!({
-            (jmap_id): update_patch,
-        }),
-        username,
-        password,
-    )
-    .await?;
-
-    // Return same change key (since content unchanged)
-    Ok(server_id.to_string())
+    // EWS CopyItem must create a NEW item in the destination and leave the
+    // source untouched. Adding the destination mailbox to the source's
+    // `mailboxIds` (the previous behavior) moved/re-filed the original message
+    // and returned its own id as if it were the copy.
+    let new_id = jmap
+        .copy_email(account_id, &jmap_id, &dest_mb_ids, username, password)
+        .await?;
+    Ok(email_server_id_from_jmap_id(&new_id))
 }
 
 /// Send an email via SMTP on behalf of a user.
@@ -1738,6 +1921,20 @@ pub struct FetchEmailsParams<'a> {
     /// `AND` operator, so a mailbox-scoped search never leaks results from
     /// other mailboxes.
     pub search_filter: Option<serde_json::Value>,
+    /// Optional concrete JMAP mailbox id that overrides role resolution.
+    ///
+    /// User-created mail folders have no JMAP role, so their EAS ServerId *is*
+    /// the JMAP mailbox id and role lookup cannot find them. When set, this id
+    /// scopes the `Email/query` directly and `mailbox_role` is only a label.
+    pub mailbox_id: Option<&'a str>,
+    /// RFC 8620 §5.5 query `anchor`: the id the window starts from. Used by
+    /// the EAS initial-sync continuation so a message deleted during paging
+    /// cannot shift the tail below a stale numeric `position` and be skipped.
+    /// `None` uses numeric `position` paging.
+    pub anchor: Option<&'a str>,
+    /// RFC 8620 §5.5 `anchorOffset` (only meaningful with `anchor`). `0`
+    /// includes the anchor; `1` starts the window immediately after it.
+    pub anchor_offset: i32,
 }
 
 /// Fetch emails from JMAP for a specific folder.
@@ -1751,28 +1948,27 @@ pub async fn fetch_emails_jmap(
 ) -> anyhow::Result<crate::jmap::EmailListResult> {
     let account_id = params.account_id;
     let mailbox_role = params.mailbox_role;
-    let position = params.position;
-    let limit = params.limit;
     let username = params.username;
     let password = params.password;
-    let search_filter = params.search_filter.as_ref();
+    let explicit_mailbox = params.mailbox_id;
     let jmap = state
         .jmap_client
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("JMAP is not configured; email reading is unavailable"))?;
+
+    // A concrete mailbox id (a user-created folder whose EAS ServerId is the
+    // JMAP mailbox id) bypasses role resolution entirely: such folders have no
+    // JMAP role, and role lookup would return the wrong (or no) mailbox.
+    if let Some(mb) = explicit_mailbox {
+        return fetch_emails_in_mailbox(jmap, params, mb).await;
+    }
 
     // Map mailbox role to JMAP filter.
     // "outbox" returns empty result — JMAP has no outbox role; outbound email
     // is handled via EmailSubmission/set. Return early with empty result.
     let mailbox_role_lower = mailbox_role.to_lowercase();
     if mailbox_role_lower == "outbox" {
-        return Ok(crate::jmap::EmailListResult {
-            emails: Vec::new(),
-            total: 0,
-            can_calculate_changes: false,
-            query_state: String::new(),
-            state: String::new(),
-        });
+        return Ok(crate::jmap::EmailListResult::empty());
     }
 
     // Normalize role to JMAP standard role name
@@ -1783,23 +1979,11 @@ pub async fn fetch_emails_jmap(
         "junkemail" | "junk" => "junk",
         "deleteditems" | "trash" => "trash",
         "outbox" => {
-            return Ok(crate::jmap::EmailListResult {
-                emails: Vec::new(),
-                total: 0,
-                can_calculate_changes: false,
-                query_state: String::new(),
-                state: String::new(),
-            });
+            return Ok(crate::jmap::EmailListResult::empty());
         }
         _ => {
             tracing::warn!(role = %mailbox_role, "Unrecognised mailbox role; returning empty email list");
-            return Ok(crate::jmap::EmailListResult {
-                emails: Vec::new(),
-                total: 0,
-                can_calculate_changes: false,
-                query_state: String::new(),
-                state: String::new(),
-            });
+            return Ok(crate::jmap::EmailListResult::empty());
         }
     };
 
@@ -1821,55 +2005,56 @@ pub async fn fetch_emails_jmap(
                     "Multiple mailbox IDs found for role; using first"
                 );
             }
-            let in_mailbox = serde_json::json!({ "inMailbox": mailbox_ids[0] });
-            let filter = match search_filter {
-                // Combine the mailbox scope with the search conditions under
-                // a single AND so a search is always confined to this mailbox.
-                Some(search) => Some(
-                    crate::ews_search::combine_with_in_mailbox(
-                        &mailbox_ids[0],
-                        Some(search.clone()),
-                    )
-                    .unwrap_or(in_mailbox),
-                ),
-                None => Some(in_mailbox),
-            };
-            let result = jmap
-                .query_emails(crate::jmap::QueryEmailsParams {
-                    account_id,
-                    filter,
-                    sort: None,
-                    position,
-                    limit,
-                    username,
-                    password,
-                })
-                .await?;
-            Ok(result)
+            // Resolve the role to its concrete mailbox id, then reuse the
+            // mailbox-scoped query (inMailbox + search combination) so that
+            // logic lives in one place.
+            fetch_emails_in_mailbox(jmap, params, &mailbox_ids[0]).await
         }
         Ok(_) => {
             // No mailbox for that role — return empty result.
             tracing::info!(role = %normalized_role, "No mailbox found for role; returning empty email list");
-            Ok(crate::jmap::EmailListResult {
-                emails: Vec::new(),
-                total: 0,
-                can_calculate_changes: false,
-                query_state: String::new(),
-                state: String::new(),
-            })
+            Ok(crate::jmap::EmailListResult::empty())
         }
         Err(e) => {
-            // Log the error but still return empty result to maintain sync stability.
-            tracing::warn!(error = %e, role = %normalized_role, "Failed to fetch mailbox IDs for role");
-            Ok(crate::jmap::EmailListResult {
-                emails: Vec::new(),
-                total: 0,
-                can_calculate_changes: false,
-                query_state: String::new(),
-                state: String::new(),
-            })
+            // A transient `Mailbox/query` failure must NOT be flattened to an
+            // empty result: it is indistinguishable from a genuinely empty
+            // mailbox, so the EAS/EWS initial sync would complete with no emails
+            // and no query state and the folder would be skipped until a manual
+            // re-prime. Propagate so the caller answers a retryable Status 5
+            // with the sync token untouched.
+            tracing::warn!(error = %e, role = %normalized_role, "Failed to fetch mailbox IDs for role; failing closed");
+            Err(e)
         }
     }
+}
+
+/// Query a concrete JMAP mailbox id (used for user-created folders, whose EAS
+/// ServerId *is* the mailbox id and which have no JMAP role).
+async fn fetch_emails_in_mailbox(
+    jmap: &Arc<crate::jmap::JmapClient>,
+    params: &FetchEmailsParams<'_>,
+    mailbox_id: &str,
+) -> anyhow::Result<crate::jmap::EmailListResult> {
+    let in_mailbox = serde_json::json!({ "inMailbox": mailbox_id });
+    let filter = match params.search_filter.as_ref() {
+        Some(search) => {
+            crate::ews_search::combine_with_in_mailbox(mailbox_id, Some(search.clone()))
+                .unwrap_or(in_mailbox)
+        }
+        None => in_mailbox,
+    };
+    jmap.query_emails(crate::jmap::QueryEmailsParams {
+        account_id: params.account_id,
+        filter: Some(filter),
+        sort: None,
+        position: params.position,
+        limit: params.limit,
+        anchor: params.anchor,
+        anchor_offset: params.anchor_offset,
+        username: params.username,
+        password: params.password,
+    })
+    .await
 }
 
 /// EAS folder type constants per MS-ASCMD §2.2.3.186.3.
@@ -1948,37 +2133,48 @@ pub fn eas_email_folders_xml() -> String {
     .collect()
 }
 
-/// Extract text content from the first occurrence of an XML tag.
-/// Simple helper for EAS XML parsing - not namespace-aware.
-fn extract_first_tag_text(xml: &str, tag: &[u8]) -> Option<String> {
-    let _tag_str = std::str::from_utf8(tag).ok()?;
-    let open_tag = format!("<{}>", std::str::from_utf8(tag).unwrap_or(""));
-    let close_tag = format!("</{}>", std::str::from_utf8(tag).unwrap_or(""));
-    if let Some(start) = xml.find(&open_tag) {
-        let content_start = start + open_tag.len();
-        if let Some(end) = xml[content_start..].find(&close_tag) {
-            return Some(xml[content_start..content_start + end].to_string());
-        }
-    }
-    None
-}
-
 /// Parse EAS SendMail request to extract MIME message and recipients.
 ///
 /// Per MS-ASCMD §2.2.1.17, SendMail contains a ClientId and either
 /// a MIME message or individual email elements.
 pub fn parse_eas_sendmail(xml: &str) -> Option<EasSendMailRequest> {
-    let client_id = extract_first_tag_text(xml, b"ClientId");
-    let mime_data = extract_first_tag_text(xml, b"MIMEData");
+    // Raw-XML SendMail bodies are never WBXML-decoded, so a client may send the
+    // whole document namespace-qualified: every lookup below matches by LOCAL
+    // name first, with the literal helper as a fallback for malformed markup.
+    //
+    // ONE index for all five fields: this is the largest body the gateway
+    // accepts (a `Mime` element can be tens of MiB), and the per-tag helpers
+    // restarted at the top of the document for each field — so a SendMail
+    // without CollectionId/ItemId tokenised the whole MIME blob twice more,
+    // once per absent field. The index also never materialises the MIME text
+    // unless `Mime`/`MIMEData` is actually read.
+    let fields = crate::xml_fields::RequestFields::parse(xml);
+    let client_id = fields
+        .first_outer("ClientId")
+        .or_else(|| fields.first(b"ClientId"));
+    // `Mime` is the [MS-ASCMD] §2.2.3.109 element; `MIMEData` is the legacy
+    // name older clients still send. Match either by LOCAL name so a
+    // namespace-qualified raw-XML body is parsed too, and keep the literal
+    // helpers as a fallback for malformed markup.
+    let mime_data = fields
+        .first_outer("MIMEData")
+        .or_else(|| fields.first_outer("Mime"))
+        .or_else(|| fields.first(b"MIMEData"))
+        .or_else(|| fields.first(b"Mime"));
     let save_in_sent = xml.contains("<SaveInSentItems") || xml.contains(":SaveInSentItems");
     // Per MS-ASCMD §2.2.1.19/20, SmartReply and SmartForward reference the
     // original message via CollectionId + ItemId so the gateway can wire
     // In-Reply-To/References threading headers.
     // MS-ASCMD §2.2.1.19/20: EAS 14.x clients name the source folder tag
     // `airsync:CollectionId`; older clients use `FolderId`. Accept both.
-    let collection_id = extract_first_tag_text(xml, b"CollectionId")
-        .or_else(|| extract_first_tag_text(xml, b"FolderId"));
-    let item_id = extract_first_tag_text(xml, b"ItemId");
+    let collection_id = fields
+        .first_outer("CollectionId")
+        .or_else(|| fields.first_outer("FolderId"))
+        .or_else(|| fields.first(b"CollectionId"))
+        .or_else(|| fields.first(b"FolderId"));
+    let item_id = fields
+        .first_outer("ItemId")
+        .or_else(|| fields.first(b"ItemId"));
 
     Some(EasSendMailRequest {
         client_id,
@@ -2223,13 +2419,17 @@ pub async fn apply_eas_email_mutations(
     account_id: &str,
     username: &str,
     password: &SecretString,
+    source_mailbox_id: Option<&str>,
     xml: &str,
     deletes_as_moves: bool,
-) -> Vec<EasEmailMutationResult> {
+) -> anyhow::Result<Vec<EasEmailMutationResult>> {
     let mutations = parse_eas_email_mutations(xml, deletes_as_moves);
     if mutations.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
+    // A whole-method `serverFail` is TRANSIENT: it must reach the collection-
+    // level retry path, not be answered as a permanent per-item failure (8).
+    let mut server_fail = false;
 
     // Resolve the Deleted Items mailbox lazily (only when a move-style Delete
     // is actually present) so a flag-only Sync never pays for the lookup.
@@ -2259,9 +2459,72 @@ pub async fn apply_eas_email_mutations(
                 server_id,
                 deletes_as_moves,
             } => {
+                // An unresolved source collection must NOT be compared with the
+                // backend mailbox ids: the raw EAS id ("2" for Inbox) lives in a
+                // different identifier space, so the membership check would fail
+                // and answer a permanent Status 8 for a live message. Apply no
+                // mutation and report a retryable Status 6 instead.
+                let Some(collection_id) = source_mailbox_id else {
+                    tracing::warn!(
+                        target: "eas",
+                        server_id = %server_id,
+                        "Delete in an unresolved source collection; reporting retryable Status 6"
+                    );
+                    results.push(EasEmailMutationResult::Delete {
+                        server_id,
+                        status: "6",
+                    });
+                    continue;
+                };
                 let status = match crate::email::jmap_id_from_email_server_id(&server_id) {
                     Some(jmap_id) if !jmap_id.is_empty() => {
-                        if deletes_as_moves {
+                        // [MS-ASEMAIL] §3.2.5.4.2: a Delete addressed to a
+                        // collection must target an item that belongs to that
+                        // collection's mailbox. Without this check, a stale
+                        // <Delete> from collection A for a message that moved
+                        // to collection B would remove/destroy it from B.
+                        //
+                        // The read is the STRICT membership probe: a message
+                        // whose `mailboxIds` cannot be decoded is NOT evidence
+                        // that it is absent, and answering Status 8 ("Object not
+                        // found") for it would make the client drop a live
+                        // message from its view. Only a confirmed `notFound` (or
+                        // a confirmed non-membership) is Status 8; everything
+                        // uncertain is the retryable Status 6.
+                        let in_source_mailbox = match jmap
+                            .email_mailbox_membership(
+                                account_id,
+                                jmap_id,
+                                collection_id,
+                                username,
+                                password,
+                            )
+                            .await
+                        {
+                            Ok(crate::jmap::EmailMailboxMembership::Member) => true,
+                            Ok(crate::jmap::EmailMailboxMembership::NotMember)
+                            | Ok(crate::jmap::EmailMailboxMembership::Absent) => false,
+                            // A transient backend lookup failure — or a response
+                            // that cannot be interpreted — must NOT be reported
+                            // as "Object not found" (Status 8): the message may
+                            // still exist in the source folder. Report Status 6
+                            // and continue the command loop.
+                            Err(_) => {
+                                tracing::warn!(
+                                    target: "eas",
+                                    server_id = %server_id,
+                                    "Email membership lookup failed; reporting retryable Status 6"
+                                );
+                                results.push(EasEmailMutationResult::Delete {
+                                    server_id,
+                                    status: "6",
+                                });
+                                continue;
+                            }
+                        };
+                        if !in_source_mailbox {
+                            "8"
+                        } else if deletes_as_moves {
                             if trash_ids.is_none() {
                                 trash_ids = jmap
                                     .get_mailbox_ids_for_role(
@@ -2272,17 +2535,40 @@ pub async fn apply_eas_email_mutations(
                             }
                             match trash_ids.as_ref().and_then(|v| v.first()) {
                                 Some(trash) => {
+                                    // RFC 8621 §4.5 per-key patch: a
+                                    // Delete-as-move drops ONLY the confirmed
+                                    // source membership and adds Trash. The
+                                    // every-membership rewrite `move_emails`
+                                    // performs would also remove the message
+                                    // from unrelated folders it is filed in.
+                                    let mut patch = serde_json::Map::new();
+                                    patch.insert(
+                                        format!("mailboxIds/{collection_id}"),
+                                        serde_json::Value::Null,
+                                    );
+                                    patch.insert(
+                                        format!("mailboxIds/{trash}"),
+                                        serde_json::Value::Bool(true),
+                                    );
+                                    let update = serde_json::json!({ (jmap_id): patch });
                                     match jmap
-                                        .move_emails(
-                                            account_id,
-                                            &[jmap_id.to_string()],
-                                            trash,
-                                            username,
-                                            password,
+                                        .update_email_checked(
+                                            account_id, &update, username, password,
                                         )
                                         .await
                                     {
-                                        Ok(1) => "1",
+                                        Ok(outcome)
+                                            if outcome.updated.iter().any(|id| id == jmap_id) =>
+                                        {
+                                            "1"
+                                        }
+                                        Ok(outcome)
+                                            if outcome.method_error_type.as_deref()
+                                                == Some("serverFail") =>
+                                        {
+                                            server_fail = true;
+                                            "6"
+                                        }
                                         Ok(_) => "8",
                                         Err(e) => {
                                             tracing::warn!(
@@ -2325,7 +2611,15 @@ pub async fn apply_eas_email_mutations(
             }
         }
     }
-    results
+    if server_fail {
+        // The per-item responses are dropped: the client re-sends the batch and
+        // every mutation here is idempotent (flag patches, moves, destroys of
+        // the same ids), so a collection-level retry is safe.
+        return Err(anyhow::anyhow!(
+            "Email/set reported serverFail for a Delete-as-move; retrying the collection"
+        ));
+    }
+    Ok(results)
 }
 
 /// Apply one flag `<Change>` to a JMAP email; returns the per-item Sync status.
@@ -2429,18 +2723,20 @@ pub fn render_eas_email_mutation_responses(results: &[EasEmailMutationResult]) -
     for result in results {
         match result {
             EasEmailMutationResult::Change { server_id, status } => {
-                xml.push_str(&format!(
+                let _ = write!(
+                    xml,
                     "<Change><Class>Email</Class><ServerId>{}</ServerId><Status>{}</Status></Change>",
                     xml_escape(server_id),
                     status
-                ));
+                );
             }
             EasEmailMutationResult::Delete { server_id, status } => {
-                xml.push_str(&format!(
+                let _ = write!(
+                    xml,
                     "<Delete><ServerId>{}</ServerId><Status>{}</Status></Delete>",
                     xml_escape(server_id),
                     status
-                ));
+                );
             }
         }
     }
@@ -2904,12 +3200,22 @@ pub async fn send_eas_mime_message(
         o.dedup();
         o
     };
-    let stored = crate::smime::harvest_and_store(&state.storage, raw_mime, &owned).await;
-    if stored > 0 {
-        tracing::info!(
-            certs = stored,
-            "harvested S/MIME certificate(s) from outbound EAS mail"
-        );
+    // Gate the (relatively expensive) full MIME + CMS parse on a cheap
+    // superset scan: if no S/MIME token appears at all, there is nothing to
+    // harvest. `pkcs7` covers application/pkcs7-mime, application/x-pkcs7-mime
+    // and application/pkcs7-signature; `multipart/signed` covers detached
+    // signatures. Missing a token would silently lose a GAL certificate, so
+    // the scan must never under-match (Performance audit C13).
+    if contains_ci_unfolded(raw_mime, b"pkcs7")
+        || contains_ci_unfolded(raw_mime, b"multipart/signed")
+    {
+        let stored = crate::smime::harvest_and_store(&state.storage, raw_mime, &owned).await;
+        if stored > 0 {
+            tracing::info!(
+                certs = stored,
+                "harvested S/MIME certificate(s) from outbound EAS mail"
+            );
+        }
     }
 
     if save_in_sent && let Some(jmap) = state.jmap_client.as_ref() {
@@ -3031,9 +3337,71 @@ fn calendar_part_ics(part: &mail_parser::MessagePart<'_>) -> Option<String> {
     is_calendar.then(|| text.to_string())
 }
 
+/// Case-insensitive substring scan that treats CR/LF/space/tab as transparent,
+/// so a folded header (`multipart/\r\n signed`) still matches its unfolded
+/// token. Used as a conservative superset gate before the full S/MIME harvest
+/// (Performance audit C13): false positives cost one parse, false negatives
+/// would lose a certificate.
+fn contains_ci_unfolded(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    let mut i = 0;
+    let mut matched = 0;
+    let mut start = 0;
+    while i < haystack.len() {
+        let b = haystack[i];
+        if matches!(b, b'\r' | b'\n' | b' ' | b'\t') {
+            i += 1;
+            continue;
+        }
+        if b.eq_ignore_ascii_case(&needle[matched]) {
+            if matched == 0 {
+                start = i;
+            }
+            matched += 1;
+            if matched == needle.len() {
+                return true;
+            }
+            i += 1;
+        } else if matched == 0 {
+            i += 1;
+        } else {
+            i = start + 1;
+            matched = 0;
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn contains_ci_unfolded_matches_across_folding_and_case() {
+        assert!(contains_ci_unfolded(
+            b"Content-Type: application/pkcs7-mime; smime-type=signed-data",
+            b"pkcs7"
+        ));
+        assert!(contains_ci_unfolded(
+            b"Content-Type: Application/X-PKCS7-MIME",
+            b"pkcs7"
+        ));
+        assert!(contains_ci_unfolded(
+            b"Content-Type: multipart/\r\n signed;\r\n\tboundary=\"x\"",
+            b"multipart/signed"
+        ));
+        assert!(contains_ci_unfolded(
+            b"Content-Type: Multipart/ Signed",
+            b"multipart/signed"
+        ));
+        assert!(!contains_ci_unfolded(
+            b"Content-Type: text/plain\r\n\r\nhello",
+            b"pkcs7"
+        ));
+        assert!(!contains_ci_unfolded(b"", b"pkcs7"));
+    }
 
     #[test]
     fn test_parse_ews_message_basic() {
@@ -3538,6 +3906,76 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_eas_sendmail_accepts_prefixed_mime_and_mimedata() {
+        // Raw XML SendMail bodies are not WBXML-decoded, so the client may
+        // namespace-qualify the element. `Mime` is the current name and
+        // `MIMEData` the legacy one; both must resolve by local name.
+        let prefixed = r#"<?xml version="1.0" encoding="utf-8"?>
+<ComposeMail:SendMail xmlns:ComposeMail="ComposeMail:">
+  <ComposeMail:ClientId>c-1</ComposeMail:ClientId>
+  <ComposeMail:Mime>From: a@b.c</ComposeMail:Mime>
+</ComposeMail:SendMail>"#;
+        let req = parse_eas_sendmail(prefixed).expect("must parse");
+        assert_eq!(req.client_id.as_deref(), Some("c-1"));
+        assert_eq!(req.mime_data.as_deref(), Some("From: a@b.c"));
+
+        let legacy =
+            r#"<SendMail xmlns="ComposeMail:"><MIMEData>From: x@y.z</MIMEData></SendMail>"#;
+        let req = parse_eas_sendmail(legacy).expect("must parse");
+        assert_eq!(req.mime_data.as_deref(), Some("From: x@y.z"));
+    }
+
+    /// C5 hot path: the common SendMail has a large `Mime` and NO
+    /// `Source`/`CollectionId`/`ItemId`. Every field must still resolve — the
+    /// single-pass index is what keeps the absent ones from re-tokenising the
+    /// whole MIME blob, and this pins the values it returns.
+    #[test]
+    fn test_parse_eas_sendmail_large_mime_without_source_references() {
+        let payload = "QUJD".repeat(256 * 1024); // 1 MiB of base64
+        let xml = format!(
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<SendMail xmlns="ComposeMail:"><ClientId>c-large</ClientId><SaveInSentItems/><Mime>{payload}</Mime></SendMail>"#
+        );
+        let req = parse_eas_sendmail(&xml).expect("must parse");
+        assert_eq!(req.client_id.as_deref(), Some("c-large"));
+        assert_eq!(req.mime_data.as_deref(), Some(payload.as_str()));
+        assert!(req.save_in_sent);
+        assert_eq!(req.collection_id, None);
+        assert_eq!(req.item_id, None);
+
+        // Same document, prefixed elements: local-name matching still applies.
+        let prefixed = format!(
+            r#"<ComposeMail:SendMail xmlns:ComposeMail="ComposeMail:"><ComposeMail:ClientId>p</ComposeMail:ClientId><ComposeMail:Mime>{payload}</ComposeMail:Mime></ComposeMail:SendMail>"#
+        );
+        let req = parse_eas_sendmail(&prefixed).expect("must parse");
+        assert_eq!(req.client_id.as_deref(), Some("p"));
+        assert_eq!(req.mime_data.as_deref(), Some(payload.as_str()));
+    }
+
+    /// A prefixed `Mime` carrying XML character references must decode to the
+    /// exact text the client base64-encoded: `QUJ&#68;` is `QUJD`, and dropping
+    /// the reference (the old behaviour) truncated the base64 payload.
+    #[test]
+    fn test_parse_eas_sendmail_decodes_references_in_prefixed_mime() {
+        let xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<ComposeMail:SendMail xmlns:ComposeMail="ComposeMail:">
+  <ComposeMail:ClientId>c&#50;</ComposeMail:ClientId>
+  <ComposeMail:Mime>QUJ&#68;</ComposeMail:Mime>
+</ComposeMail:SendMail>"#;
+        let req = parse_eas_sendmail(xml).expect("must parse");
+        assert_eq!(req.client_id.as_deref(), Some("c2"));
+        assert_eq!(req.mime_data.as_deref(), Some("QUJD"));
+
+        // Named references resolve too, and CDATA stays literal.
+        let named = r#"<SendMail xmlns="ComposeMail:"><Mime>a&amp;b&#x3C;c</Mime></SendMail>"#;
+        let req = parse_eas_sendmail(named).expect("must parse");
+        assert_eq!(req.mime_data.as_deref(), Some("a&b<c"));
+        let cdata = r#"<SendMail xmlns="ComposeMail:"><Mime><![CDATA[a&amp;b]]></Mime></SendMail>"#;
+        let req = parse_eas_sendmail(cdata).expect("must parse");
+        assert_eq!(req.mime_data.as_deref(), Some("a&amp;b"));
+    }
+
+    #[test]
     fn test_mime_header_id_list_strips_brackets() {
         // In mail-parser 1.0 `HeaderValue::TextList` wraps message IDs; the
         // test verifies `mime_header_id_list` splits on whitespace and
@@ -4001,7 +4439,9 @@ Body\r\n";
         let xml = r#"<Commands>
           <Change><ServerId>em-abc</ServerId><ApplicationData><Email:Read>1</Email:Read><Email:Flag><Email:Status>2</Email:Status></Email:Flag></ApplicationData></Change>
         </Commands>"#;
-        let results = apply_eas_email_mutations(&client, "a", "u", &pw, xml, true).await;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, Some("1"), xml, true)
+            .await
+            .expect("apply mutations");
         assert_eq!(results.len(), 1);
         assert!(matches!(
             &results[0],
@@ -4023,7 +4463,9 @@ Body\r\n";
         let client = std::sync::Arc::new(crate::jmap::JmapClient::new(&base).unwrap());
         let pw = secrecy::SecretString::from("pw");
         let xml = r#"<Commands><Change><ServerId>em-1</ServerId><ApplicationData><Email:Read>0</Email:Read></ApplicationData></Change></Commands>"#;
-        let results = apply_eas_email_mutations(&client, "a", "u", &pw, xml, true).await;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, Some("1"), xml, true)
+            .await
+            .expect("apply mutations");
         assert!(matches!(
             &results[0],
             EasEmailMutationResult::Change { status: "1", .. }
@@ -4033,9 +4475,11 @@ Body\r\n";
             .iter()
             .find(|c| c.get(0).and_then(|v| v.as_str()) == Some("Email/set"))
             .unwrap();
+        // A presence check, not indexing: JSON indexing also yields `Null` for
+        // a key that is absent, which would pass if the patch never cleared it.
         assert_eq!(
-            set[1]["update"]["1"]["keywords/$seen"],
-            serde_json::json!(null)
+            set[1]["update"]["1"].get("keywords/$seen"),
+            Some(&serde_json::json!(null))
         );
     }
 
@@ -4045,7 +4489,9 @@ Body\r\n";
         let client = std::sync::Arc::new(crate::jmap::JmapClient::new(&base).unwrap());
         let pw = secrecy::SecretString::from("pw");
         let xml = r#"<Commands><Change><ServerId>2:999</ServerId><ApplicationData><Email:Read>1</Email:Read></ApplicationData></Change></Commands>"#;
-        let results = apply_eas_email_mutations(&client, "a", "u", &pw, xml, true).await;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, Some("1"), xml, true)
+            .await
+            .expect("apply mutations");
         assert!(matches!(
             &results[0],
             EasEmailMutationResult::Change { status: "8", .. }
@@ -4058,7 +4504,9 @@ Body\r\n";
         let client = std::sync::Arc::new(crate::jmap::JmapClient::new(&base).unwrap());
         let pw = secrecy::SecretString::from("pw");
         let xml = r#"<Commands><Change><ServerId>em-1</ServerId><ApplicationData><Email:Read>1</Email:Read></ApplicationData></Change></Commands>"#;
-        let results = apply_eas_email_mutations(&client, "a", "u", &pw, xml, true).await;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, Some("1"), xml, true)
+            .await
+            .expect("apply mutations");
         assert!(matches!(
             &results[0],
             EasEmailMutationResult::Change { status: "6", .. }
@@ -4071,7 +4519,9 @@ Body\r\n";
         let client = std::sync::Arc::new(crate::jmap::JmapClient::new(&base).unwrap());
         let pw = secrecy::SecretString::from("pw");
         let xml = r#"<Commands><Delete><ServerId>em-7</ServerId></Delete></Commands>"#;
-        let results = apply_eas_email_mutations(&client, "a", "u", &pw, xml, true).await;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, Some("inbox1"), xml, true)
+            .await
+            .expect("apply mutations");
         assert!(matches!(
             &results[0],
             EasEmailMutationResult::Delete { status: "1", .. }
@@ -4089,9 +4539,21 @@ Body\r\n";
             set[1]["update"]["7"]["mailboxIds/trash1"],
             serde_json::json!(true)
         );
+        // Presence check: indexing would also yield `Null` for an absent key,
+        // so this would pass even if the source mailbox were never removed.
         assert_eq!(
-            set[1]["update"]["7"]["mailboxIds/inbox1"],
-            serde_json::json!(null)
+            set[1]["update"]["7"].get("mailboxIds/inbox1"),
+            Some(&serde_json::json!(null))
+        );
+        // ...and NOTHING else: a Delete-as-move must not rewrite the message's
+        // other memberships (a shared/project folder would silently lose it).
+        let patch = set[1]["update"]["7"]
+            .as_object()
+            .expect("the move patch must be an object");
+        assert_eq!(
+            patch.len(),
+            2,
+            "only the source and Trash may be touched: {patch:?}"
         );
     }
 
@@ -4101,7 +4563,9 @@ Body\r\n";
         let client = std::sync::Arc::new(crate::jmap::JmapClient::new(&base).unwrap());
         let pw = secrecy::SecretString::from("pw");
         let xml = r#"<Commands><Delete><ServerId>em-7</ServerId></Delete></Commands>"#;
-        let results = apply_eas_email_mutations(&client, "a", "u", &pw, xml, false).await;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, Some("inbox1"), xml, false)
+            .await
+            .expect("apply mutations");
         assert!(matches!(
             &results[0],
             EasEmailMutationResult::Delete { status: "1", .. }
@@ -4115,12 +4579,69 @@ Body\r\n";
     }
 
     #[tokio::test]
+    async fn apply_email_mutations_unresolved_collection_skips_delete_but_applies_change() {
+        let (base, seen) = spawn_email_mutation_stub("ok").await;
+        let client = std::sync::Arc::new(crate::jmap::JmapClient::new(&base).unwrap());
+        let pw = secrecy::SecretString::from("pw");
+        let xml = r#"<Commands>
+          <Change><ServerId>em-1</ServerId><ApplicationData><Email:Read>1</Email:Read></ApplicationData></Change>
+          <Delete><ServerId>em-7</ServerId></Delete>
+        </Commands>"#;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, None, xml, true)
+            .await
+            .expect("apply mutations");
+        assert_eq!(results.len(), 2);
+        assert!(matches!(
+            &results[0],
+            EasEmailMutationResult::Change { status: "1", .. }
+        ));
+        // The raw EAS CollectionId must never be compared with backend
+        // mailbox ids, so the Delete applies nothing and stays retryable.
+        assert!(matches!(
+            &results[1],
+            EasEmailMutationResult::Delete { status: "6", .. }
+        ));
+        // `deletes_as_moves = true` would express an unintended Delete as an
+        // `Email/set` UPDATE (a mailboxIds move), not a `destroy` array — so the
+        // assertion pins the EXACT set of Email/set calls: one keyword update
+        // for the Change's em-1 and nothing else.
+        let calls = seen.lock().await;
+        let sets: Vec<&serde_json::Value> = calls
+            .iter()
+            .filter(|c| c.get(0).and_then(|v| v.as_str()) == Some("Email/set"))
+            .map(|c| &c[1])
+            .collect();
+        assert_eq!(
+            sets.len(),
+            1,
+            "the unresolved Delete must issue no Email/set at all: {sets:?}"
+        );
+        let update = sets[0]
+            .get("update")
+            .and_then(|v| v.as_object())
+            .expect("the sole Email/set must be the keyword update");
+        let changed_id = crate::email::jmap_id_from_email_server_id("em-1")
+            .expect("em-1 is a gateway email ServerId");
+        assert_eq!(
+            update.keys().collect::<Vec<_>>(),
+            vec![&changed_id],
+            "only the Change's message may be patched: {update:?}"
+        );
+        assert!(
+            sets[0].get("destroy").is_none(),
+            "an unresolved source must never destroy the message"
+        );
+    }
+
+    #[tokio::test]
     async fn apply_email_mutations_empty_when_no_commands() {
         let (base, seen) = spawn_email_mutation_stub("ok").await;
         let client = std::sync::Arc::new(crate::jmap::JmapClient::new(&base).unwrap());
         let pw = secrecy::SecretString::from("pw");
         let xml = r#"<Sync><Collections><Collection><SyncKey>1</SyncKey></Collection></Collections></Sync>"#;
-        let results = apply_eas_email_mutations(&client, "a", "u", &pw, xml, true).await;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, Some("1"), xml, true)
+            .await
+            .expect("apply mutations");
         assert!(results.is_empty());
         assert!(
             seen.lock().await.is_empty(),

@@ -30,6 +30,14 @@ pub struct CalendarItem {
     pub timezone: Option<String>,
     pub timezone_blob: Option<String>,
     pub rrule: Option<String>,
+    /// The `DURATION` property text this event was parsed from, when the source
+    /// used `DURATION` instead of `DTEND`. RFC 5545 §3.8.5.3 gives the two
+    /// forms different recurrence semantics: `DURATION` fixes a NOMINAL length
+    /// (a `P1D` instance keeps its wall-clock end across a DST change), while
+    /// `DTEND` fixes one exact elapsed span for every instance. Preserved so a
+    /// write-back re-emits the DURATION form while it still describes the
+    /// event (re-verified against `start`/`end` by `render_ics`).
+    pub duration: Option<String>,
     pub exdates: Vec<chrono::DateTime<Utc>>,
     pub organizer_name: Option<String>,
     pub organizer_email: Option<String>,
@@ -289,6 +297,7 @@ impl EasBuilder {
             end,
             all_day: self.all_day.unwrap_or(false),
             dtstamp: self.dtstamp,
+            duration: None,
             timezone: self.timezone,
             timezone_blob: self.timezone_blob,
             rrule: self.recurrence.to_rrule(),
@@ -731,6 +740,87 @@ fn parse_duration_minutes(trigger: &str) -> Option<i32> {
     ical_parser::parse_ical_duration_minutes(trigger).ok()
 }
 
+/// RFC 5545 §3.3.6 `DURATION` of a VEVENT, split into its NOMINAL
+/// (days/weeks) and ELAPSED (h/m/s) parts — see
+/// [`ical_parser::IcalDurationParts`].
+fn parse_duration_parts(value: &str) -> Option<ical_parser::IcalDurationParts> {
+    ical_parser::parse_ical_duration_parts(value).ok()
+}
+
+/// Whether an iCalendar content-line key names `name`: the property name before
+/// any parameters, compared case-insensitively (RFC 5545 §3.1 makes property
+/// names case-insensitive, and `DURATION;X=Y` carries parameters after the
+/// name).
+fn key_names(key: &str, name: &str) -> bool {
+    let prop = match key.split_once(';') {
+        Some((prop, _params)) => prop,
+        None => key,
+    };
+    prop.eq_ignore_ascii_case(name)
+}
+
+/// The zone a VEVENT `DURATION`'s NOMINAL days/weeks are applied in
+/// (RFC 5545 §3.3.6): the zone `DTSTART` itself is expressed in. A UTC
+/// `DTSTART` (`…Z`) means UTC arithmetic — using the item's DISPLAY zone
+/// (`X-EAS-TIMEZONE`, or a `DTEND`/`RECURRENCE-ID` `TZID`) would shift the end
+/// by the zone offset across a DST boundary (`20250308T140000Z` + `P1D` must end
+/// at `20250309T140000Z`, not `13:00Z`). A `TZID`-qualified `DTSTART` uses its
+/// own zone (a New York `P1D` across the spring transition is 23 hours), and a
+/// floating `DTSTART` falls back to the item's zone.
+fn duration_arithmetic_zone(
+    fields: &CalendarEventFields,
+    resolve: &mut dyn FnMut(&str) -> Option<String>,
+) -> Option<Tz> {
+    if fields.dtstart_is_utc {
+        return None;
+    }
+    let raw = fields
+        .dtstart_tzid
+        .as_deref()
+        .or(fields.timezone.as_deref())?;
+    resolve(raw).and_then(|iana| iana.parse::<Tz>().ok())
+}
+
+/// Add a parsed `DURATION` to a start instant per RFC 5545 §3.3.6: whole
+/// days/weeks are NOMINAL — applied to the wall clock in the start's zone, so
+/// `P1D` across a DST transition keeps the local time — while hours/minutes/
+/// seconds are ELAPSED. `PT24H` therefore stays exactly 24 hours. Without a
+/// resolvable zone the nominal part degrades to elapsed days (the best
+/// available approximation).
+fn add_nominal_duration(
+    start: chrono::DateTime<Utc>,
+    parts: ical_parser::IcalDurationParts,
+    zone: Option<Tz>,
+) -> Option<chrono::DateTime<Utc>> {
+    let days = if parts.negative {
+        parts.days.checked_neg()?
+    } else {
+        parts.days
+    };
+    let mut end = if days == 0 {
+        start
+    } else {
+        let day_span = chrono::Duration::try_days(days)?;
+        match zone {
+            Some(tz) => {
+                let shifted = start
+                    .with_timezone(&tz)
+                    .naive_local()
+                    .checked_add_signed(day_span)?;
+                localize_gap_tolerant(shifted, tz)?
+            }
+            None => start.checked_add_signed(day_span)?,
+        }
+    };
+    let seconds = if parts.negative {
+        parts.seconds.checked_neg()?
+    } else {
+        parts.seconds
+    };
+    end = end.checked_add_signed(chrono::Duration::try_seconds(seconds)?)?;
+    Some(end)
+}
+
 fn parse_event_lines(
     lines: &[String],
     tz_resolver: &mut dyn FnMut(&str) -> Option<String>,
@@ -785,12 +875,17 @@ fn parse_event_lines(
             }
             k if k.starts_with("LOCATION") => fields.location = Some(unescape_ical_text(value)),
             k if k.starts_with("UID") => fields.uid = Some(value.to_string()),
-            k if k.starts_with("DTSTAMP") => fields.dtstamp = parse_datetime(value),
-            k if k.starts_with("DTSTART") => {
+            k if key_names(k, "DTSTAMP") => fields.dtstamp = parse_datetime(value),
+            k if key_names(k, "DTSTART") => {
                 let tzid = parse_tzid_from_key(k);
                 let supplied = tzid.is_some();
                 let zone = resolve_property_zone(tzid.clone(), tz_resolver);
                 fields.start = parse_datetime_with_tzid_failing_unresolved(value, supplied, zone);
+                // `DURATION` arithmetic uses DTSTART's OWN zone, never the
+                // item's display zone (see `duration_arithmetic_zone`).
+                fields.dtstart_tzid = tzid.clone();
+                fields.dtstart_is_utc = value.len() > 10
+                    && value.as_bytes()[value.len() - 1].eq_ignore_ascii_case(&b'Z');
                 if fields.timezone.is_none() {
                     fields.timezone = tzid;
                 }
@@ -798,7 +893,24 @@ fn parse_event_lines(
                     fields.all_day = Some(true);
                 }
             }
-            k if k.starts_with("DTEND") => {
+            // RFC 5545 §3.8.5.3: a VEVENT `DURATION` MUST be a positive
+            // duration. A negative or zero value would put the end at or before
+            // the start (and `render_ics` would then omit the end, collapsing
+            // the event to zero length on the next read), so it is treated as
+            // unreadable — the same fail-closed path as a malformed value.
+            k if key_names(k, "DURATION") => {
+                match parse_duration_parts(value)
+                    .filter(|parts| parts.total_seconds().is_some_and(|s| s > 0))
+                {
+                    Some(parts) => {
+                        fields.duration = Some(parts);
+                        fields.duration_text = Some(value.trim().to_string());
+                    }
+                    None => fields.duration_invalid = true,
+                }
+            }
+            k if key_names(k, "DTEND") => {
+                fields.dtend_present = true;
                 let tzid = parse_tzid_from_key(k);
                 let supplied = tzid.is_some();
                 let zone = resolve_property_zone(tzid.clone(), tz_resolver);
@@ -807,7 +919,7 @@ fn parse_event_lines(
                     fields.timezone = tzid;
                 }
             }
-            k if k.starts_with("RECURRENCE-ID") => {
+            k if key_names(k, "RECURRENCE-ID") => {
                 let tzid = parse_tzid_from_key(k);
                 let supplied = tzid.is_some();
                 let zone = resolve_property_zone(tzid.clone(), tz_resolver);
@@ -821,7 +933,7 @@ fn parse_event_lines(
                 }
             }
             k if k.starts_with("RRULE") => fields.rrule = Some(value.to_string()),
-            k if k.starts_with("EXDATE") => {
+            k if key_names(k, "EXDATE") => {
                 let tzid = parse_tzid_from_key(k);
                 let supplied = tzid.is_some();
                 let zone = resolve_property_zone(tzid, tz_resolver);
@@ -886,6 +998,24 @@ fn parse_event_lines(
         }
     }
 
+    // RFC 5545 §3.3.6: when `DTSTART` is a DATE (no time part), a `DURATION`
+    // MUST be a whole number of days or weeks. A sub-day value is therefore
+    // malformed — and `add_nominal_duration` would silently reinterpret it —
+    // so it takes the same fail-closed path as an unreadable DURATION.
+    // Validated here because `DURATION` may precede `DTSTART` in the component.
+    // The malformed duration is DROPPED rather than flagged: for a DATE-valued
+    // start the RFC's own default (one day, §3.6.1) defines the span, so the
+    // event stays visible with a deterministic length instead of being
+    // rejected — and the date-only writer can round-trip it.
+    if fields.all_day == Some(true)
+        && fields
+            .duration
+            .is_some_and(|parts| parts.total_seconds().is_some_and(|s| s % 86_400 != 0))
+    {
+        fields.duration = None;
+        fields.duration_text = None;
+    }
+
     fields
 }
 
@@ -897,6 +1027,31 @@ struct CalendarEventFields {
     uid: Option<String>,
     start: Option<chrono::DateTime<Utc>>,
     end: Option<chrono::DateTime<Utc>>,
+    /// The component carried a `DTEND`/`DTEND`-equivalent property. Tracked
+    /// separately from `end` so an explicit but UNREADABLE `DTEND` (a naive
+    /// value under an unresolvable `TZID`) fails closed instead of silently
+    /// becoming a zero-length event that is then written back.
+    dtend_present: bool,
+    /// RFC 5545 §3.3.6 `DURATION`: the alternative to `DTEND`. Stalwart's
+    /// JSCalendar events carry `duration` (not `end`), and the calcard
+    /// exporter renders it as `DURATION`, so a reader that only honours
+    /// `DTEND` cannot read the gateway's own JMAP-derived events.
+    duration: Option<ical_parser::IcalDurationParts>,
+    /// The `DURATION` property text exactly as parsed, preserved so a
+    /// write-back can re-emit the NOMINAL form (RFC 5545 §3.8.5.3) instead of
+    /// pinning every recurrence instance to one exact `DTEND` span.
+    duration_text: Option<String>,
+    /// `DTSTART`'s OWN `TZID` parameter (never a `DTEND`/`RECURRENCE-ID` one or
+    /// `X-EAS-TIMEZONE`), used for `DURATION` nominal arithmetic.
+    dtstart_tzid: Option<String>,
+    /// `DTSTART` carried a UTC (`…Z`) value, so a `DURATION`'s nominal
+    /// days/weeks are applied in UTC rather than in the item's display zone.
+    dtstart_is_utc: bool,
+    /// An explicit `DURATION` was present but unreadable. Tracked separately
+    /// from an OMITTED duration: when it would have supplied the end (no
+    /// `DTEND`), the event is rejected rather than silently shortened to
+    /// zero length and then written back.
+    duration_invalid: bool,
     all_day: Option<bool>,
     dtstamp: Option<chrono::DateTime<Utc>>,
     recurrence_id: Option<chrono::DateTime<Utc>>,
@@ -919,6 +1074,27 @@ struct CalendarEventFields {
     client_uid: Option<String>,
     timezone: Option<String>,
     deleted: bool,
+}
+
+/// Resolve a component's end instant per RFC 5545 §3.6.1: `DTEND` when
+/// present, else `DTSTART` + `DURATION`, else a zero-length event (one day for
+/// a DATE-valued `DTSTART`).
+fn derive_component_end(
+    start: Option<chrono::DateTime<Utc>>,
+    end: Option<chrono::DateTime<Utc>>,
+    duration: Option<ical_parser::IcalDurationParts>,
+    all_day: bool,
+    zone: Option<Tz>,
+) -> Option<chrono::DateTime<Utc>> {
+    match (end, start) {
+        (Some(end), _) => Some(end),
+        (None, Some(start)) => match duration {
+            Some(parts) => add_nominal_duration(start, parts, zone),
+            None if all_day => start.checked_add_signed(chrono::Duration::try_days(1)?),
+            None => Some(start),
+        },
+        (None, None) => None,
+    }
 }
 
 pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
@@ -945,6 +1121,7 @@ pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
     for block in split_ical_blocks(ics) {
         let mut fields = parse_event_lines(&block, &mut resolve);
         if let Some(recurrence_id) = fields.recurrence_id {
+            let exception_zone = duration_arithmetic_zone(&fields, &mut resolve);
             let exception = CalendarException {
                 deleted: fields.deleted,
                 exception_start: recurrence_id,
@@ -952,7 +1129,37 @@ pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
                 description: fields.description,
                 location: fields.location,
                 start: fields.start,
-                end: fields.end,
+                end: match (fields.start, fields.end) {
+                    // An explicit but UNREADABLE DTEND (a naive value under an
+                    // unresolvable TZID) must not publish a ZERO-LENGTH
+                    // override: leaving the end unset lets the master's
+                    // duration supply it, so a genuinely moved instance keeps
+                    // both its new start and its length.
+                    (Some(_), None) if fields.dtend_present => None,
+                    // An unreadable DURATION that would have supplied this
+                    // instance's end leaves the override unusable: skipping it
+                    // keeps the master's instance (with its own duration)
+                    // instead of publishing a zero-length override.
+                    (Some(_), None) if fields.duration_invalid => continue,
+                    // An override that carries ONLY a moved start — no DTEND
+                    // and no DURATION — inherits the series' length the same
+                    // way: the override is the master component plus the
+                    // changed fields, so the duration comes from the master
+                    // (RFC 5545 §3.8.5.3's `DURATION` or §3.8.2.2's DTEND).
+                    // A DATE-valued start keeps the §3.6.1 one-day default.
+                    (Some(_), None)
+                        if fields.duration.is_none() && !fields.all_day.unwrap_or(false) =>
+                    {
+                        None
+                    }
+                    _ => derive_component_end(
+                        fields.start,
+                        fields.end,
+                        fields.duration,
+                        fields.all_day.unwrap_or(false),
+                        exception_zone,
+                    ),
+                },
                 all_day: fields.all_day,
                 busy_status: fields.busy_status,
                 sensitivity: fields.sensitivity,
@@ -971,6 +1178,9 @@ pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
             continue;
         }
 
+        // The zone a `DURATION`'s NOMINAL days are applied in: DTSTART's own
+        // zone (computed before any field is moved out below).
+        let start_zone = duration_arithmetic_zone(&fields, &mut resolve);
         let uid = fields.uid.unwrap_or_else(|| Uuid::new_v4().to_string());
         // Store the RESOLVED IANA id, not the raw TZID spelling, so every
         // downstream consumer (render_ics DTSTART;TZID, EAS `Calendar:Timezone`
@@ -983,18 +1193,40 @@ pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
         {
             fields.timezone = Some(resolved);
         }
+        // An explicit but UNREADABLE DURATION that would have supplied the end
+        // (no DTEND) is a malformed event: fail closed rather than deliver a
+        // zero-length interval and advance the provider token as if it parsed.
+        if fields.duration_invalid && !fields.dtend_present {
+            tracing::warn!("calendar: rejecting an event whose explicit DURATION is unreadable");
+            return None;
+        }
         let mut item = CalendarItem {
             uid,
             subject: fields.subject.unwrap_or_default(),
             description: fields.description.unwrap_or_default(),
             location: fields.location.unwrap_or_default(),
             start: fields.start?,
-            end: fields.end?,
+            // An explicit DTEND that could not be read (e.g. a naive value under
+            // an unresolvable TZID) must not degrade into a zero-length event
+            // that is then written back to the backend as the event's own end.
+            // An OMITTED DTEND still falls back to DURATION (or the all-day
+            // default), per RFC 5545 §3.6.1.
+            end: match (fields.dtend_present, fields.end) {
+                (true, None) => return None,
+                (_, end) => derive_component_end(
+                    fields.start,
+                    end,
+                    fields.duration,
+                    fields.all_day.unwrap_or(false),
+                    start_zone,
+                )?,
+            },
             all_day: fields.all_day.unwrap_or(false),
             dtstamp: fields.dtstamp,
             timezone: fields.timezone,
             timezone_blob: timezone_blob.clone(),
             rrule: fields.rrule,
+            duration: fields.duration_text,
             exdates: fields.exdates.clone(),
             organizer_name: fields.organizer_name,
             organizer_email: fields.organizer_email,
@@ -1205,6 +1437,22 @@ pub fn render_ics(item: &CalendarItem) -> String {
     event.timestamp(dtstamp);
     event.summary(&item.subject);
 
+    // A preserved DURATION is re-emitted ONLY while it still describes the
+    // event: the nominal end it implies must equal the stored end. A client
+    // edit through the gateway moves `start`/`end` without touching the
+    // preserved text, and must get an exact DTEND instead of a stale span.
+    let preserved_duration = item.duration.as_deref().filter(|text| {
+        !item.all_day
+            && item.end > item.start
+            && parse_duration_parts(text).and_then(|parts| {
+                add_nominal_duration(
+                    item.start,
+                    parts,
+                    item.timezone.as_deref().and_then(|t| t.parse::<Tz>().ok()),
+                )
+            }) == Some(item.end)
+    });
+
     if item.all_day {
         event.starts(item.start.naive_utc().date());
         let end_date = item.end.naive_utc().date();
@@ -1222,7 +1470,13 @@ pub fn render_ics(item: &CalendarItem) -> String {
             // A matching VTIMEZONE was produced (the authoritative stored blob
             // was re-emitted, or a canonical one was synthesised). Emit the
             // start/end as local wall-clock with a TZID referencing it.
-            event.ends((item.end.with_timezone(&tz).naive_local(), tz));
+            // RFC 5545 §3.8.2.2: DTEND MUST be later than DTSTART, so a
+            // zero-length event is written with DTSTART alone (§3.6.1).
+            if let Some(text) = preserved_duration {
+                event.append_property(Property::new("DURATION", text.to_string()).done());
+            } else if item.end > item.start {
+                event.ends((item.end.with_timezone(&tz).naive_local(), tz));
+            }
             event.starts((item.start.with_timezone(&tz).naive_local(), tz));
         } else {
             // The IANA id parses as a Tz here, but neither the authoritative
@@ -1230,11 +1484,19 @@ pub fn render_ics(item: &CalendarItem) -> String {
             // absolute UTC instant (with `Z`) so no orphan `DTSTART;TZID=...`
             // references a missing VTIMEZONE, keeping the iCalendar
             // RFC-5545-valid.
-            event.ends(item.end);
+            if let Some(text) = preserved_duration {
+                event.append_property(Property::new("DURATION", text.to_string()).done());
+            } else if item.end > item.start {
+                event.ends(item.end);
+            }
             event.starts(item.start);
         }
     } else {
-        event.ends(item.end);
+        if let Some(text) = preserved_duration {
+            event.append_property(Property::new("DURATION", text.to_string()).done());
+        } else if item.end > item.start {
+            event.ends(item.end);
+        }
         event.starts(item.start);
     }
 
@@ -1492,7 +1754,10 @@ pub fn render_ics(item: &CalendarItem) -> String {
                 .done(),
             );
             ex_event.starts((effective_start.with_timezone(&tz).naive_local(), tz));
-            ex_event.ends((effective_end.with_timezone(&tz).naive_local(), tz));
+            // RFC 5545 §3.8.2.2: DTEND must be later than DTSTART.
+            if effective_end > effective_start {
+                ex_event.ends((effective_end.with_timezone(&tz).naive_local(), tz));
+            }
         } else {
             ex_event.append_property(Property::new(
                 "RECURRENCE-ID",
@@ -1502,7 +1767,9 @@ pub fn render_ics(item: &CalendarItem) -> String {
                     .to_string(),
             ));
             ex_event.starts(effective_start);
-            ex_event.ends(effective_end);
+            if effective_end > effective_start {
+                ex_event.ends(effective_end);
+            }
         }
 
         if let Some(location) = exception.location.as_deref().or(Some(&item.location))
@@ -2079,6 +2346,93 @@ fn extract_ews_field_doc(doc: &Document, tag: &[u8]) -> Option<String> {
         .find_map(|n| n.text().map(|s| s.to_string()))
 }
 
+/// [`extract_ews_field`] for a field whose local name can also occur in the SOAP
+/// ENVELOPE: never matches the envelope's own `s:Body` (a direct child of
+/// `s:Envelope`, SOAP 1.1 §4.1.1). Without this a request that carries no
+/// `t:Body` yields the envelope's indentation text as the message body, which
+/// ERASES the stored description on any update that reaches the legacy
+/// whole-envelope extraction path.
+pub fn extract_ews_item_field(xml: &str, tag: &[u8]) -> Option<String> {
+    let tag_str = std::str::from_utf8(tag).ok()?;
+    match Document::parse(xml) {
+        Ok(doc) => doc
+            .descendants()
+            .filter(|n| n.is_element() && n.tag_name().name() == tag_str)
+            .filter(|n| {
+                n.parent_element()
+                    .is_none_or(|p| !p.tag_name().name().eq_ignore_ascii_case("Envelope"))
+            })
+            .find_map(|n| n.text().map(|s| s.to_string())),
+        // An undeclared prefix (a malformed envelope) forces this path, so it
+        // needs the SAME envelope exclusion or the envelope's own `<s:Body>`
+        // leaks in as the item body.
+        Err(_) => extract_ews_item_field_lenient(xml, tag),
+    }
+}
+
+/// [`extract_ews_item_field`] over malformed XML (quick-xml, which tolerates an
+/// undeclared prefix): the first matching element's direct text whose PARENT is
+/// not `Envelope`.
+fn extract_ews_item_field_lenient(xml: &str, tag: &[u8]) -> Option<String> {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(false);
+    let mut buf = Vec::new();
+    // Local names of the open elements OUTSIDE the captured element, so the
+    // candidate's parent can be checked. Bounded by the envelope's depth.
+    let mut ancestors: Vec<String> = Vec::new();
+    let mut depth = 0usize;
+    let mut out: Option<String> = None;
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => {
+                let local = local_name_str(e.name().as_ref());
+                if depth == 0 {
+                    if local.as_bytes() == tag
+                        && !ancestors
+                            .last()
+                            .is_some_and(|p| p.eq_ignore_ascii_case("Envelope"))
+                    {
+                        depth = 1;
+                    } else {
+                        ancestors.push(local);
+                    }
+                } else {
+                    depth += 1;
+                }
+            }
+            // CDATA carries its body verbatim (never entity-resolved), so it
+            // is appended exactly like text; dropping it silently loses the
+            // value when a client wraps a field in `<![CDATA[…]]>`.
+            Ok(Event::Text(t)) if depth == 1 => {
+                out.get_or_insert_with(String::new).push_str(t.as_ref());
+            }
+            Ok(Event::CData(t)) if depth == 1 => {
+                out.get_or_insert_with(String::new).push_str(t.as_ref());
+            }
+            Ok(Event::GeneralRef(r)) => {
+                if depth == 1 {
+                    out.get_or_insert_with(String::new)
+                        .push_str(&resolve_xml_reference(r.as_ref()));
+                }
+            }
+            Ok(Event::End(_)) => {
+                if depth > 0 {
+                    depth -= 1;
+                    if depth == 0 && out.is_some() {
+                        break;
+                    }
+                } else {
+                    ancestors.pop();
+                }
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    out
+}
+
 /// Extract the request-wide timezone from the SOAP `t:TimeZoneContext` header
 /// ([MS-OXWSCORE] §2.2.1.12): a `t:TimeZoneDefinition` child whose `Id`
 /// attribute (or element text, for the gateway's own legacy emits) carries the
@@ -2281,10 +2635,14 @@ fn extract_ews_field_lenient(xml: &str, tag: &[u8]) -> Option<String> {
                     depth += 1;
                 }
             }
-            Ok(Event::Text(t)) => {
-                if depth == 1 {
-                    out.get_or_insert_with(String::new).push_str(t.as_ref());
-                }
+            // CDATA carries its body verbatim (never entity-resolved), so it
+            // is appended exactly like text; dropping it silently loses the
+            // value when a client wraps a field in `<![CDATA[…]]>`.
+            Ok(Event::Text(t)) if depth == 1 => {
+                out.get_or_insert_with(String::new).push_str(t.as_ref());
+            }
+            Ok(Event::CData(t)) if depth == 1 => {
+                out.get_or_insert_with(String::new).push_str(t.as_ref());
             }
             Ok(Event::GeneralRef(r)) => {
                 if depth == 1 {
@@ -2331,10 +2689,13 @@ fn extract_ews_fields_lenient(xml: &str, tag: &[u8]) -> Vec<String> {
                     depth += 1;
                 }
             }
-            Ok(Event::Text(t)) => {
-                if depth == 1
-                    && let Some(i) = current
-                {
+            Ok(Event::CData(t)) if depth == 1 => {
+                if let Some(i) = current {
+                    out[i].push_str(t.as_ref());
+                }
+            }
+            Ok(Event::Text(t)) if depth == 1 => {
+                if let Some(i) = current {
                     out[i].push_str(t.as_ref());
                 }
             }
@@ -2609,13 +2970,6 @@ pub fn normalize_timezone_to_iana(raw: &str) -> String {
 
 pub fn parse_ews_calendar_item(xml: &str) -> Result<CalendarItem> {
     let doc = Document::parse(xml).map_err(|e| anyhow!("failed to parse EWS XML: {e}"))?;
-
-    // The request's timezone: `t:StartTimeZone`/`t:StartTimeZoneId`/
-    // `t:MeetingTimeZone`/`t:EndTimeZone`/`t:EndTimeZoneId` on the item, or
-    // the SOAP `t:TimeZoneContext` header ([MS-OXWSCORE] §2.2.1.12) Outlook
-    // sends alongside naive (offset-less) `t:Start`/`t:End` values. The
-    // header is the LAST fallback: element-level zones override the
-    // request-wide context.
     let timezone_raw = extract_ews_timezone_field_doc(&doc, b"StartTimeZone")
         .or_else(|| extract_ews_field_doc(&doc, b"StartTimeZoneId"))
         .or_else(|| extract_ews_timezone_field_doc(&doc, b"MeetingTimeZone"))
@@ -2652,8 +3006,15 @@ pub fn parse_ews_calendar_item(xml: &str) -> Result<CalendarItem> {
     let uid = extract_ews_field_doc(&doc, b"UID")
         .or_else(|| extract_ews_field_doc(&doc, b"ClientUid"))
         .unwrap_or_else(|| Uuid::new_v4().to_string());
-    let description = extract_ews_field_doc(&doc, b"Body")
-        .or_else(|| extract_ews_field_doc(&doc, b"TextBody"))
+    let description = doc
+        .descendants()
+        .filter(|n| {
+            n.is_element()
+                && matches!(n.tag_name().name(), "Body" | "TextBody")
+                && n.parent_element()
+                    .is_none_or(|p| !p.tag_name().name().eq_ignore_ascii_case("Envelope"))
+        })
+        .find_map(|n| n.text().map(|s| s.to_string()))
         .unwrap_or_default();
     let location = extract_ews_field_doc(&doc, b"Location").unwrap_or_default();
     let all_day = extract_ews_field_doc(&doc, b"IsAllDayEvent")
@@ -2701,6 +3062,7 @@ pub fn parse_ews_calendar_item(xml: &str) -> Result<CalendarItem> {
         timezone,
         timezone_blob: extract_ews_timezone_field_doc(&doc, b"MeetingTimeZone"),
         rrule,
+        duration: None,
         exdates: Vec::new(),
         organizer_name,
         organizer_email,
@@ -2890,6 +3252,459 @@ mod scheduling_tests {
             ev.end,
             parse_datetime("20250701T160000Z").unwrap(),
             "DTEND must localize in Europe/Berlin (18:00 CEST), not LA"
+        );
+    }
+
+    #[test]
+    fn item_field_extraction_never_matches_the_soap_envelope_body() {
+        // A legacy UpdateItem without a real `t:Body` used to read the SOAP
+        // envelope's own `<s:Body>` indentation as the message body and store it
+        // as the event description, erasing the stored one.
+        let envelope_without_body = r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+  <s:Body>
+    <m:UpdateItem><m:ItemChanges><t:ItemChange><t:ItemId Id="cal-1"/></t:ItemChange></m:ItemChanges></m:UpdateItem>
+  </s:Body>
+</s:Envelope>"#;
+        assert_eq!(
+            extract_ews_item_field(envelope_without_body, b"Body"),
+            None,
+            "the SOAP envelope's own Body is not the item body"
+        );
+
+        let envelope_with_body = r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+  <s:Body>
+    <t:CalendarItem><t:Body BodyType="Text">Agenda text</t:Body></t:CalendarItem>
+  </s:Body>
+</s:Envelope>"#;
+        assert_eq!(
+            extract_ews_item_field(envelope_with_body, b"Body").as_deref(),
+            Some("Agenda text"),
+            "a real item Body is still extracted from inside the envelope"
+        );
+
+        let text_body = r#"<t:CalendarItem><t:TextBody>Plain</t:TextBody></t:CalendarItem>"#;
+        assert_eq!(
+            extract_ews_item_field(text_body, b"TextBody").as_deref(),
+            Some("Plain")
+        );
+    }
+
+    #[test]
+    fn parse_ews_calendar_item_ignores_the_envelope_body() {
+        let xml = r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+  <s:Body>
+    <t:CalendarItem>
+      <t:Subject>Envelope body must not leak</t:Subject>
+      <t:Start>2025-07-01T09:00:00Z</t:Start>
+      <t:End>2025-07-01T10:00:00Z</t:End>
+    </t:CalendarItem>
+  </s:Body>
+</s:Envelope>"#;
+        let item = parse_ews_calendar_item(xml).expect("parses");
+        assert_eq!(
+            item.description, "",
+            "the envelope Body is not a description"
+        );
+        assert_eq!(item.subject, "Envelope body must not leak");
+    }
+
+    #[test]
+    fn sub_minute_duration_keeps_second_precision() {
+        // RFC 5545 §3.3.6 allows a second-level DURATION; truncating it to
+        // whole minutes made `PT30S` a zero-length event.
+        let ics = "BEGIN:VCALENDAR\r\n\
+             VERSION:2.0\r\n\
+             BEGIN:VEVENT\r\n\
+             UID:seconds@example.com\r\n\
+             DTSTART:20260115T090000Z\r\n\
+             DURATION:PT30S\r\n\
+             END:VEVENT\r\n\
+             END:VCALENDAR\r\n";
+        let ev = parse_ics_event(ics).expect("a PT30S event must parse");
+        assert_eq!(
+            ev.end.timestamp() - ev.start.timestamp(),
+            30,
+            "DURATION:PT30S is a 30-second event"
+        );
+    }
+
+    #[test]
+    fn nominal_day_duration_keeps_wall_clock_across_dst() {
+        // RFC 5545 §3.3.6: whole days are NOMINAL. A `P1D` event starting at
+        // 09:00 America/New_York the day before the spring-forward transition
+        // ends at 09:00 local the next day (23 elapsed hours), while `PT24H`
+        // stays exactly 24 elapsed hours.
+        let daily = "BEGIN:VCALENDAR\r\n\
+             VERSION:2.0\r\n\
+             BEGIN:VEVENT\r\n\
+             UID:nominal-day@example.com\r\n\
+             DTSTART;TZID=America/New_York:20250308T090000\r\n\
+             DURATION:P1D\r\n\
+             END:VEVENT\r\n\
+             END:VCALENDAR\r\n";
+        let ev = parse_ics_event(daily).expect("a P1D event parses");
+        let expected_local = chrono::NaiveDate::from_ymd_opt(2025, 3, 9)
+            .unwrap()
+            .and_hms_opt(9, 0, 0)
+            .unwrap();
+        let tz: Tz = "America/New_York".parse().unwrap();
+        let expected = expected_local
+            .and_local_timezone(tz)
+            .earliest()
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(ev.end, expected, "P1D must keep 09:00 local across DST");
+        assert_eq!(ev.end.timestamp() - ev.start.timestamp(), 23 * 3600);
+
+        let elapsed = daily.replace("DURATION:P1D", "DURATION:PT24H");
+        let ev = parse_ics_event(&elapsed).expect("a PT24H event parses");
+        assert_eq!(
+            ev.end.timestamp() - ev.start.timestamp(),
+            24 * 3600,
+            "PT24H is elapsed time, not a nominal day"
+        );
+    }
+
+    #[test]
+    fn unreadable_duration_fails_closed() {
+        // An explicit but unreadable DURATION that would supply the end must
+        // not become a zero-length event that is then written back.
+        let ics = "BEGIN:VCALENDAR\r\n\
+             VERSION:2.0\r\n\
+             BEGIN:VEVENT\r\n\
+             UID:bad-duration@example.com\r\n\
+             DTSTART:20260115T090000Z\r\n\
+             DURATION:not-a-duration\r\n\
+             END:VEVENT\r\n\
+             END:VCALENDAR\r\n";
+        assert!(
+            parse_ics_event(ics).is_none(),
+            "an explicit unreadable DURATION must be rejected"
+        );
+    }
+
+    #[test]
+    fn non_positive_vevent_duration_is_rejected() {
+        // RFC 5545 §3.8.5.3: a VEVENT DURATION MUST be positive. A negative (or
+        // zero) value would put the end at/before the start and collapse the
+        // event to zero length on write-back.
+        for bad in ["-PT1H", "PT0S", "P0D"] {
+            let ics = format!(
+                "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n\
+                 UID:non-positive@example.com\r\nDTSTART:20260115T090000Z\r\n\
+                 DURATION:{bad}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+            );
+            assert!(
+                parse_ics_event(&ics).is_none(),
+                "a non-positive VEVENT DURATION ({bad}) must be rejected"
+            );
+        }
+        // A signed ALARM trigger keeps its signed semantics (the VEVENT
+        // restriction does not apply to VALARM).
+        let alarm = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n\
+             UID:alarm@example.com\r\nDTSTART:20260115T090000Z\r\n\
+             DTEND:20260115T100000Z\r\nBEGIN:VALARM\r\nACTION:DISPLAY\r\n\
+             TRIGGER:-PT15M\r\nEND:VALARM\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        assert_eq!(parse_ics_event(alarm).expect("parses").reminder, Some(-15));
+    }
+
+    #[test]
+    fn duration_property_name_is_case_insensitive() {
+        // RFC 5545 §3.1: property names are case-insensitive, and parameters
+        // may follow the name.
+        let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n\
+             UID:lower-duration@example.com\r\nDTSTART:20260115T090000Z\r\n\
+             Duration:PT30M\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let ev = parse_ics_event(ics).expect("a lowercase DURATION parses");
+        assert_eq!(ev.end.timestamp() - ev.start.timestamp(), 30 * 60);
+    }
+
+    #[test]
+    fn dtend_property_name_is_case_insensitive() {
+        // RFC 5545 §3.1: property names are case-insensitive. A `dtend:` that
+        // was not recognised would leave `dtend_present` false and turn a
+        // supplied one-hour event into a zero-length one.
+        let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n\
+             UID:lower-dtend@example.com\r\nDTSTART:20260115T090000Z\r\n\
+             dtend:20260115T100000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let ev = parse_ics_event(ics).expect("a lowercase DTEND parses");
+        assert_eq!(ev.end.timestamp() - ev.start.timestamp(), 3_600);
+    }
+
+    #[test]
+    fn all_day_event_with_sub_day_duration_fails_closed() {
+        // RFC 5545 §3.3.6: a DATE-valued DTSTART may only carry a whole-day
+        // (or week) DURATION. `PT12H` is malformed; reinterpreting it would
+        // produce an all-day item with a noon end, which the date-only writer
+        // then silently widens back to a full day.
+        let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n\
+             UID:allday-subday@example.com\r\nDTSTART;VALUE=DATE:20260115\r\n\
+             DURATION:PT12H\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let ev = parse_ics_event(ics).expect("the event itself still parses");
+        assert_eq!(
+            ev.end.signed_duration_since(ev.start),
+            chrono::Duration::days(1),
+            "a malformed sub-day DURATION falls back to the one-day default"
+        );
+        // A whole-day DURATION for the same start stays authoritative.
+        let ok = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n\
+             UID:allday-days@example.com\r\nDTSTART;VALUE=DATE:20260115\r\n\
+             DURATION:P3D\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let ev = parse_ics_event(ok).expect("parses");
+        assert_eq!(
+            ev.end.signed_duration_since(ev.start),
+            chrono::Duration::days(3)
+        );
+    }
+
+    #[test]
+    fn moved_exception_without_end_keeps_the_master_length() {
+        // An override that carries only a moved start (no DTEND, no DURATION)
+        // is the master component with changed fields, so its length comes from
+        // the series. It must not be turned into a zero-length instance.
+        let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n\
+             UID:moved-no-end@example.com\r\nDTSTART:20260115T090000Z\r\n\
+             DTEND:20260115T100000Z\r\nRRULE:FREQ=DAILY;COUNT=3\r\n\
+             END:VEVENT\r\nBEGIN:VEVENT\r\nUID:moved-no-end@example.com\r\n\
+             RECURRENCE-ID:20260116T090000Z\r\nDTSTART:20260116T140000Z\r\n\
+             END:VEVENT\r\nEND:VCALENDAR\r\n";
+        let ev = parse_ics_event(ics).expect("the master parses");
+        assert_eq!(ev.exceptions.len(), 1);
+        assert_eq!(
+            ev.exceptions[0].end, None,
+            "an unset exception end must stay unset so render inherits"
+        );
+        assert_eq!(
+            ev.exceptions[0].start,
+            Some(parse_datetime("20260116T140000Z").unwrap())
+        );
+    }
+
+    #[test]
+    fn duration_arithmetic_uses_dtstart_zone_not_display_zone() {
+        // RFC 5545 §3.3.6: nominal days are applied in DTSTART's OWN zone. A UTC
+        // DTSTART must stay UTC even when the item carries a display zone.
+        let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n\
+             UID:utc-nominal@example.com\r\nDTSTART:20250308T140000Z\r\n\
+             DURATION:P1D\r\nX-EAS-TIMEZONE:America/New_York\r\n\
+             END:VEVENT\r\nEND:VCALENDAR\r\n";
+        let ev = parse_ics_event(ics).expect("parses");
+        assert_eq!(
+            ev.end.timestamp() - ev.start.timestamp(),
+            24 * 3600,
+            "a UTC DTSTART keeps 24 elapsed hours for P1D"
+        );
+        assert_eq!(
+            ev.end.format("%Y%m%dT%H%M%SZ").to_string(),
+            "20250309T140000Z"
+        );
+    }
+
+    #[test]
+    fn exception_with_unreadable_dtend_inherits_master_duration() {
+        // An explicit but unreadable exception DTEND must not publish a
+        // ZERO-LENGTH override: the moved instance keeps its new start and
+        // inherits the master's one-hour span.
+        let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\n\
+             UID:moved-instance@example.com\r\nDTSTART:20260115T090000Z\r\n\
+             DTEND:20260115T100000Z\r\nRRULE:FREQ=DAILY;COUNT=3\r\n\
+             END:VEVENT\r\nBEGIN:VEVENT\r\nUID:moved-instance@example.com\r\n\
+             RECURRENCE-ID:20260116T090000Z\r\nDTSTART:20260116T140000Z\r\n\
+             DTEND;TZID=Not/AZone:20260116T150000\r\nEND:VEVENT\r\n\
+             END:VCALENDAR\r\n";
+        let ev = parse_ics_event(ics).expect("the master still parses");
+        assert_eq!(ev.exceptions.len(), 1);
+        let exception = &ev.exceptions[0];
+        assert_eq!(
+            exception.end, None,
+            "no zero-length override may be published"
+        );
+        assert!(exception.start.is_some(), "the moved start is preserved");
+        let rendered = render_ics(&ev);
+        // The instance inherits the master's one-hour duration, not a zero span.
+        assert!(
+            rendered.matches("DTEND").count() >= 1,
+            "the rendered instance must carry an end: {rendered}"
+        );
+    }
+
+    #[test]
+    fn positive_duration_sign_parses() {
+        // RFC 5545 §3.3.6 dur-value allows an optional leading "+".
+        assert_eq!(
+            crate::ical_parser::parse_ical_duration_seconds("+PT30S").unwrap(),
+            30
+        );
+        assert_eq!(
+            crate::ical_parser::parse_ical_duration_seconds("PT30S").unwrap(),
+            30
+        );
+        assert!(
+            crate::ical_parser::parse_ical_duration_seconds("P99999999999Y").is_err(),
+            "an absurd duration is a parse error, never a panicking cast"
+        );
+    }
+
+    #[test]
+    fn render_ics_preserves_nominal_duration_for_recurring_master() {
+        // RFC 5545 §3.8.5.3: a DURATION-based master keeps its nominal length on
+        // write-back instead of being pinned to one exact DTEND span.
+        let ics = "BEGIN:VCALENDAR\r\n\
+             VERSION:2.0\r\n\
+             BEGIN:VEVENT\r\n\
+             UID:dur-master@example.com\r\n\
+             DTSTART;TZID=America/New_York:20250308T090000\r\n\
+             DURATION:P1D\r\n\
+             RRULE:FREQ=DAILY;COUNT=5\r\n\
+             END:VEVENT\r\n\
+             END:VCALENDAR\r\n";
+        let ev = parse_ics_event(ics).expect("parses");
+        let rendered = render_ics(&ev);
+        assert!(
+            rendered.contains("DURATION:P1D"),
+            "a preserved nominal duration must be re-emitted: {rendered}"
+        );
+        assert!(
+            !rendered.contains("DTEND"),
+            "no exact DTEND may replace a DURATION-based master: {rendered}"
+        );
+
+        // A client edit that moves the end invalidates the preserved text, so
+        // the exact DTEND is emitted instead of a stale span.
+        let mut edited = ev.clone();
+        edited.end += chrono::Duration::hours(1);
+        let rendered = render_ics(&edited);
+        assert!(
+            rendered.contains("DTEND") && !rendered.contains("DURATION:P1D"),
+            "a moved end must fall back to DTEND: {rendered}"
+        );
+    }
+
+    #[test]
+    fn explicit_unreadable_dtend_fails_closed() {
+        // A DTEND that is PRESENT but unreadable (a naive value under an
+        // unresolvable TZID) must not degrade into a zero-length event that is
+        // then written back as the event's own end.
+        let ics = "BEGIN:VCALENDAR\r\n\
+             VERSION:2.0\r\n\
+             BEGIN:VEVENT\r\n\
+             UID:bad-dtend@example.com\r\n\
+             DTSTART:20260115T090000Z\r\n\
+             DTEND;TZID=Not/AZone:20260115T100000\r\n\
+             SUMMARY:Unreadable end\r\n\
+             END:VEVENT\r\n\
+             END:VCALENDAR\r\n";
+        assert!(
+            parse_ics_event(ics).is_none(),
+            "an explicit but unreadable DTEND must be rejected, not defaulted"
+        );
+
+        // An OMITTED DTEND keeps the documented fallback (DURATION here).
+        let no_dtend = "BEGIN:VCALENDAR\r\n\
+             VERSION:2.0\r\n\
+             BEGIN:VEVENT\r\n\
+             UID:no-dtend@example.com\r\n\
+             DTSTART:20260115T090000Z\r\n\
+             DURATION:PT1H\r\n\
+             END:VEVENT\r\n\
+             END:VCALENDAR\r\n";
+        let ev = parse_ics_event(no_dtend).expect("an omitted DTEND still parses");
+        assert_eq!(ev.end.timestamp() - ev.start.timestamp(), 3600);
+    }
+
+    #[test]
+    fn zero_length_timed_event_renders_without_dtend() {
+        // RFC 5545 §3.8.2.2: DTEND MUST be later than DTSTART, so a zero-length
+        // timed event is written with DTSTART alone (§3.6.1).
+        let start = parse_datetime("20260115T090000Z").unwrap();
+        for tz in [None, Some("Europe/Berlin".to_string())] {
+            let item = CalendarItem {
+                uid: "zero@example.com".to_string(),
+                subject: "Zero".to_string(),
+                start,
+                end: start,
+                timezone: tz.clone(),
+                ..Default::default()
+            };
+            let ics = render_ics(&item);
+            assert!(
+                !ics.contains("DTEND"),
+                "a zero-length timed event must not carry DTEND (tz={tz:?}): {ics}"
+            );
+            assert!(
+                ics.contains("DTSTART"),
+                "DTSTART must still be written: {ics}"
+            );
+        }
+    }
+
+    #[test]
+    fn item_field_lenient_extraction_skips_an_undeclared_prefix_envelope_body() {
+        // An undeclared prefix forces the quick-xml fallback; it must apply the
+        // same envelope exclusion as the strict path.
+        let xml = r#"<s:Envelope>
+  <s:Body>
+    <m:UpdateItem><m:ItemChanges/></m:UpdateItem>
+  </s:Body>
+</s:Envelope>"#;
+        assert_eq!(
+            extract_ews_item_field(xml, b"Body"),
+            None,
+            "the envelope's own Body must never be read as the item body"
+        );
+
+        let with_body = r#"<s:Envelope>
+  <s:Body>
+    <t:CalendarItem><t:Body>Agenda</t:Body></t:CalendarItem>
+  </s:Body>
+</s:Envelope>"#;
+        assert_eq!(
+            extract_ews_item_field(with_body, b"Body").as_deref(),
+            Some("Agenda")
+        );
+    }
+
+    #[test]
+    fn duration_only_event_derives_its_end() {
+        // Stalwart's JSCalendar events carry `duration` (never `end`), and the
+        // calcard exporter renders it as `DURATION`. A reader that only honours
+        // `DTEND` cannot read the gateway's own JMAP-derived events at all.
+        let ics = "BEGIN:VCALENDAR\r\n\
+             VERSION:2.0\r\n\
+             BEGIN:VEVENT\r\n\
+             UID:duration-only@example.com\r\n\
+             DTSTART:20260115T090000Z\r\n\
+             DURATION:PT30M\r\n\
+             SUMMARY:Half hour\r\n\
+             END:VEVENT\r\n\
+             END:VCALENDAR\r\n";
+        let ev = parse_ics_event(ics).expect("a DURATION-only event must parse");
+        assert_eq!(ev.start, parse_datetime("20260115T090000Z").unwrap());
+        assert_eq!(
+            ev.end,
+            parse_datetime("20260115T093000Z").unwrap(),
+            "DTSTART + DURATION is the end instant (RFC 5545 §3.6.1)"
+        );
+        assert_eq!(ev.subject, "Half hour");
+    }
+
+    #[test]
+    fn missing_dtend_and_duration_yields_zero_length_or_all_day_span() {
+        let timed = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:t@example.com\r\n\
+             DTSTART:20260115T090000Z\r\nSUMMARY:Point\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let ev = parse_ics_event(timed).expect("a timed event needs no DTEND");
+        assert_eq!(
+            ev.end, ev.start,
+            "a timed event without DTEND is zero-length"
+        );
+
+        let all_day = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:a@example.com\r\n\
+             DTSTART;VALUE=DATE:20260115\r\nSUMMARY:Day\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let ev = parse_ics_event(all_day).expect("a DATE event needs no DTEND");
+        assert_eq!(
+            ev.end.signed_duration_since(ev.start),
+            chrono::Duration::days(1),
+            "a DATE-valued DTSTART spans one day (RFC 5545 §3.6.1)"
         );
     }
 

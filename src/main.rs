@@ -28,6 +28,9 @@ use tower_http::{
 };
 use tracing::{debug, info, warn};
 
+#[cfg(test)]
+mod http_wire_tests;
+
 /// Route-level request body ceiling for EAS/EWS/Autodiscover. Must cover
 /// a 25 MiB attachment as base64 MIMEData (~33.3 MiB) plus envelope margin:
 /// 4 MiB base of small requests + 36 MiB of encoded MIME. MAPI/HTTP routes
@@ -859,7 +862,18 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    let app = Router::new()
+    let app = build_router(app_state.clone());
+
+    let addr: SocketAddr = config.bind.parse()?;
+
+    serve_plain(addr, app).await?;
+
+    tracing::info!("Server shutdown complete");
+    Ok(())
+}
+
+fn build_router(app_state: Arc<AppState>) -> Router {
+    Router::new()
         // §20: liveness/readiness split. `/health/live` answers whether the
         // gateway PROCESS is up (router reachable, event loop responsive);
         // `/health/ready` reports whether the gateway can actually serve
@@ -1003,14 +1017,7 @@ async fn main() -> anyhow::Result<()> {
         .layer(SetResponseHeaderLayer::overriding(
             header::HeaderName::from_static("strict-transport-security"),
             HeaderValue::from_static("max-age=63072000; includeSubDomains"),
-        ));
-
-    let addr: SocketAddr = config.bind.parse()?;
-
-    serve_plain(addr, app).await?;
-
-    tracing::info!("Server shutdown complete");
-    Ok(())
+        ))
 }
 
 async fn serve_plain(addr: SocketAddr, app: Router) -> anyhow::Result<()> {
@@ -1395,8 +1402,9 @@ async fn verify_jmap_health(state: &Arc<AppState>) -> Result<()> {
 }
 
 async fn verify_caldav_health(state: &Arc<AppState>) -> Result<()> {
-    use exchange_gateway::caldav::CaldavClient;
-    let caldav = CaldavClient::new(&state.cfg)?;
+    let caldav = state
+        .caldav()
+        .map_err(|e| anyhow::anyhow!("CalDAV client unavailable: {e}"))?;
     // Use a lightweight OPTIONS request to the CalDAV base URL with dummy
     // Basic auth. This avoids two Stalwart log-noise problems:
     //   (1) "Missing Authorization header" — caused by unauthenticated requests
@@ -1575,3 +1583,13 @@ mod tests {
         );
     }
 }
+
+// ========================================================================
+// Recorded-client contract tests (recommendation 2)
+// These replace the shallow string-containment fixtures in
+// tests/protocol_fixtures.rs. They drive the real production handlers
+// through `build_router` against wiremock backends emulating Stalwart.
+// ========================================================================
+
+#[cfg(test)]
+mod recorded_client_contract;

@@ -314,9 +314,10 @@ impl RopCreateFolderSuccess {
     }
 }
 
-/// `RopDeleteFolder` request, MS-OXCROPS §2.2.4.4.1. After the dispatcher
+/// `RopDeleteFolder` request, MS-OXCROPS §2.2.4.3.1. After the dispatcher
 /// consumed the `RopId`, the body is `LogonId · InputHandleIndex ·
-/// FolderId(8 LE) · DeleteFlags(1)`.
+/// DeleteFolderFlags(1) · FolderId(8 LE)` — the flag byte PRECEDES the FID on
+/// the wire (see the §4.2.1 example: `1D 00 01 05 01 00 00 00 0E 8E DF 36`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RopDeleteFolderRequest {
     pub logon_id: u8,
@@ -328,8 +329,8 @@ impl RopDeleteFolderRequest {
     pub fn decode(buf: &mut Buf<'_>) -> Result<Self, DecodeError> {
         let logon_id = buf.take_u8()?;
         let input_handle_index = buf.take_u8()?;
-        let folder_id = buf.take_u64_le()?;
         let delete_flags = buf.take_u8()?;
+        let folder_id = buf.take_u64_le()?;
         Ok(Self {
             logon_id,
             input_handle_index,
@@ -353,6 +354,27 @@ impl RopHandleAckSuccess {
         out.push(self.rop_id.to_u8());
         out.push(self.input_handle_index);
         out.extend(&self.return_value.to_u32().to_le_bytes());
+    }
+}
+
+/// `RopDeleteFolder` response (MS-OXCROPS §2.2.4.3.2):
+///   `RopId(0x1D) · InputHandleIndex · ReturnValue(4 LE) · PartialCompletion(1)`.
+/// Unlike [`RopHandleAckSuccess`] this ROP carries `PartialCompletion`
+/// ([MS-OXCFOLD] §2.2.1.3.2), set when the ROP succeeds for only a subset of
+/// targets (e.g. the folder is non-empty and the request did not ask to delete
+/// its messages/subfolders).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopDeleteFolderResponse {
+    pub input_handle_index: u8,
+    pub return_value: RopErrorCode,
+    pub partial_completion: u8,
+}
+impl RopDeleteFolderResponse {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_DELETE_FOLDER.to_u8());
+        out.push(self.input_handle_index);
+        out.extend(&self.return_value.to_u32().to_le_bytes());
+        out.push(self.partial_completion);
     }
 }
 
@@ -737,21 +759,21 @@ impl RopGetPropertyIdsFromNamesSuccess {
     }
 }
 
-// ---------- Move/CopyFolder (0x35 / 0x36) ------------------------------------
+// ---------- MoveFolder (0x35) -------------------------------------------
 
-/// `RopMoveFolder` / `RopCopyFolder` request, MS-OXCROPS §2.2.4.5.1 /
-/// §2.2.4.6.1. After the dispatcher consumed the `RopId`, the body is:
+/// `RopMoveFolder` request, MS-OXCROPS §2.2.4.5.1. After the dispatcher
+/// consumed the `RopId`, the body is:
 ///   `LogonId · SourceHandleIndex · DestHandleIndex · WantCopy(1) ·
-///    FolderId(8 LE) · [DestFolderId(8 LE) if recursive]`.
+///    FolderId(8 LE)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RopMoveCopyFolderRequest {
+pub struct RopMoveFolderRequest {
     pub logon_id: u8,
     pub source_handle_index: u8,
     pub dest_handle_index: u8,
     pub want_copy: u8,
     pub folder_id: u64,
 }
-impl RopMoveCopyFolderRequest {
+impl RopMoveFolderRequest {
     pub fn decode(buf: &mut Buf<'_>) -> Result<Self, DecodeError> {
         let logon_id = buf.take_u8()?;
         let source_handle_index = buf.take_u8()?;
@@ -768,17 +790,113 @@ impl RopMoveCopyFolderRequest {
     }
 }
 
-/// `RopMoveFolder` / `RopCopyFolder` success response
-/// (MS-OXCROPS §2.2.4.5.2 is a sectionless envelope):
+/// `NullDestinationObject` ([MS-OXCDATA] §2.2.1.5.2 / [MS-OXCPRPT] §2.2.8.2
+/// table): the destination object does not exist.
+pub const NULL_DESTINATION_OBJECT: u32 = 0x0000_0503;
+
+/// `RopMoveFolder` success response (MS-OXCROPS §2.2.4.7.2):
 ///   `RopId · SourceHandleIndex · ReturnValue(4 LE) · PartialCompletion(1)`.
+/// `ReturnValue` MUST be a value other than [`NULL_DESTINATION_OBJECT`]; that
+/// code has its own response layout, [`RopMoveFolderNullDestination`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RopMoveCopyFolderSuccess {
+pub struct RopMoveFolderSuccess {
     pub rop_id: RopId,
     pub source_handle_index: u8,
     pub return_value: RopErrorCode,
     pub partial_completion: u8,
 }
-impl RopMoveCopyFolderSuccess {
+impl RopMoveFolderSuccess {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(self.rop_id.to_u8());
+        out.push(self.source_handle_index);
+        out.extend(&self.return_value.to_u32().to_le_bytes());
+        out.push(self.partial_completion);
+    }
+}
+
+/// `RopMoveFolder` null-destination failure response (MS-OXCROPS §2.2.4.7.3):
+///   `RopId · SourceHandleIndex · ReturnValue(4 LE, 0x00000503) ·
+///    DestHandleIndex(4 LE) · PartialCompletion(1)`.
+///
+/// The extra `DestHandleIndex` field is what makes this layout distinct: a
+/// client parsing the ordinary response would read the first byte of that field
+/// as `PartialCompletion` and mis-frame the next ROP.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopMoveFolderNullDestination {
+    pub source_handle_index: u8,
+    pub dest_handle_index: u32,
+}
+impl RopMoveFolderNullDestination {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_MOVE_FOLDER.to_u8());
+        out.push(self.source_handle_index);
+        out.extend_from_slice(&NULL_DESTINATION_OBJECT.to_le_bytes());
+        out.extend_from_slice(&self.dest_handle_index.to_le_bytes());
+        out.push(0);
+    }
+}
+
+// ---------- CopyFolder (0x36) --------------------------------------------
+
+/// `RopCopyFolder` request, MS-OXCROPS §2.2.4.6.1. After the dispatcher
+/// consumed the `RopId`, the body is:
+///   `LogonId · SourceHandleIndex · DestHandleIndex · WantCopy(1) ·
+///    FolderId(8 LE) · DestFolderId(8 LE)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RopCopyFolderRequest {
+    pub logon_id: u8,
+    pub source_handle_index: u8,
+    pub dest_handle_index: u8,
+    pub want_asynchronous: u8,
+    pub want_recursive: u8,
+    pub use_unicode: u8,
+    /// FID of the folder being copied (the destination PARENT is the
+    /// `DestHandleIndex` handle; there is no second FID on the wire).
+    pub folder_id: u64,
+    /// NUL-terminated name for the copy (UTF-16LE when `UseUnicode` is set).
+    pub new_folder_name: String,
+}
+impl RopCopyFolderRequest {
+    /// MS-OXCROPS §2.2.4.8.1 wire order:
+    /// `LogonId · SourceHandleIndex · DestHandleIndex · WantAsynchronous ·
+    ///  WantRecursive · UseUnicode · FolderId(8 LE) · NewFolderName(NUL)`.
+    pub fn decode(buf: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        let logon_id = buf.take_u8()?;
+        let source_handle_index = buf.take_u8()?;
+        let dest_handle_index = buf.take_u8()?;
+        let want_asynchronous = buf.take_u8()?;
+        let want_recursive = buf.take_u8()?;
+        let use_unicode = buf.take_u8()?;
+        let folder_id = buf.take_u64_le()?;
+        let new_folder_name = if use_unicode != 0 {
+            take_terminated_utf16(buf)?
+        } else {
+            take_terminated_mbcs(buf)?
+        };
+        Ok(Self {
+            logon_id,
+            source_handle_index,
+            dest_handle_index,
+            want_asynchronous,
+            want_recursive,
+            use_unicode,
+            folder_id,
+            new_folder_name,
+        })
+    }
+}
+
+/// `RopCopyFolder` success response
+/// (MS-OXCROPS §2.2.4.6.2 is a sectionless envelope):
+///   `RopId · SourceHandleIndex · ReturnValue(4 LE) · PartialCompletion(1)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopCopyFolderSuccess {
+    pub rop_id: RopId,
+    pub source_handle_index: u8,
+    pub return_value: RopErrorCode,
+    pub partial_completion: u8,
+}
+impl RopCopyFolderSuccess {
     pub fn encode(&self, out: &mut Vec<u8>) {
         out.push(self.rop_id.to_u8());
         out.push(self.source_handle_index);
@@ -1384,7 +1502,7 @@ impl RopLogonSuccess {
     }
 }
 
-/// A failure response for any ROP — the 9-byte envelope (RopId + handle +
+/// A failure response for any ROP — the 6-byte envelope (RopId + handle +
 /// ReturnValue) Outlook displays a transport error for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RopErrorResponse {
@@ -1398,6 +1516,30 @@ impl RopErrorResponse {
         out.push(self.rop_id.to_u8());
         out.push(self.output_handle_index);
         out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
+    }
+}
+
+/// `RopEmptyFolder` response (MS-OXCROPS §2.2.4.9.2) and the two
+/// hard-delete ROPs, `RopHardDeleteMessages` (§2.2.4.12.2) and
+/// `RopHardDeleteMessagesAndSubfolders` (§2.2.4.10.2). All three share one
+/// shape:
+///   `RopId · InputHandleIndex · ReturnValue(4 LE) · PartialCompletion(1)`.
+/// `PartialCompletion` is mandatory: omitting it desynchronises the ROP chain,
+/// so a following ROP's first byte would be consumed as this field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopPartialCompletionResponse {
+    pub rop_id: RopId,
+    pub input_handle_index: u8,
+    pub return_value: RopErrorCode,
+    pub partial_completion: u8,
+}
+
+impl RopPartialCompletionResponse {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(self.rop_id.to_u8());
+        out.push(self.input_handle_index);
+        out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
+        out.push(self.partial_completion);
     }
 }
 
@@ -4562,6 +4704,53 @@ impl RopGetPerUserLongTermIdsRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// MS-OXCROPS §2.2.4.8.1: the CopyFolder request is
+    /// `LogonId · SourceHandleIndex · DestHandleIndex · WantAsynchronous ·
+    /// WantRecursive · UseUnicode · FolderId(8) · NewFolderName(NUL)`. The
+    /// decoder is fed the buffer AFTER the RopId byte. A trailing ROP byte
+    /// proves the name terminator, not a fixed length, bounds the read.
+    #[test]
+    fn rop_copy_folder_request_decodes_ansi_name_and_leaves_next_rop() {
+        let mut buf = vec![
+            0x01, // LogonId
+            0x02, // SourceHandleIndex
+            0x03, // DestHandleIndex
+            0x00, // WantAsynchronous
+            0x01, // WantRecursive
+            0x00, // UseUnicode (multibyte name)
+        ];
+        buf.extend(0x1122_3344_5566_7788u64.to_le_bytes()); // FolderId
+        buf.extend(b"Copy of Inbox\0");
+        buf.push(0x01); // the NEXT ROP's RopId (RopRelease)
+        let mut cur = Buf::new(&buf);
+        let req = RopCopyFolderRequest::decode(&mut cur).unwrap();
+        assert_eq!(req.logon_id, 0x01);
+        assert_eq!(req.source_handle_index, 0x02);
+        assert_eq!(req.dest_handle_index, 0x03);
+        assert_eq!(req.want_asynchronous, 0x00);
+        assert_eq!(req.want_recursive, 0x01);
+        assert_eq!(req.use_unicode, 0x00);
+        assert_eq!(req.folder_id, 0x1122_3344_5566_7788);
+        assert_eq!(req.new_folder_name, "Copy of Inbox");
+        assert_eq!(cur.take_u8().unwrap(), 0x01, "the next ROP must survive");
+    }
+
+    #[test]
+    fn rop_copy_folder_request_decodes_utf16_name() {
+        let mut buf = vec![0x01, 0x02, 0x03, 0x00, 0x00, 0x01];
+        buf.extend(7u64.to_le_bytes());
+        for unit in "Kopie".encode_utf16() {
+            buf.extend(unit.to_le_bytes());
+        }
+        buf.extend(0u16.to_le_bytes());
+        let mut cur = Buf::new(&buf);
+        let req = RopCopyFolderRequest::decode(&mut cur).unwrap();
+        assert!(req.use_unicode != 0);
+        assert_eq!(req.folder_id, 7);
+        assert_eq!(req.new_folder_name, "Kopie");
+        assert_eq!(cur.remaining(), 0);
+    }
 
     #[test]
     fn ropid_roundtrips_known_ids() {

@@ -28,12 +28,14 @@ use anyhow::{Result, anyhow};
 use dashmap::DashMap;
 use moka::Expiry;
 use moka::sync::Cache;
+use percent_encoding::percent_decode_str;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use secrecy::{ExposeSecret, SecretString};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, trace, warn};
@@ -157,6 +159,42 @@ where
             let single = T::deserialize(value).map_err(serde::de::Error::custom)?;
             Ok(Some(vec![single]))
         }
+    }
+}
+
+/// Deserialize a JMAP `messageId` (RFC 8621 §4.1.3: `"String[]|null"`) into the
+/// single value the gateway's consumers use.
+///
+/// The RFC type is an ARRAY, so a server that follows the contract (Stalwart
+/// does) sends `["<id@host>"]`; a scalar `String` is still accepted because the
+/// stubs and some older servers emit one. Anything that is neither (and any
+/// non-string element) is an error: silently dropping the whole `Email/get`
+/// page would make the collection look empty.
+fn message_id_from_wire<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    match value {
+        Value::Null => Ok(None),
+        Value::String(s) => Ok(Some(s)),
+        Value::Array(items) => {
+            for item in items {
+                match item {
+                    Value::String(s) => return Ok(Some(s)),
+                    Value::Null => {}
+                    other => {
+                        return Err(serde::de::Error::custom(format!(
+                            "messageId element is not a string: {other}"
+                        )));
+                    }
+                }
+            }
+            Ok(None)
+        }
+        other => Err(serde::de::Error::custom(format!(
+            "messageId is neither a string nor an array: {other}"
+        ))),
     }
 }
 
@@ -292,6 +330,93 @@ pub struct JmapResponse {
     pub method_responses: Vec<(String, Value, String)>,
 }
 
+/// A message copy that stopped partway through: `created` messages were already
+/// copied before the failure. Reporting a bare error would make the caller treat
+/// the whole request as failed and re-copy those messages on retry (duplicating
+/// An `Email/set` move whose response left some patched ids UNACCOUNTED for
+/// (neither `updated` nor `notUpdated`): the confirmed moves stand, the
+/// unresolved ids may or may not have moved and must be reconciled before a
+/// retry.
+#[derive(Debug)]
+pub struct MoveUnresolved {
+    /// Ids the server confirmed as updated.
+    pub updated: usize,
+    /// Ids the response did not account for.
+    pub unresolved: Vec<String>,
+}
+
+impl std::fmt::Display for MoveUnresolved {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Email/set move left {} id(s) unaccounted for after {} confirmed",
+            self.unresolved.len(),
+            self.updated
+        )
+    }
+}
+
+impl std::error::Error for MoveUnresolved {}
+
+/// them), so the count travels with the error.
+#[derive(Debug)]
+pub struct CopyPartialFailure {
+    pub created: usize,
+    pub source: anyhow::Error,
+}
+
+impl std::fmt::Display for CopyPartialFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "email copy stopped after {} copied message(s): {}",
+            self.created, self.source
+        )
+    }
+}
+
+impl std::error::Error for CopyPartialFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.source.as_ref())
+    }
+}
+
+/// What one `JmapClient::copy_email_chunk` accomplished.
+struct ChunkCopyOutcome {
+    /// Copies the server CONFIRMED (`Email/import#created`).
+    created: usize,
+    /// Whether the `Email/import` request was actually sent. A chunk whose
+    /// sources all vanished sends nothing, so a later failure is still a plain
+    /// backend error rather than partial completion.
+    imported: bool,
+}
+
+/// Why one copy chunk stopped. The distinction decides whether a retry is safe.
+enum ChunkCopyError {
+    /// Failed BEFORE `Email/import` was submitted: no copy of this chunk exists.
+    BeforeImport(anyhow::Error),
+    /// The import was submitted but did not account for every creation id:
+    /// `confirmed` copies exist and the rest are unknown.
+    Unconfirmed {
+        confirmed: usize,
+        source: anyhow::Error,
+    },
+}
+
+/// One page of [`JmapClient::list_email_ids_with_keywords_page`].
+pub struct EmailKeywordPage {
+    /// `(jmap id, sorted keyword names)` for the page.
+    pub entries: Vec<(String, Vec<String>)>,
+    /// Absolute query position to resume at.
+    pub next_position: u64,
+    /// Mailbox size reported by the page (`calculateTotal: true`).
+    pub total: u64,
+    /// Whether a further page exists.
+    pub more: bool,
+    /// The `Email/query` state this page was computed from (RFC 8620 §5.5).
+    pub query_state: String,
+}
+
 /// JMAP Email object (RFC 8621 §4.1)
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -349,7 +474,8 @@ pub struct JmapEmail {
     #[serde(default, deserialize_with = "one_or_array")]
     pub sender: Option<Vec<JmapEmailAddress>>,
     /// Message-ID header value, sans angle brackets (RFC 8621 §4.1.3 `messageId`).
-    #[serde(default)]
+    /// The wire type is `String[]|null`; the gateway keeps the first value.
+    #[serde(default, deserialize_with = "message_id_from_wire")]
     pub message_id: Option<String>,
     /// In-Reply-To header value(s) (RFC 8621 §4.1.3 `inReplyTo`).
     #[serde(default)]
@@ -375,6 +501,23 @@ impl JmapEmail {
             .as_ref()
             .map(|k| k.keys().filter(|k| !k.starts_with('$')).cloned().collect())
             .unwrap_or_default()
+    }
+
+    /// The email's active keywords (those set to `true`), sorted — the same
+    /// canonical form the EAS flag baseline stores (`list_email_ids_with_keywords_page`).
+    pub fn sorted_active_keywords(&self) -> Vec<String> {
+        let mut keywords: Vec<String> = self
+            .keywords
+            .as_ref()
+            .map(|m| {
+                m.iter()
+                    .filter(|(_, v)| **v)
+                    .map(|(k, _)| k.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        keywords.sort();
+        keywords
     }
 }
 
@@ -471,6 +614,39 @@ pub struct EmailListResult {
     /// Current state of the Email data type (from Email/get response).
     /// Used as `sinceState` for subsequent `Email/changes` calls.
     pub state: String,
+    /// RFC 8620 §5.5 `anchorNotFound`: the query carried an `anchor` that no
+    /// longer exists in the result set. The result is empty; the caller falls
+    /// back to numeric `position` paging.
+    pub anchor_not_found: bool,
+    /// RFC 8620 §5.5 response `position`: the zero-based index of the first
+    /// returned id within the COMPLETE result set. This is the authoritative
+    /// absolute progress of a paged walk — unlike a locally accumulated
+    /// numeric offset, it stays correct when an `anchor` is used or when a
+    /// concurrent deletion shifts the tail.
+    pub query_position: u64,
+    /// The final id in `Email/query`'s `/ids` order, NOT `Email/get`'s result
+    /// order. RFC 8620 permits reordered get results, so the continuation
+    /// anchor must come from query order to avoid re-delivering or skipping
+    /// items across pages.
+    pub query_last_id: Option<String>,
+}
+
+impl EmailListResult {
+    /// An empty result (no emails, no state) for a folder that cannot be
+    /// queried — an unmapped role, an Outbox, or a mailbox lookup that found
+    /// nothing.
+    pub fn empty() -> Self {
+        EmailListResult {
+            emails: Vec::new(),
+            total: 0,
+            can_calculate_changes: false,
+            query_state: String::new(),
+            state: String::new(),
+            anchor_not_found: false,
+            query_position: 0,
+            query_last_id: None,
+        }
+    }
 }
 
 /// Result of an Email/changes call
@@ -500,6 +676,40 @@ pub struct MailboxListResult {
     pub total: u64,
 }
 
+/// Outcome of a JMAP `Mailbox/set` `destroy` (RFC 8621 §2.5). Distinguishes the
+/// three cases a caller must react to differently: the mailbox is gone
+/// (`Destroyed`), the mailbox was already absent so the desired end state holds
+/// (`AlreadyGone`, RFC 8620 §5.3 `notFound`), or the server refused the destroy
+/// for another reason (`Refused`: `mailboxHasEmail`, `mailboxHasChild`,
+/// `forbidden`, …).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MailboxDestroyOutcome {
+    Destroyed,
+    AlreadyGone,
+    Refused,
+}
+
+impl MailboxDestroyOutcome {
+    /// Whether the desired backend end state — the mailbox being absent — is
+    /// known to hold. A transport/method error has no outcome value and must
+    /// not be treated as gone by callers.
+    pub const fn is_gone(self) -> bool {
+        matches!(self, Self::Destroyed | Self::AlreadyGone)
+    }
+}
+
+/// Outcome of an authoritative membership read for one message in one mailbox
+/// (see [`JmapClient::email_mailbox_membership`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EmailMailboxMembership {
+    /// The message exists and belongs to the requested mailbox.
+    Member,
+    /// The message exists but does not belong to the requested mailbox.
+    NotMember,
+    /// The backend reports the message as `notFound` (deleted).
+    Absent,
+}
+
 /// Parameters for querying emails via JMAP.
 pub struct QueryEmailsParams<'a> {
     pub account_id: &'a str,
@@ -507,6 +717,17 @@ pub struct QueryEmailsParams<'a> {
     pub sort: Option<Vec<Value>>,
     pub position: u64,
     pub limit: u64,
+    /// RFC 8620 §5.5 `anchor`: an id at which the window starts instead of the
+    /// numeric `position`. A caller resuming a paged walk pins the last item it
+    /// delivered so a concurrent deletion cannot shift the tail below a stale
+    /// numeric offset and skip a message. When set, `position` is ignored by
+    /// the server (RFC 8620 §5.5) and a not-found anchor surfaces as
+    /// [`EmailListResult::anchor_not_found`] so the caller can fall back.
+    pub anchor: Option<&'a str>,
+    /// RFC 8620 §5.5 `anchorOffset`: the index of the first result relative to
+    /// the anchor. `0` includes the anchor itself; `1` starts immediately
+    /// after it. Only meaningful when `anchor` is set.
+    pub anchor_offset: i32,
     pub username: &'a str,
     pub password: &'a SecretString,
 }
@@ -556,6 +777,18 @@ pub const JMAP_SIEVE_CAPABILITY: &str = "urn:ietf:params:jmap:sieve";
 
 /// JMAP capability URN for contacts (RFC 9610).
 pub const JMAP_CONTACTS_CAPABILITY: &str = "urn:ietf:params:jmap:contacts";
+
+/// Request-scoped inputs for a verified calendar-probe destroy
+/// ([`JmapClient::probe_destroy_confirmed`]). Grouping them keeps the helper
+/// under clippy's argument-count threshold.
+struct DestroyProbeCtx<'a> {
+    session: &'a JmapSession,
+    method: &'a str,
+    account_id: &'a str,
+    ids: &'a [String],
+    username: &'a str,
+    password: &'a SecretString,
+}
 
 /// Result of the deploy-time JMAP Calendars capability verification
 /// (`JmapClient::verify_calendar_capability_deploy`).
@@ -980,8 +1213,28 @@ const CALENDAR_EVENT_PROPERTIES: &[&str] = &[
     "alerts",
     "links",
     "iCalendar",
+    // `calendarIds` is the event's calendar-membership map. A scoped EAS/EWS
+    // calendar folder filters a fetch by this property, so it MUST be
+    // requested — an omitted property is never returned (RFC 8620 §5.1), which
+    // would leave the membership map absent and the scope filter unable to
+    // reject another calendar's events.
+    "calendarIds",
     "@etag",
 ];
+
+/// The `CalendarEvent/query` filter shared by the snapshot query and its
+/// `queryState` stability probe (draft-ietf-jmap-calendars §5.11.1): a
+/// half-open `[start, end)` window, optionally narrowed to one calendar.
+fn calendar_query_filter(start: &str, end: &str, calendar_id: Option<&str>) -> Value {
+    let mut filter = json!({
+        "after": start,
+        "before": end,
+    });
+    if let Some(cal_id) = calendar_id {
+        filter["inCalendarIds"] = json!([cal_id]);
+    }
+    filter
+}
 
 /// Parse the `list` array of a `CalendarEvent/get` response into events,
 /// retaining each raw object so iCalendar can be reconstructed on demand.
@@ -1059,6 +1312,20 @@ pub struct CalendarEventListResult {
 #[error("CalendarEvent/changes cannot calculate changes: {0}")]
 pub struct CannotCalculateChanges(pub String);
 
+/// The submission outcome is UNKNOWN: the request may have been accepted but no
+/// confirmation came back. The caller must NOT retry over SMTP — the message may
+/// already be on its way, so a fallback could deliver it twice.
+#[derive(Debug)]
+pub struct SubmissionUnconfirmed(pub String);
+
+impl std::fmt::Display for SubmissionUnconfirmed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "JMAP submission unconfirmed: {}", self.0)
+    }
+}
+
+impl std::error::Error for SubmissionUnconfirmed {}
+
 /// Result of a CalendarEvent/changes call.
 #[derive(Clone, Debug)]
 pub struct CalendarEventChangesResult {
@@ -1111,8 +1378,21 @@ pub enum CalendarWriteError {
     /// is lossy on this backend.
     #[error("backend discarded the calendar event payload: {0}")]
     PayloadDiscarded(String),
-    /// Any other failure (transport, session, malformed response, a read-back
-    /// content mismatch, …).
+    /// The write MAY have been applied but could not be confirmed: a lost
+    /// response, a malformed `CalendarEvent/set` reply, or a read-back /
+    /// round-trip failure whose compensating delete also failed. Creating the
+    /// event again (the CalDAV fallback) could store a SECOND copy, so the
+    /// caller must refuse and let the client retry instead.
+    #[error("calendar write outcome unknown: {message}")]
+    Ambiguous {
+        message: String,
+        /// The failure also proved the backend discards the payload, so the
+        /// JMAP calendar write path must be disabled for the process.
+        payload_discarded: bool,
+    },
+    /// Any other failure (session, `notCreated`/`notUpdated` rejection, a
+    /// read-back content mismatch whose orphan was removed, …) — the backend
+    /// provably holds nothing new, so the CalDAV fallback is safe.
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
@@ -1121,7 +1401,20 @@ impl CalendarWriteError {
     /// Whether this failure proves the backend's JMAP calendar write path is
     /// lossy (a reason to fall back to CalDAV for the process lifetime).
     pub fn is_payload_discarded(&self) -> bool {
-        matches!(self, CalendarWriteError::PayloadDiscarded(_))
+        match self {
+            CalendarWriteError::PayloadDiscarded(_) => true,
+            CalendarWriteError::Ambiguous {
+                payload_discarded, ..
+            } => *payload_discarded,
+            CalendarWriteError::Other(_) => false,
+        }
+    }
+
+    /// Whether the write may have been APPLIED despite the error. The caller
+    /// must then refuse (a retryable error) instead of retrying the create on
+    /// another backend, which would duplicate the item.
+    pub fn may_be_committed(&self) -> bool {
+        matches!(self, CalendarWriteError::Ambiguous { .. })
     }
 }
 
@@ -1184,7 +1477,7 @@ pub struct JmapClient {
     base_url: String,
     client: reqwest::Client,
     /// Cached sessions keyed by username, with expiry time.
-    session_cache: Arc<DashMap<String, (Instant, JmapSession)>>,
+    session_cache: Arc<DashMap<String, (Instant, Arc<JmapSession>)>>,
     /// Credential-probe cache keyed by `username:sha256(password)`.
     ///
     /// The EAS/EWS front doors authenticate every request; without this, each
@@ -1255,6 +1548,10 @@ pub struct EmailSetOutcome {
     /// Non-empty when the server rejected the whole method (e.g. rate limit,
     /// `accountNotFound`). `None` means no method-level error.
     pub method_error: Option<String>,
+    /// The method error's RFC 8620 §3.6.2 `type` (e.g. `serverFail`,
+    /// `serverPartialFail`), when the server supplied a usable one. Callers use
+    /// it to tell a TRANSIENT whole-method failure from a permanent rejection.
+    pub method_error_type: Option<String>,
 }
 
 impl JmapClient {
@@ -1262,36 +1559,34 @@ impl JmapClient {
     /// the gateway needs to render EWS/EAS: the metadata used by SyncFolderItems
     /// / FindItem / Sync plus the richer fields (`attachments`, `header:raw`,
     /// `bodyStructure`) required for full-fidelity GetItem rendering.
-    fn mail_properties() -> Vec<&'static str> {
-        vec![
-            "id",
-            "blobId",
-            "threadId",
-            "mailboxIds",
-            "keywords",
-            "size",
-            "receivedAt",
-            "sentAt",
-            "hasAttachment",
-            "from",
-            "sender",
-            "to",
-            "cc",
-            "bcc",
-            "replyTo",
-            "subject",
-            "preview",
-            "bodyValues",
-            "textBody",
-            "htmlBody",
-            "attachments",
-            "bodyStructure",
-            "messageId",
-            "inReplyTo",
-            "references",
-            "header:raw",
-        ]
-    }
+    pub(crate) const MAIL_PROPERTIES: &[&str] = &[
+        "id",
+        "blobId",
+        "threadId",
+        "mailboxIds",
+        "keywords",
+        "size",
+        "receivedAt",
+        "sentAt",
+        "hasAttachment",
+        "from",
+        "sender",
+        "to",
+        "cc",
+        "bcc",
+        "replyTo",
+        "subject",
+        "preview",
+        "bodyValues",
+        "textBody",
+        "htmlBody",
+        "attachments",
+        "bodyStructure",
+        "messageId",
+        "inReplyTo",
+        "references",
+        "header:raw",
+    ];
     /// Create a new JMAP client pointing at the Stalwart JMAP endpoint.
     pub fn new(base_url: &str) -> Result<Self> {
         Self::with_session_auth(
@@ -1877,7 +2172,7 @@ impl JmapClient {
         &self,
         username: &str,
         password: &SecretString,
-    ) -> Result<JmapSession> {
+    ) -> Result<Arc<JmapSession>> {
         // Check the cache first — return if not expired.
         if let Some(entry) = self.session_cache.get(username)
             && entry.key().as_str() == username
@@ -1970,6 +2265,7 @@ impl JmapClient {
 
         // Cache the session with expiry
         let expires = Instant::now() + SESSION_CACHE_TTL;
+        let session = Arc::new(session);
         self.session_cache
             .insert(username.to_string(), (expires, session.clone()));
 
@@ -1984,6 +2280,30 @@ impl JmapClient {
         method_calls: Vec<(&str, Value, &str)>,
         username: &str,
         password: &SecretString,
+    ) -> Result<JmapResponse> {
+        self.api_call_impl(api_url, using, method_calls, username, password, false)
+            .await
+    }
+
+    /// [`Self::api_call`] with an explicit transport-failure classification.
+    ///
+    /// When `unconfirmed_on_transport` is set (a batch that CREATES an
+    /// `EmailSubmission`), any failure that may have happened AFTER the request
+    /// reached the server — a mid-flight transport error, a 5xx, or an
+    /// undecodable 2xx body — is reported as [`SubmissionUnconfirmed`] rather
+    /// than a plain error. The submission may have been accepted, and a caller
+    /// that treats it as a definite failure would re-deliver the message over
+    /// SMTP (a duplicate). A CONNECT failure (the request never left the
+    /// gateway) and a 4xx (the server rejected it outright) stay plain errors so
+    /// a safe fallback still works.
+    async fn api_call_impl(
+        &self,
+        api_url: &str,
+        using: &[&str],
+        method_calls: Vec<(&str, Value, &str)>,
+        username: &str,
+        password: &SecretString,
+        unconfirmed_on_transport: bool,
     ) -> Result<JmapResponse> {
         let auth = Self::basic_auth_header(username, password);
 
@@ -2014,17 +2334,36 @@ impl JmapClient {
             .body(body)
             .send()
             .await
-            .map_err(|e| anyhow!("JMAP API call failed: {}", e))?;
+            .map_err(|e| {
+                if unconfirmed_on_transport && !e.is_connect() {
+                    anyhow::Error::new(SubmissionUnconfirmed(format!(
+                        "JMAP submission request failed in flight (the batch may have been applied): {e}"
+                    )))
+                } else {
+                    anyhow!("JMAP API call failed: {}", e)
+                }
+            })?;
 
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
+            if unconfirmed_on_transport && status.is_server_error() {
+                return Err(anyhow::Error::new(SubmissionUnconfirmed(format!(
+                    "JMAP submission returned {status} (the batch may have been applied): {body}"
+                ))));
+            }
             return Err(anyhow!("JMAP API call returned {}: {}", status, body));
         }
 
-        resp.json::<JmapResponse>()
-            .await
-            .map_err(|e| anyhow!("Failed to parse JMAP response: {}", e))
+        resp.json::<JmapResponse>().await.map_err(|e| {
+            if unconfirmed_on_transport {
+                anyhow::Error::new(SubmissionUnconfirmed(format!(
+                    "JMAP submission response could not be decoded (the batch may have been applied): {e}"
+                )))
+            } else {
+                anyhow!("Failed to parse JMAP response: {}", e)
+            }
+        })
     }
 
     /// Query emails in a mailbox.
@@ -2041,23 +2380,37 @@ impl JmapClient {
             .sort
             .unwrap_or_else(|| vec![json!({"property": "receivedAt", "isAscending": false})]);
 
-        let properties = json!(Self::mail_properties());
+        let properties = json!(Self::MAIL_PROPERTIES);
+
+        // RFC 8620 §5.5: an `anchor` (with `anchorOffset`) pins the window to
+        // an item instead of a numeric offset; `position` is then ignored by
+        // the server. A `null` anchor is the server default and must not be
+        // sent, and `anchorOffset` is only meaningful alongside an anchor.
+        // RFC 8620 §2 `maxObjectsInGet`: the batch below fetches the page by
+        // BACK-REFERENCE, and a server that caps the referenced id list rejects
+        // the whole Email/get when the page is larger. Clamp the page to the
+        // same cap the keyword scan uses; `total` (calculateTotal) still reports
+        // the full match set, so the caller can page on.
+        let page_limit = params
+            .limit
+            .min(session_max_objects_in_get(&session).max(1) as u64);
+        let mut query_args = json!({
+            "accountId": params.account_id,
+            "filter": filter_val,
+            "sort": sort_val,
+            "position": params.position,
+            "limit": page_limit,
+            "calculateTotal": true,
+        });
+        if let Some(anchor) = params.anchor {
+            query_args["anchor"] = json!(anchor);
+            query_args["anchorOffset"] = json!(params.anchor_offset);
+        }
 
         // Batch Email/query + Email/get in a single request (RFC 8621 §3.6).
         // The Email/get ids are a back-reference to Email/query's /ids result.
         let method_calls = vec![
-            (
-                "Email/query",
-                json!({
-                    "accountId": params.account_id,
-                    "filter": filter_val,
-                    "sort": sort_val,
-                    "position": params.position,
-                    "limit": params.limit,
-                    "calculateTotal": true,
-                }),
-                "q0",
-            ),
+            ("Email/query", query_args, "q0"),
             (
                 "Email/get",
                 json!({
@@ -2097,10 +2450,34 @@ impl JmapClient {
         let mut can_calc = false;
         let mut emails: Vec<JmapEmail> = Vec::new();
         let mut state = String::new();
+        let mut method_errors: Vec<Value> = Vec::new();
+        let mut query_position: u64 = 0;
+        let mut query_last_id: Option<String> = None;
+        let mut get_not_found: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // The `Email/query` page's ids, in query order. Every one must be
+        // accounted for by the `Email/get` below — either hydrated or listed in
+        // its `notFound` — or the page is a malformed/truncated response.
+        let mut query_ids: Vec<String> = Vec::new();
+        // A response for each requested call is mandatory (RFC 8620 §3.6.2). A
+        // missing `Email/query` entry would otherwise leave `query_ids_len` at 0
+        // and report a successful EMPTY page with no query state — the caller
+        // would then store that empty state as its delta base and never deliver
+        // the mailbox. Only a WELL-FORMED response for both calls counts.
+        let mut saw_query = false;
+        let mut saw_get = false;
 
         for (method, data, _) in response.method_responses {
             if method == "Email/query" {
-                total = data.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
+                // The request sets `calculateTotal: true`, so RFC 8620 §5.5
+                // REQUIRES `total` in the response. A page without a usable
+                // total must not be accepted: `total` defaults to 0, the caller
+                // computes `remaining == 0`, and the prime would store the
+                // pre-page query state — permanently skipping the rest of the
+                // mailbox. An explicit total of 0 with an empty `ids` array is a
+                // legitimate empty mailbox and still counts.
+                let page_total = data.get("total").and_then(|v| v.as_u64());
+                saw_query = data.get("ids").is_some_and(|v| v.is_array()) && page_total.is_some();
+                total = page_total.unwrap_or(0);
                 can_calc = data
                     .get("canCalculateChanges")
                     .and_then(|v| v.as_bool())
@@ -2110,7 +2487,39 @@ impl JmapClient {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
+                query_ids = data
+                    .get("ids")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str())
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                // RFC 8620 §5.5: the authoritative absolute index of the first
+                // returned id. Absent only on a malformed response; 0 is then a
+                // safe floor.
+                query_position = data.get("position").and_then(|v| v.as_u64()).unwrap_or(0);
+                // The final id in query order — this, not the Email/get result
+                // order, is the correct continuation anchor (RFC 8620 permits
+                // reordered get results).
+                query_last_id = data
+                    .get("ids")
+                    .and_then(|v| v.as_array())
+                    .and_then(|a| a.last())
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
             } else if method == "Email/get" {
+                saw_get = data.get("list").is_some_and(|v| v.is_array());
+                if let Some(missing) = data.get("notFound").and_then(|v| v.as_array()) {
+                    get_not_found.extend(
+                        missing
+                            .iter()
+                            .filter_map(|v| v.as_str())
+                            .map(str::to_string),
+                    );
+                }
                 emails = data
                     .get("list")
                     .and_then(|v| serde_json::from_value(v.clone()).ok())
@@ -2120,6 +2529,66 @@ impl JmapClient {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
+            } else if method == "error" {
+                method_errors.push(data);
+            }
+        }
+
+        // RFC 8620 §5.5: an `anchor` no longer in the result set is a distinct,
+        // recoverable condition — the caller falls back to numeric `position`.
+        // A failed `q0` also fails the `Email/get` that back-references it
+        // (RFC 8620 §3.7), so when the anchor is the cause BOTH calls carry an
+        // error; that cascade must not mask the recoverable case. Any other
+        // method error still propagates.
+        let anchor_not_found = method_errors
+            .iter()
+            .any(|e| e.get("type").and_then(|v| v.as_str()) == Some("anchorNotFound"));
+        if !anchor_not_found && let Some(err) = method_errors.into_iter().next() {
+            return Err(anyhow!("Email/query returned method error: {}", err));
+        }
+
+        // RFC 8620 §3.6.2: every invocation produces a response. A batch that
+        // omits one of them is malformed, and treating it as an empty result
+        // would make "the backend never answered" indistinguishable from "the
+        // mailbox is empty" — the caller would then acknowledge an empty page
+        // and store a state it never received. Fail closed so it retries.
+        if !anchor_not_found && (!saw_query || !saw_get) {
+            return Err(anyhow!(
+                "Email/query batch response is missing a usable {} response; retrying",
+                if saw_query {
+                    "Email/get"
+                } else {
+                    "Email/query"
+                }
+            ));
+        }
+
+        // The query returned ids but `Email/get` returned an empty `list`: every
+        // id vanished between the two calls (they were removed concurrently).
+        // This is NOT "the mailbox is empty" — the query result itself is
+        // authoritative and still holds the ids. Returning an empty success here
+        // would let an initial sync compute `remaining == 0` and store the
+        // pre-removal query state as the delta base, permanently skipping the
+        // undelivered tail that sits behind that state. Fail so the caller
+        // answers a retryable error and re-queries. An `anchorNotFound` result
+        // is genuinely empty and is excluded.
+        if !anchor_not_found && !query_ids.is_empty() {
+            // Every queried id must be accounted for: hydrated by `Email/get`
+            // or explicitly `notFound`. A partial/truncated get would otherwise
+            // look like "these messages no longer exist" and the caller would
+            // advance past them — losing them permanently.
+            let hydrated: std::collections::HashSet<&str> =
+                emails.iter().filter_map(|e| e.id.as_deref()).collect();
+            let unaccounted = query_ids
+                .iter()
+                .find(|id| !hydrated.contains(id.as_str()) && !get_not_found.contains(*id));
+            if let Some(id) = unaccounted {
+                return Err(anyhow!(
+                    "Email/get did not account for queried id {id} ({} queried, {} hydrated, {} notFound); retrying",
+                    query_ids.len(),
+                    hydrated.len(),
+                    get_not_found.len()
+                ));
             }
         }
 
@@ -2129,7 +2598,63 @@ impl JmapClient {
             can_calculate_changes: can_calc,
             query_state,
             state,
+            anchor_not_found,
+            query_position,
+            query_last_id,
         })
+    }
+
+    /// Ids in `mailbox_id` whose raw `Message-ID` header contains
+    /// `message_id` (RFC 8621 §4.4.1 `header` filter: case-insensitive
+    /// substring match). Used to reconcile a SendMail retry whose earlier
+    /// attempt's outcome was lost, without fetching any message body.
+    pub async fn email_ids_matching_message_id(
+        &self,
+        account_id: &str,
+        mailbox_id: &str,
+        message_id: &str,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<Vec<String>> {
+        let session = self.get_session(username, password).await?;
+        let response = self
+            .api_call(
+                &session.api_url,
+                &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+                vec![(
+                    "Email/query",
+                    json!({
+                        "accountId": account_id,
+                        "filter": { "inMailbox": mailbox_id, "header": ["Message-ID", message_id] },
+                        "limit": 1,
+                    }),
+                    "q0",
+                )],
+                username,
+                password,
+            )
+            .await?;
+        for (method, data, _) in response.method_responses {
+            if method == "error" {
+                return Err(anyhow!("Email/query (Message-ID) failed: {}", data));
+            }
+            if method == "Email/query" {
+                let Some(ids) = data.get("ids").and_then(|v| v.as_array()) else {
+                    return Err(anyhow!(
+                        "Email/query (Message-ID) returned no usable ids: {}",
+                        data
+                    ));
+                };
+                return Ok(ids
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .map(str::to_string)
+                    .collect());
+            }
+        }
+        Err(anyhow!(
+            "Email/query (Message-ID) returned no method response"
+        ))
     }
 
     /// Query only the message ids in a mailbox (no `Email/get`).
@@ -2137,7 +2662,7 @@ impl JmapClient {
     /// Maps to `Email/query` (RFC 8621 §4.3) and returns the bare id list.
     /// This is the cheap sibling of [`JmapClient::query_emails`] for callers
     /// that only need to reverse-map a MAPI mid to a JMAP id: it avoids
-    /// downloading `mail_properties()`, `bodyStructure`, and `bodyValues` for
+    /// downloading `MAIL_PROPERTIES`, `bodyStructure`, and `bodyValues` for
     /// every page, which `query_emails` batches in.
     pub async fn query_email_ids(&self, params: QueryEmailsParams<'_>) -> Result<Vec<String>> {
         let session = self.get_session(params.username, params.password).await?;
@@ -2150,14 +2675,21 @@ impl JmapClient {
 
         let method_calls = vec![(
             "Email/query",
-            json!({
-                "accountId": params.account_id,
-                "filter": filter_val,
-                "sort": sort_val,
-                "position": params.position,
-                "limit": params.limit,
-                "calculateTotal": false,
-            }),
+            {
+                let mut args = json!({
+                    "accountId": params.account_id,
+                    "filter": filter_val,
+                    "sort": sort_val,
+                    "position": params.position,
+                    "limit": params.limit,
+                    "calculateTotal": false,
+                });
+                if let Some(anchor) = params.anchor {
+                    args["anchor"] = json!(anchor);
+                    args["anchorOffset"] = json!(params.anchor_offset);
+                }
+                args
+            },
             "q0",
         )];
 
@@ -2184,9 +2716,102 @@ impl JmapClient {
                     .unwrap_or_default();
                 return Ok(ids);
             }
+            // RFC 8620 §3.6.2: a failed invocation comes back as a method-level
+            // `error` entry with no `Email/query` result. Returning an empty
+            // page for it would let a caller (the MAPI folder-copy inventory
+            // walks) treat a backend error as the END of the inventory and
+            // report a successful empty copy for a non-empty source.
+            if method == "error" {
+                return Err(anyhow!("Email/query failed: {data}"));
+            }
         }
 
-        Ok(Vec::new())
+        Err(anyhow!("Email/query returned no method response"))
+    }
+
+    /// Fetch one `Thread` (RFC 8621 §4.2) and return its member email ids.
+    ///
+    /// This is the STANDARD way to enumerate a conversation: `Email/query`'s
+    /// `FilterCondition` (§4.4.1) has no thread selector, so a `threadId`
+    /// filter is ignored by a conforming server and yields the whole mailbox.
+    /// `Ok(None)` when the server reports the thread as `notFound`.
+    pub async fn get_thread(
+        &self,
+        account_id: &str,
+        thread_id: &str,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<Option<Vec<String>>> {
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
+        let response = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+                vec![(
+                    "Thread/get",
+                    json!({ "accountId": account_id, "ids": [thread_id] }),
+                    "t0",
+                )],
+                username,
+                password,
+            )
+            .await?;
+
+        for (method, data, _) in response.method_responses {
+            if method == "Thread/get" {
+                let Some(found) = data.get("list").and_then(|l| l.as_array()) else {
+                    return Err(anyhow!("Thread/get response carries no list: {}", data));
+                };
+                let Some(thread) = found
+                    .iter()
+                    .find(|t| t.get("id").and_then(|v| v.as_str()) == Some(thread_id))
+                else {
+                    // Only an explicit `notFound` entry proves the thread is
+                    // gone; a list that merely omits it (or a truncated
+                    // response) must not be reported as "no such thread".
+                    let not_found = data
+                        .get("notFound")
+                        .and_then(|v| v.as_array())
+                        .is_some_and(|a| a.iter().any(|v| v.as_str() == Some(thread_id)));
+                    return if not_found {
+                        Ok(None)
+                    } else {
+                        Err(anyhow!(
+                            "Thread/get did not return thread {} nor report it as notFound: {}",
+                            thread_id,
+                            data
+                        ))
+                    };
+                };
+                let Some(ids) = thread.get("emailIds").and_then(|v| v.as_array()) else {
+                    // A returned thread without `emailIds` is not an empty
+                    // thread: RFC 8621 §5.2 requires the property, and treating
+                    // its absence as "no members" would let the caller report a
+                    // successful but EMPTY conversation. Fail so the caller's
+                    // retryable error path runs.
+                    return Err(anyhow!(
+                        "Thread/get returned thread {} without an emailIds array: {}",
+                        thread_id,
+                        thread
+                    ));
+                };
+                let ids: Vec<String> = ids
+                    .iter()
+                    .map(|v| {
+                        v.as_str().map(str::to_string).ok_or_else(|| {
+                            anyhow!(
+                                "Thread/get returned a non-string emailIds entry for thread {}: {}",
+                                thread_id,
+                                v
+                            )
+                        })
+                    })
+                    .collect::<Result<Vec<String>>>()?;
+                return Ok(Some(ids));
+            }
+        }
+        Err(anyhow!("Unexpected JMAP response structure for Thread/get"))
     }
 
     /// Get specific emails by ID.
@@ -2212,7 +2837,7 @@ impl JmapClient {
         let session = self.get_session(username, password).await?;
         let api_url = &session.api_url;
 
-        let props = properties.unwrap_or_else(|| json!(Self::mail_properties()));
+        let props = properties.unwrap_or_else(|| json!(Self::MAIL_PROPERTIES));
 
         // RFC 8620 §2: `Email/get` with an explicit `ids` array is bounded by
         // the session's `maxObjectsInGet`. An id list over the cap is rejected
@@ -2285,13 +2910,114 @@ impl JmapClient {
             .get_emails(
                 account_id,
                 &[email_id.to_string()],
-                Some(json!(Self::mail_properties())),
+                Some(json!(Self::MAIL_PROPERTIES)),
                 username,
                 password,
                 fetch_bodies,
             )
             .await?;
         Ok(emails.into_iter().next())
+    }
+
+    /// Authoritative membership of ONE message in ONE mailbox.
+    ///
+    /// [`JmapClient::get_email`] cannot answer this: a `list` row whose
+    /// `mailboxIds` fail to decode is silently dropped by the typed decode, so a
+    /// live message with a malformed payload is indistinguishable from a deleted
+    /// one. A caller that treated the two alike would report a permanent
+    /// "object not found" for a message that still exists (EAS Sync answers
+    /// Status 8, and the client drops it from its view).
+    ///
+    /// Fail-closed: a method-level error, a missing `list`, a row without usable
+    /// `mailboxIds`, and an id that is neither returned nor in `notFound` are all
+    /// `Err`, so the caller answers a retryable server error instead of guessing.
+    pub async fn email_mailbox_membership(
+        &self,
+        account_id: &str,
+        email_id: &str,
+        mailbox_id: &str,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<EmailMailboxMembership> {
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
+        let method_calls = vec![(
+            "Email/get",
+            json!({
+                "accountId": account_id,
+                "ids": [email_id],
+                "properties": ["id", "mailboxIds"],
+            }),
+            "g0",
+        )];
+        let response = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+                method_calls,
+                username,
+                password,
+            )
+            .await?;
+        for (method, data, _) in &response.method_responses {
+            if method == "error" {
+                return Err(anyhow!(
+                    "Email/get failed while reading membership of {email_id}: {data}"
+                ));
+            }
+            if method != "Email/get" {
+                continue;
+            }
+            let list = data
+                .get("list")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| anyhow!("Email/get response has no usable list"))?;
+            for row in list {
+                let id = row.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+                if id != email_id {
+                    continue;
+                }
+                let mailboxes = row
+                    .get("mailboxIds")
+                    .and_then(|v| v.as_object())
+                    .ok_or_else(|| anyhow!("Email/get row {email_id} has no usable mailboxIds"))?;
+                // RFC 8621 §4.1.1: `mailboxIds` is `Id[Boolean]`. A PRESENT key
+                // with a non-boolean value is a malformed response, not a
+                // non-membership — silently reading it as `false` would report a
+                // delivered message as removed. Fail so the caller retries.
+                let membership = match mailboxes.get(mailbox_id) {
+                    None => false,
+                    Some(value) => value.as_bool().ok_or_else(|| {
+                        anyhow!(
+                            "Email/get row {email_id} has a non-boolean mailboxIds value for {mailbox_id}"
+                        )
+                    })?,
+                };
+                return Ok(if membership {
+                    EmailMailboxMembership::Member
+                } else {
+                    EmailMailboxMembership::NotMember
+                });
+            }
+            // RFC 8620 §5.1: `notFound` lists the requested ids that do not
+            // exist. Its absence means none were missing, so an id in neither
+            // place is a malformed response, not a deletion.
+            if data
+                .get("notFound")
+                .and_then(|v| v.as_array())
+                .is_some_and(|nf| nf.iter().any(|v| v.as_str() == Some(email_id)))
+            {
+                return Ok(EmailMailboxMembership::Absent);
+            }
+            return Err(anyhow!(
+                "Email/get response omitted the requested id {email_id}"
+            ));
+        }
+        // Every in-loop path returns, so reaching here means the response
+        // carried no `Email/get` entry at all.
+        Err(anyhow!(
+            "Email/get returned no method response while reading membership of {email_id}"
+        ))
     }
 
     /// Sync email changes since a given state token.
@@ -2388,6 +3114,187 @@ impl JmapClient {
 
         Err(anyhow!(
             "Unexpected JMAP response structure for Email/changes"
+        ))
+    }
+
+    /// Mailbox-scoped email change feed via `Email/queryChanges`
+    /// (RFC 8620 §5.6).
+    ///
+    /// `Email/changes` reports changes account-wide, so using it to drive one
+    /// EAS collection would leak mail from every folder into a folder-scoped
+    /// Sync. `Email/queryChanges` re-runs the mailbox query at `since_state`
+    /// and returns only the ids added to or removed from *that* mailbox. The
+    /// `inMailbox` filter is immutable (RFC 8620 §5.6), so the server can
+    /// answer it from its change log.
+    ///
+    /// Returns the added and removed id lists plus the new query state. The
+    /// `removed` ids precede the `added` ids in the response (RFC 8620 §5.6
+    /// guarantees this, and Stalwart emits it), so a windowed delivery never
+    /// applies an add before its preceding remove of the same id.
+    pub async fn query_email_changes(
+        &self,
+        account_id: &str,
+        mailbox_id: &str,
+        since_state: &str,
+        username: &str,
+        password: &SecretString,
+        max_changes: Option<u32>,
+    ) -> Result<EmailChangesResult> {
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
+
+        let method_calls = vec![(
+            "Email/queryChanges",
+            json!({
+                "accountId": account_id,
+                // RFC 8620 §5.6: the `filter` and `sort` MUST be identical to
+                // those of the query that produced `since_state`, or the server
+                // may reject the state. The initial prime runs `Email/query`
+                // with the `receivedAt` descending default, so the delta must
+                // repeat it.
+                "filter": { "inMailbox": mailbox_id },
+                "sort": [{ "property": "receivedAt", "isAscending": false }],
+                "sinceQueryState": since_state,
+                "maxChanges": max_changes.unwrap_or(crate::jmap::DEFAULT_EMAIL_CHANGES_MAX),
+                "calculateTotal": false,
+            }),
+            "qc0",
+        )];
+
+        let response = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+                method_calls,
+                username,
+                password,
+            )
+            .await?;
+
+        for (method, data, _) in response.method_responses {
+            // RFC 8620 §3.6.2: a method-level error is reported as a separate
+            // `error` response, NOT as a field on the method's own response.
+            if method == "error" {
+                // RFC 8620 §5.6 method errors, all mapped to the typed
+                // `CannotCalculateChanges` so the caller re-primes from a full
+                // snapshot rather than storing a state that would silently skip
+                // changes:
+                //  * `cannotCalculateChanges` — the server cannot compute the
+                //    delta.
+                //  * `tooManyChanges` — more than `maxChanges` changes are
+                //    pending. RFC 8620 §5.6 defines no `hasMoreChanges` flag for
+                //    this method, so there is no page to advance; the client may
+                //    only retry with a higher `maxChanges` or invalidate its
+                //    cache. Re-priming is the recoverable choice (an
+                //    unbounded `maxChanges` is not), and it keeps the Ping probe
+                //    waking the folder instead of silently deferring.
+                //  * `invalidArguments` — Stalwart reports an unresumable
+                //    `sinceQueryState` as this ("invalid JMAP State", observed
+                //    against v1.1.0) rather than `cannotCalculateChanges`. A
+                //    re-prime is self-healing whereas a frozen delta is not, so
+                //    it is a deliberate choice to treat the rejection of our
+                //    stored opaque state as a re-prime trigger.
+                match data.get("type").and_then(|v| v.as_str()) {
+                    Some("cannotCalculateChanges") => {
+                        return Err(anyhow::Error::new(CannotCalculateChanges(format!(
+                            "Email/queryChanges cannot calculate changes from {since_state}"
+                        ))));
+                    }
+                    Some("tooManyChanges") => {
+                        return Err(anyhow::Error::new(CannotCalculateChanges(format!(
+                            "Email/queryChanges from {since_state} exceeds maxChanges"
+                        ))));
+                    }
+                    Some("invalidArguments") => {
+                        return Err(anyhow::Error::new(CannotCalculateChanges(format!(
+                            "Email/queryChanges rejected the query state {since_state}: {data}"
+                        ))));
+                    }
+                    _ => {}
+                }
+                return Err(anyhow!("Email/queryChanges error: {}", data));
+            }
+            if method == "Email/queryChanges" {
+                let old_state = data
+                    .get("oldQueryState")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let new_state = data
+                    .get("newQueryState")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let removed: Vec<String> = data
+                    .get("removed")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default();
+                // `added` is a list of `{id, index}` objects (RFC 8620 §5.6);
+                // preserve result order.
+                let added: Vec<String> = data
+                    .get("added")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|item| {
+                                item.get("id").and_then(|v| v.as_str()).map(String::from)
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                // `updated` is an array of id strings (RFC 8620 §5.6): flag/
+                // read edits that don't change membership. Parse them so the
+                // Ping probe can wake on keyword-only edits.
+                let updated: Vec<String> = data
+                    .get("updated")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                // A response without a `newQueryState` cannot advance the
+                // delta: treat it like `cannotCalculateChanges` (as
+                // `changes_calendar_events` does for a missing `newState`) so
+                // the caller re-primes instead of storing a state that would
+                // replay or skip changes.
+                if new_state.is_empty() {
+                    return Err(anyhow::Error::new(CannotCalculateChanges(format!(
+                        "Email/queryChanges returned no newQueryState (oldState {old_state})"
+                    ))));
+                }
+
+                debug!(
+                    target: "jmap",
+                    since = %since_state,
+                    new_state = %new_state,
+                    added = added.len(),
+                    removed = removed.len(),
+                    "Email query changes synced"
+                );
+
+                // `Email/queryChanges` has no `hasMoreChanges` flag (RFC 8620
+                // §5.6); a page that came back exactly at the `maxChanges` cap
+                // was almost certainly clipped, so signal the caller to
+                // re-query from `newQueryState` to drain the remainder.
+                let page_len = added.len() + removed.len();
+                let has_more_changes = page_len
+                    >= max_changes.unwrap_or(crate::jmap::DEFAULT_EMAIL_CHANGES_MAX) as usize;
+                return Ok(EmailChangesResult {
+                    created: added,
+                    updated,
+                    destroyed: removed,
+                    new_state,
+                    has_more_changes,
+                });
+            }
+        }
+
+        Err(anyhow!(
+            "Unexpected JMAP response structure for Email/queryChanges"
         ))
     }
 
@@ -2623,6 +3530,145 @@ impl JmapClient {
         Ok(())
     }
 
+    /// Copy an email into the given mailboxes, leaving the source email's own
+    /// mailbox membership untouched, and return the id of the NEW email.
+    ///
+    /// JMAP has no same-account copy: `Email/copy` (RFC 8621 §4.7) requires
+    /// `fromAccountId` to DIFFER from `accountId`, and `copyFrom` is not a
+    /// property of `Email/set` `create` at all (RFC 8621 §4.6 lists only the
+    /// Email object's own properties; Stalwart v1.1.0 rejects an unknown create
+    /// property with `invalidProperties`). A copy is therefore
+    /// `Email/import` (RFC 8621 §4.8) of the source's own raw blob
+    /// (`blobId`), which creates an INDEPENDENT message carrying the same
+    /// MIME content and attachments, with the source's keywords and
+    /// `receivedAt` preserved so the copy keeps its read/flag state and its
+    /// place in the mailbox order.
+    ///
+    /// FAIL-CLOSED: a source lookup/import method-level `error`, a missing
+    /// source, a missing `blobId`, a per-item `notCreated` entry and a missing
+    /// id all propagate. Returning the SOURCE id (as a mailbox-membership edit
+    /// would) hands the client an ItemId for an object it never created — every
+    /// later Get/Update on it hits the wrong message.
+    pub async fn copy_email(
+        &self,
+        account_id: &str,
+        email_id: &str,
+        mailbox_ids: &[String],
+        username: &str,
+        password: &SecretString,
+    ) -> Result<String> {
+        if mailbox_ids.is_empty() {
+            return Err(anyhow!(
+                "Email copy requires at least one destination mailbox"
+            ));
+        }
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
+
+        let source = self
+            .copy_source(&session.api_url, account_id, email_id, username, password)
+            .await?;
+
+        let mut ids = serde_json::Map::new();
+        for mb in mailbox_ids {
+            ids.insert(mb.clone(), serde_json::Value::Bool(true));
+        }
+        let entry = copy_import_entry(&source, serde_json::Value::Object(ids))?;
+        let method_calls = vec![(
+            "Email/import",
+            serde_json::json!({
+                "accountId": account_id,
+                "emails": { "i0": entry },
+            }),
+            "ei0",
+        )];
+
+        let resp = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+                method_calls,
+                username,
+                password,
+            )
+            .await?;
+
+        for (method, data, _) in resp.method_responses {
+            if method == "error" {
+                return Err(anyhow!("Email copy failed: {}", data));
+            }
+            if method == "Email/import" {
+                if let Some(id) = data
+                    .get("created")
+                    .and_then(|c| c.get("i0"))
+                    .and_then(|c| c.get("id"))
+                    .and_then(|v| v.as_str())
+                {
+                    return Ok(id.to_string());
+                }
+                if let Some(rejected) = data.get("notCreated").and_then(|c| c.get("i0")) {
+                    return Err(anyhow!("Email copy was rejected: {}", rejected));
+                }
+                return Err(anyhow!("Email copy created no object: {}", data));
+            }
+        }
+        Err(anyhow!("Email copy returned no method response"))
+    }
+
+    /// Read the properties an `Email/import` copy must carry over from the
+    /// source message: its raw `blobId`, `keywords` and `receivedAt`.
+    async fn copy_source(
+        &self,
+        api_url: &str,
+        account_id: &str,
+        email_id: &str,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<Value> {
+        let method_calls = vec![(
+            "Email/get",
+            json!({
+                "accountId": account_id,
+                "ids": [email_id],
+                "properties": ["id", "blobId", "keywords", "receivedAt"],
+            }),
+            "g0",
+        )];
+        let resp = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+                method_calls,
+                username,
+                password,
+            )
+            .await?;
+        for (method, data, _) in &resp.method_responses {
+            if method == "error" {
+                return Err(anyhow!("Email copy source lookup failed: {}", data));
+            }
+            if method != "Email/get" {
+                continue;
+            }
+            let list = data
+                .get("list")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| anyhow!("Email copy source lookup returned no usable list"))?;
+            if let Some(row) = list
+                .iter()
+                .find(|row| row.get("id").and_then(|v| v.as_str()) == Some(email_id))
+            {
+                return Ok(row.clone());
+            }
+            return Err(anyhow!("Email copy source {email_id} was not found"));
+        }
+        // Every in-loop path returns, so reaching here means the response
+        // carried no `Email/get` entry at all.
+        Err(anyhow!(
+            "Email copy source lookup returned no method response"
+        ))
+    }
+
     /// Inspectable `Email/set` update: returns an [`EmailSetOutcome`] so the
     /// MAPI property-write handlers can detect a per-id `notUpdated`
     /// rejection or a method-level `error` instead of masking every `Ok` as
@@ -2693,6 +3739,8 @@ impl JmapClient {
                 sort: None,
                 position,
                 limit: PAGE,
+                anchor: None,
+                anchor_offset: 0,
                 username,
                 password,
             };
@@ -2889,6 +3937,12 @@ impl JmapClient {
         const PAGE: u64 = 500;
         let mut out: Vec<(String, Vec<String>)> = Vec::new();
         let mut position: u64 = 0;
+        // The query state of the FIRST page pins the paged walk. `position` is a
+        // sliding index into a LIVE result set: if the mailbox changes mid-walk,
+        // the tail shifts and an id can be skipped or returned twice. The
+        // inventory would then be wrong (a MAPI delete/move would silently miss
+        // a message), so a changed state fails the walk for a retry instead.
+        let mut pinned_state: Option<String> = None;
         loop {
             let params = QueryEmailsParams {
                 account_id,
@@ -2896,10 +3950,22 @@ impl JmapClient {
                 sort: None,
                 position,
                 limit: PAGE,
+                anchor: None,
+                anchor_offset: 0,
                 username,
                 password,
             };
             let list = self.query_emails(params).await?;
+            match pinned_state.as_deref() {
+                None => pinned_state = Some(list.query_state.clone()),
+                Some(pinned) if pinned != list.query_state => {
+                    return Err(anyhow!(
+                        "mailbox {mailbox_id} changed while it was being enumerated (query state {pinned} -> {}); retry the walk",
+                        list.query_state
+                    ));
+                }
+                Some(_) => {}
+            }
             let fetched = list.emails.len() as u64;
             for e in list.emails {
                 let Some(jid) = e.id.clone() else {
@@ -2912,14 +3978,165 @@ impl JmapClient {
                     .unwrap_or_default();
                 out.push((jid, mids));
             }
+            if fetched == 0 {
+                // A zero-item page BEFORE the reported end means the walk
+                // stalled (the server ignored `position`): fail so the caller
+                // retries instead of reporting a truncated inventory as
+                // complete.
+                if position < list.total {
+                    return Err(anyhow!(
+                        "Email/query returned no ids at position {position} of {} while listing mailbox {mailbox_id}",
+                        list.total
+                    ));
+                }
+                break;
+            }
             position += fetched;
-            // Stop when the server returned a partial/empty page or we reached
-            // the reported total.
-            if fetched < PAGE || position >= list.total {
+            // Completion is decided by the reported TOTAL, never by a short
+            // page: a server that clamps `limit` below the requested page would
+            // otherwise end the walk early and drop the remainder.
+            if position >= list.total {
                 break;
             }
         }
         Ok(out)
+    }
+
+    /// The `(jmap_id, sorted keyword names)` pair for up to `limit` messages
+    /// currently in `mailbox_id`, starting at query `position`. A lightweight
+    /// `Email/query` + `Email/get` (`properties: ["keywords"]` only — no body
+    /// fetch), used by the email delta's flag-only change detector. Callers
+    /// page with the returned `position`/`total`/`more` so a delta never scans
+    /// the whole mailbox in one shot.
+    ///
+    /// Returns `(entries, position, total, more)`: `position` is the next query
+    /// position to resume at, `total` the mailbox size, and `more` whether a
+    /// further page exists.
+    pub async fn list_email_ids_with_keywords_page(
+        &self,
+        account_id: &str,
+        mailbox_id: &str,
+        position: u64,
+        limit: u64,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<EmailKeywordPage> {
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
+        // The back-referenced `Email/get` is subject to the session's
+        // `maxObjectsInGet` (RFC 8620 §5.3) — result references become ordinary
+        // arguments before method processing, so a page larger than the get
+        // limit is rejected whole with `requestTooLarge`. Cap the query page at
+        // the advertised limit (floor 1) so the walk never fails on a server
+        // that advertises a cap below `KEYWORD_SCAN_PAGE`.
+        let limit = limit
+            .max(1)
+            .min(session_max_objects_in_get(&session).max(1) as u64);
+        let calls = vec![
+            (
+                "Email/query",
+                json!({
+                    "accountId": account_id,
+                    "filter": { "inMailbox": mailbox_id },
+                    "sort": [{ "property": "receivedAt", "isAscending": false }],
+                    "position": position,
+                    "limit": limit,
+                    "calculateTotal": true,
+                }),
+                "q0",
+            ),
+            (
+                "Email/get",
+                json!({
+                    "accountId": account_id,
+                    "#ids": {
+                        "resultOf": "q0",
+                        "name": "Email/query",
+                        "path": "/ids",
+                    },
+                    "properties": ["keywords"],
+                }),
+                "g0",
+            ),
+        ];
+        let response = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+                calls,
+                username,
+                password,
+            )
+            .await?;
+        let mut out: Vec<(String, Vec<String>)> = Vec::new();
+        let mut total: u64 = 0;
+        let mut fetched: u64 = 0;
+        let mut saw_query = false;
+        // RFC 8620 §5.5: the query state this page was computed from. Offset
+        // paging is only sound while it is stable across pages — a caller that
+        // saves a COMPLETE baseline compares it page to page.
+        let mut query_state = String::new();
+        for (method, data, _) in response.method_responses {
+            if method == "error" {
+                return Err(anyhow!("Email/query error: {}", data));
+            }
+            if method == "Email/query" {
+                saw_query = true;
+                total = data.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
+                query_state = data
+                    .get("queryState")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                fetched = data
+                    .get("ids")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.len() as u64)
+                    .unwrap_or(0);
+            } else if method == "Email/get" {
+                let list = data
+                    .get("list")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                for item in list {
+                    let Some(id) = item.get("id").and_then(|v| v.as_str()) else {
+                        continue;
+                    };
+                    // A row whose `keywords` is missing or not an object is
+                    // NOT "no keywords": treating it as an empty set would make
+                    // the flag baseline record "unread" for a read message and
+                    // re-report a bogus `<Change>` forever. Reject the page so
+                    // the caller retries (or serves the mirror) instead.
+                    let Some(keyword_map) = item.get("keywords").and_then(|v| v.as_object()) else {
+                        return Err(anyhow!(
+                            "Email/get returned an email without a usable keywords map: {item}"
+                        ));
+                    };
+                    let mut keywords: Vec<String> = keyword_map
+                        .iter()
+                        .filter(|(_, v)| v.as_bool().unwrap_or(false))
+                        .map(|(n, _)| n.clone())
+                        .collect();
+                    keywords.sort();
+                    out.push((id.to_string(), keywords));
+                }
+            }
+        }
+        if !saw_query {
+            return Err(anyhow!(
+                "Email/query returned no method response while listing mailbox keywords"
+            ));
+        }
+        let next_position = position + fetched;
+        let more = fetched > 0 && next_position < total;
+        Ok(EmailKeywordPage {
+            entries: out,
+            next_position,
+            total,
+            more,
+            query_state,
+        })
     }
 
     /// Move emails from their current mailbox(es) to a target mailbox by
@@ -2947,6 +4164,10 @@ impl JmapClient {
         let max = session_max_objects_in_get(&session);
         let mut current: std::collections::HashMap<String, Vec<String>> =
             std::collections::HashMap::new();
+        // Ids the backend authoritatively reported as `notFound` (RFC 8620
+        // §5.1). They are the ONLY ids allowed to be absent from `current`;
+        // an id in neither place is an incomplete response, not a deletion.
+        let mut not_found: std::collections::HashSet<String> = std::collections::HashSet::new();
         for chunk in chunk_ids(email_ids, max) {
             let ids_args: Vec<Value> = chunk.iter().map(|i| json!(i)).collect();
             let get_calls = vec![(
@@ -2967,24 +4188,74 @@ impl JmapClient {
                     password,
                 )
                 .await?;
+            // A method-level `Email/get` error (e.g. `requestTooLarge` from a
+            // server that clamps `maxObjectsInGet` below our batch) says
+            // NOTHING about whether those messages exist: treating the chunk as
+            // "absent" would silently drop them from the move and report a
+            // partial success the client never retries. Fail so the caller's
+            // retryable path runs. Genuinely missing ids come back as
+            // `notFound` and are still skipped by
+            // `build_move_update_patch`.
+            let mut saw_get = false;
             for (method, data, _) in &resp.method_responses {
+                if method == "error" {
+                    return Err(anyhow!(
+                        "Email/get failed while resolving move sources: {}",
+                        data
+                    ));
+                }
                 if method == "Email/get"
                     && let Some(list) = data.get("list").and_then(|v| v.as_array())
                 {
+                    saw_get = true;
                     for e in list {
                         let e_id = e.get("id").and_then(|v| v.as_str()).unwrap_or("");
                         if e_id.is_empty() {
                             continue;
                         }
-                        let mids = e
-                            .get("mailboxIds")
-                            .and_then(|v| v.as_object())
-                            .map(|o| o.keys().cloned().collect())
-                            .unwrap_or_default();
-                        current.insert(e_id.to_string(), mids);
+                        // A live row with a missing/malformed `mailboxIds` must
+                        // NOT default to "no memberships": the patch would then
+                        // carry no `mailboxIds/<old>: null` entries and the
+                        // server would replace the whole membership map with
+                        // just the target — silently removing the message from
+                        // every other folder. Fail closed instead.
+                        let Some(obj) = e.get("mailboxIds").and_then(|v| v.as_object()) else {
+                            return Err(anyhow!(
+                                "Email/get row {e_id} has no usable mailboxIds while resolving move sources"
+                            ));
+                        };
+                        current.insert(e_id.to_string(), obj.keys().cloned().collect());
                     }
+                    if let Some(nf) = data.get("notFound").and_then(|v| v.as_array()) {
+                        for id in nf {
+                            if let Some(id) = id.as_str() {
+                                not_found.insert(id.to_string());
+                            }
+                        }
+                    }
+                } else if method == "Email/get" {
+                    saw_get = true;
                 }
             }
+            if !saw_get {
+                return Err(anyhow!(
+                    "Email/get returned no method response while resolving move sources"
+                ));
+            }
+        }
+        // Every requested id must be accounted for. A row the response simply
+        // omits (neither returned nor `notFound`) is a truncated/malformed
+        // reply; skipping it would report a partial move for a message that was
+        // never examined.
+        let unresolved: Vec<&String> = email_ids
+            .iter()
+            .filter(|id| !current.contains_key(*id) && !not_found.contains(*id))
+            .collect();
+        if !unresolved.is_empty() {
+            return Err(anyhow!(
+                "Email/get omitted {} requested id(s) while resolving move sources",
+                unresolved.len()
+            ));
         }
         // Build the update patch keyed BY email id (not by response order). A
         // naive `zip(email_ids, current)` would silently mis-associate patches
@@ -3001,6 +4272,7 @@ impl JmapClient {
             // DiskError.
             return Ok(0);
         }
+        let patched: std::collections::HashSet<String> = update.keys().cloned().collect();
         let set_calls = vec![(
             "Email/set",
             json!({
@@ -3019,15 +4291,30 @@ impl JmapClient {
             )
             .await?;
         let mut updated = 0usize;
+        let mut updated_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut not_updated_ids: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        let mut saw_set = false;
         for (method, data, _) in set_resp.method_responses {
+            if method == "error" {
+                // A method-level `Email/set` error moved NOTHING; reporting the
+                // zero count as a partial success would tell the caller the
+                // messages were examined and refused, so it would never retry.
+                return Err(anyhow!("Email/set move failed: {}", data));
+            }
             if method == "Email/set" {
+                saw_set = true;
                 if let Some(u) = data.get("updated").and_then(|v| v.as_object()) {
                     updated = u.len();
+                    updated_ids.extend(u.keys().cloned());
                 }
                 if let Some(not_updated) = data.get("notUpdated")
                     && !not_updated.is_null()
                     && not_updated.as_object().is_none_or(|o| !o.is_empty())
                 {
+                    if let Some(o) = not_updated.as_object() {
+                        not_updated_ids.extend(o.keys().cloned());
+                    }
                     // Per-item failures are NOT a hard error: return the
                     // partial `updated` count so the dispatcher encodes
                     // PartialCompletion=1 (MS-OXCROPS §2.2.4.6.4) instead of a
@@ -3041,13 +4328,38 @@ impl JmapClient {
                 }
             }
         }
+        if !saw_set {
+            return Err(anyhow!(
+                "Email/set returned no method response for the move"
+            ));
+        }
+        // Every id the patch touched must be accounted for as updated or
+        // explicitly rejected. An id in NEITHER place means the response was
+        // truncated, and the caller would treat an unexamined message as a
+        // partial success.
+        let unresolved: Vec<String> = patched
+            .iter()
+            .filter(|id| !updated_ids.contains(*id) && !not_updated_ids.contains(*id))
+            .cloned()
+            .collect();
+        if !unresolved.is_empty() {
+            // The ids the server CONFIRMED moved must not be lost: a bare error
+            // would make the caller retry the whole batch and move them a
+            // second time. Report the confirmed count with the unresolved ids
+            // so the caller can answer PartialCompletion and reconcile only the
+            // remainder.
+            return Err(anyhow::Error::new(MoveUnresolved {
+                updated,
+                unresolved,
+            }));
+        }
         Ok(updated)
     }
 
-    /// Copy emails to a target mailbox using JMAP `Email/set` with
-    /// `copyFrom_emailId`. RFC 8621 §4.5 supports server-side copy via the
-    /// `copyFrom` create argument. Returns the count of new emails created,
-    /// keyed by the source id order.
+    /// Copy emails to a target mailbox by re-importing each source's raw blob
+    /// (`Email/import`, RFC 8621 §4.8) — see [`Self::copy_email`] for why a
+    /// same-account `Email/copy`/`copyFrom` cannot express this. Returns the
+    /// count of NEW emails created (per-item failures are partial completion).
     pub async fn copy_emails(
         &self,
         account_id: &str,
@@ -3061,24 +4373,79 @@ impl JmapClient {
         }
         let session = self.get_session(username, password).await?;
         let api_url = &session.api_url;
-        let mut create = serde_json::Map::new();
-        for (i, src) in email_ids.iter().enumerate() {
-            let key = format!("c{i}");
-            create.insert(
-                key,
-                json!({
-                    "copyFrom": src,
-                    "mailboxIds": { (target_mailbox_id): true },
-                }),
-            );
+        let mut created = 0usize;
+        // Chunked so neither `Email/get` nor `Email/import` exceeds the
+        // server's advertised `maxObjectsInGet`/`maxObjectsInSet` (RFC 8620
+        // §2); a server advertising a lower cap than `COPY_BATCH` would reject
+        // the whole explicit-id lookup.
+        let batch = Self::COPY_BATCH.min(session_max_objects_in_get(&session).max(1));
+        let mut import_sent = false;
+        for chunk in email_ids.chunks(batch) {
+            match self
+                .copy_email_chunk(
+                    account_id,
+                    api_url,
+                    chunk,
+                    target_mailbox_id,
+                    username,
+                    password,
+                )
+                .await
+            {
+                Ok(outcome) => {
+                    created += outcome.created;
+                    import_sent |= outcome.imported;
+                }
+                // The import reached the server but did not account for every
+                // submitted creation: some copies exist and at least one is
+                // UNKNOWN. Carry the confirmed count with the failure — the
+                // caller must report partial completion, or its retry would
+                // copy the confirmed messages a second time.
+                Err(ChunkCopyError::Unconfirmed { confirmed, source }) => {
+                    return Err(anyhow::Error::new(CopyPartialFailure {
+                        created: created + confirmed,
+                        source,
+                    }));
+                }
+                // A failure BEFORE any `Email/import` was accepted is a plain
+                // backend error for the FIRST chunk (nothing was copied, a retry
+                // is safe). Once an earlier chunk copied anything, it is partial
+                // completion: re-running would duplicate those copies.
+                Err(ChunkCopyError::BeforeImport(source)) => {
+                    return if import_sent || created > 0 {
+                        Err(anyhow::Error::new(CopyPartialFailure { created, source }))
+                    } else {
+                        Err(source)
+                    };
+                }
+            }
         }
+        Ok(created)
+    }
+
+    /// One chunk of [`Self::copy_emails`]: look the sources up by id, then
+    /// `Email/import` them into `target_mailbox_id`.
+    async fn copy_email_chunk(
+        &self,
+        account_id: &str,
+        api_url: &str,
+        chunk: &[String],
+        target_mailbox_id: &str,
+        username: &str,
+        password: &SecretString,
+    ) -> std::result::Result<ChunkCopyOutcome, ChunkCopyError> {
+        let mut created_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut not_created_ids: Vec<String> = Vec::new();
+        // Source lookup: one `Email/get` for the chunk, keyed by id so a
+        // reordered or partial response cannot mis-associate a blob.
         let calls = vec![(
-            "Email/set",
+            "Email/get",
             json!({
                 "accountId": account_id,
-                "create": Value::Object(create),
+                "ids": chunk,
+                "properties": ["id", "blobId", "keywords", "receivedAt"],
             }),
-            "es0",
+            "g0",
         )];
         let resp = self
             .api_call(
@@ -3088,29 +4455,165 @@ impl JmapClient {
                 username,
                 password,
             )
-            .await?;
-        let mut created = 0usize;
-        for (method, data, _) in resp.method_responses {
-            if method == "Email/set" {
-                if let Some(c) = data.get("created").and_then(|v| v.as_object()) {
-                    created = c.len();
+            .await
+            .map_err(ChunkCopyError::BeforeImport)?;
+        let mut sources: std::collections::HashMap<String, Value> =
+            std::collections::HashMap::new();
+        let mut not_found: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut saw_get = false;
+        for (method, data, _) in &resp.method_responses {
+            if method == "error" {
+                return Err(ChunkCopyError::BeforeImport(anyhow!(
+                    "Email copy source lookup failed: {}",
+                    data
+                )));
+            }
+            if method != "Email/get" {
+                continue;
+            }
+            saw_get = true;
+            let Some(list) = data.get("list").and_then(|v| v.as_array()) else {
+                return Err(ChunkCopyError::BeforeImport(anyhow!(
+                    "Email copy source lookup returned no usable list"
+                )));
+            };
+            for row in list {
+                if let Some(id) = row.get("id").and_then(|v| v.as_str()) {
+                    sources.insert(id.to_string(), row.clone());
                 }
-                if let Some(not_created) = data.get("notCreated")
-                    && !not_created.is_null()
-                    && not_created.as_object().is_none_or(|o| !o.is_empty())
-                {
-                    // Per-item copy failures are partial completion, not a hard
-                    // error, matching RopMoveCopyMessages semantics.
-                    tracing::warn!(
-                        "JMAP Email/set copy partial failure: {} of {} not created: {}",
-                        email_ids.len().saturating_sub(created),
-                        email_ids.len(),
-                        not_created
-                    );
+            }
+            if let Some(missing) = data.get("notFound").and_then(|v| v.as_array()) {
+                not_found.extend(
+                    missing
+                        .iter()
+                        .filter_map(|v| v.as_str())
+                        .map(str::to_string),
+                );
+            }
+        }
+        // RFC 8620 §3.6.2: an invocation always answers. A batch with no
+        // `Email/get` is a failed lookup, not an empty one.
+        if !saw_get {
+            return Err(ChunkCopyError::BeforeImport(anyhow!(
+                "Email copy source lookup returned no Email/get response"
+            )));
+        }
+
+        let mut imports = serde_json::Map::new();
+        for (i, src) in chunk.iter().enumerate() {
+            let Some(source) = sources.get(src) else {
+                // A source the server EXPLICITLY reported as `notFound`
+                // vanished between the caller's read and the copy: partial
+                // completion, never a silent success. An id that is in NEITHER
+                // the list nor `notFound` is an unaccounted response — the copy
+                // must not proceed as if that message did not exist.
+                if not_found.contains(src) {
+                    tracing::warn!(email_id = %src, "Email copy source was not found");
+                    continue;
+                }
+                return Err(ChunkCopyError::BeforeImport(anyhow!(
+                    "Email copy source lookup did not account for {src}"
+                )));
+            };
+            let entry = copy_import_entry(source, json!({ (target_mailbox_id): true }))
+                .map_err(ChunkCopyError::BeforeImport)?;
+            imports.insert(format!("i{i}"), entry);
+        }
+        if imports.is_empty() {
+            return Ok(ChunkCopyOutcome {
+                created: 0,
+                imported: false,
+            });
+        }
+        // The submitted creation ids, collected before the map is moved into
+        // the request: each one must come back in `created` or `notCreated`.
+        let submitted: Vec<String> = imports.keys().cloned().collect();
+        let calls = vec![(
+            "Email/import",
+            json!({
+                "accountId": account_id,
+                "emails": Value::Object(imports),
+            }),
+            "ei0",
+        )];
+        // The import request itself reached the server: every failure below is
+        // "unconfirmed" territory, never "nothing was copied".
+        let resp = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+                calls,
+                username,
+                password,
+            )
+            .await
+            .map_err(|e| ChunkCopyError::Unconfirmed {
+                confirmed: 0,
+                source: e,
+            })?;
+        for (method, data, _) in resp.method_responses {
+            if method == "error" {
+                return Err(ChunkCopyError::Unconfirmed {
+                    confirmed: 0,
+                    source: anyhow!("Email copy import failed: {}", data),
+                });
+            }
+            if method == "Email/import" {
+                if let Some(c) = data.get("created").and_then(|v| v.as_object()) {
+                    // An entry without a usable id is NOT a confirmed copy: it
+                    // must fall through to the unconfirmed path rather than
+                    // inflate the confirmed count (a retry would then skip a
+                    // message that was never copied).
+                    for (creation_id, created) in c {
+                        if created
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .is_some_and(|id| !id.is_empty())
+                        {
+                            created_ids.insert(creation_id.clone());
+                        }
+                    }
+                }
+                if let Some(nc) = data.get("notCreated").and_then(|v| v.as_object()) {
+                    not_created_ids.extend(nc.keys().cloned());
+                    // Per-item copy failures are partial completion, not a
+                    // hard error, matching RopMoveCopyMessages semantics.
+                    if !nc.is_empty() {
+                        tracing::warn!(
+                            "JMAP Email/import copy partial failure: {} not created: {}",
+                            nc.len(),
+                            nc.keys().cloned().collect::<Vec<_>>().join(",")
+                        );
+                    }
                 }
             }
         }
-        Ok(created)
+        // An id the response did NOT mention in either collection is
+        // UNCONFIRMED: the server may or may not have created the copy, so
+        // neither counting it as created (a duplicate on a retry) nor as
+        // refused (a lost message) is safe.
+        let unconfirmed: Vec<&String> = submitted
+            .iter()
+            .filter(|k| !created_ids.contains(*k) && !not_created_ids.contains(k))
+            .collect();
+        if !unconfirmed.is_empty() {
+            return Err(ChunkCopyError::Unconfirmed {
+                confirmed: created_ids.len(),
+                source: anyhow!(
+                    "Email/import did not account for {} submitted creation(s): {}",
+                    unconfirmed.len(),
+                    unconfirmed
+                        .iter()
+                        .map(|k| k.as_str())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ),
+            });
+        }
+        Ok(ChunkCopyOutcome {
+            created: created_ids.len(),
+            imported: true,
+        })
     }
 
     /// Create a mailbox via JMAP `Mailbox/set` (RFC 8621 §5.2). Returns the
@@ -3276,15 +4779,30 @@ impl JmapClient {
         Err(anyhow!("Mailbox/set response missing update outcome"))
     }
 
-    /// Destroy a mailbox via JMAP `Mailbox/set` `destroy` (RFC 8621 §5.2).
-    /// Backs `RopDeleteFolder`. Returns true when the mailbox was destroyed.
+    /// Destroy a mailbox via JMAP `Mailbox/set` `destroy` (RFC 8621 §2.5).
+    /// Backs `RopDeleteFolder` and the EAS/EWS folder-delete paths.
+    ///
+    /// `remove_emails` sets `onDestroyRemoveEmails` (RFC 8621 §2.5): without it
+    /// the server rejects destroying a mailbox that still contains emails with
+    /// `mailboxHasEmail`. The EAS `FolderDelete` semantics remove the folder and
+    /// its contents, so the EAS path passes `true`; a caller that must not
+    /// destroy mail passes `false`.
+    ///
+    /// Returns a [`MailboxDestroyOutcome`] so a caller can tell an already-absent
+    /// mailbox (RFC 8620 §5.3 `notFound` SetError — the desired end state) from a
+    /// refusal (`mailboxHasEmail`/`mailboxHasChild`/`forbidden`/…) and from a
+    /// backend failure. A JMAP method-level `error` response, a missing
+    /// `Mailbox/set` response, and a missing/malformed `destroyed` field are all
+    /// returned as `Err` (fail-closed) rather than being mistaken for a
+    /// completed destroy.
     pub async fn destroy_mailbox(
         &self,
         account_id: &str,
         mailbox_id: &str,
+        remove_emails: bool,
         username: &str,
         password: &SecretString,
-    ) -> Result<bool> {
+    ) -> Result<MailboxDestroyOutcome> {
         let session = self.get_session(username, password).await?;
         let api_url = &session.api_url;
         let calls = vec![(
@@ -3292,6 +4810,7 @@ impl JmapClient {
             json!({
                 "accountId": account_id,
                 "destroy": [mailbox_id],
+                "onDestroyRemoveEmails": remove_emails,
             }),
             "ms2",
         )];
@@ -3306,33 +4825,44 @@ impl JmapClient {
             .await?;
 
         for (method, data, _) in resp.method_responses {
+            // RFC 8620 §3.6.2: a method-level error is a separate `error`
+            // response, not a `Mailbox/set` result. Reject it rather than
+            // falling through to a success outcome.
+            if method == "error" {
+                return Err(anyhow!(
+                    "Mailbox/set destroy returned method error: {}",
+                    data
+                ));
+            }
             if method != "Mailbox/set" {
                 continue;
             }
-            if let Some(err) = data.get("error").filter(|v| !v.is_null()) {
-                let desc = err
-                    .get("description")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("Mailbox/set method rejected");
-                return Err(anyhow!("Mailbox/set destroy rejected: {desc}"));
-            }
+            // A per-id SetError (RFC 8620 §5.3): a `notFound` type means the id
+            // is already gone (the desired end state); any other type is a
+            // refusal the caller must not report as a completed delete.
             if let Some(not_destroyed) = data.get("notDestroyed")
                 && !not_destroyed.is_null()
                 && let Some(obj) = not_destroyed.as_object()
-                && obj.contains_key(mailbox_id)
+                && let Some(entry) = obj.get(mailbox_id)
             {
-                let desc = obj
-                    .get(mailbox_id)
-                    .and_then(|v| v.get("description"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown");
-                return Err(anyhow!("Mailbox/set destroy failed: {desc}"));
+                if entry.get("type").and_then(|v| v.as_str()) == Some("notFound") {
+                    return Ok(MailboxDestroyOutcome::AlreadyGone);
+                }
+                return Ok(MailboxDestroyOutcome::Refused);
             }
-            if let Some(destroyed) = data.get("destroyed").and_then(|v| v.as_array()) {
-                return Ok(destroyed.iter().any(|v| v.as_str() == Some(mailbox_id)));
-            }
+            let destroyed = data
+                .get("destroyed")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| anyhow!("Mailbox/set destroy response missing `destroyed`"))?;
+            return Ok(
+                if destroyed.iter().any(|v| v.as_str() == Some(mailbox_id)) {
+                    MailboxDestroyOutcome::Destroyed
+                } else {
+                    MailboxDestroyOutcome::Refused
+                },
+            );
         }
-        Ok(false)
+        Err(anyhow!("Mailbox/set response missing destroy outcome"))
     }
 
     /// Replace a mailbox's `shareWith` map (JMAP sharing, persisted via
@@ -3795,7 +5325,7 @@ impl JmapClient {
         ];
 
         let response = self
-            .api_call(
+            .api_call_impl(
                 api_url,
                 &[
                     "urn:ietf:params:jmap:core",
@@ -3805,12 +5335,37 @@ impl JmapClient {
                 method_calls,
                 params.username,
                 params.password,
+                // A lost transport/response here does NOT prove the submission
+                // failed: reporting a plain error would make `send_email` fall
+                // back to SMTP and deliver the message twice.
+                true,
             )
             .await?;
 
         // Check for errors in Email/set and EmailSubmission/set
         let mut email_id = String::new();
-        for (method, data, _) in &response.method_responses {
+        // A send is confirmed ONLY by a `created.s0` entry in the
+        // `EmailSubmission/set` response (RFC 8621 §7.5). A response that
+        // reports no `notCreated` but also no `created` — or no
+        // `EmailSubmission/set` entry at all — has NOT accepted the message, and
+        // reporting success would make SendItem delete the source draft: the
+        // message is then lost with no copy anywhere.
+        let mut submission_confirmed = false;
+        let mut saw_submission_response = false;
+        let mut method_error: Option<(String, Value)> = None;
+        for (method, data, call_id) in &response.method_responses {
+            // RFC 8620 §3.6.2: a failed invocation comes back as a method-level
+            // `error` entry. It is recorded, not decided immediately: the
+            // implicit `Email/set` that files the message into Sent shares the
+            // submission's call id (RFC 8621 §7.5's example shows both entries
+            // under one id), so an error here may arrive AFTER the submission
+            // was accepted. Returning an error then makes `send_email` fall back
+            // to SMTP and deliver the message a SECOND time — the confirmation
+            // below decides instead.
+            if method == "error" {
+                method_error = Some((call_id.clone(), data.clone()));
+                continue;
+            }
             if method == "Email/set" {
                 if let Some(not_created) = data.get("notCreated")
                     && !not_created.is_null()
@@ -3828,20 +5383,70 @@ impl JmapClient {
                         .to_string();
                 }
             }
-            if method == "EmailSubmission/set"
-                && let Some(not_created) = data.get("notCreated")
-                && !not_created.is_null()
-                && not_created.as_object().is_none_or(|o| !o.is_empty())
-            {
-                return Err(anyhow!("EmailSubmission/set failed: {}", not_created));
+            if method == "EmailSubmission/set" {
+                saw_submission_response = true;
+                if let Some(not_created) = data.get("notCreated")
+                    && !not_created.is_null()
+                    && not_created.as_object().is_none_or(|o| !o.is_empty())
+                {
+                    return Err(anyhow!("EmailSubmission/set failed: {}", not_created));
+                }
+                submission_confirmed = data
+                    .get("created")
+                    .and_then(|c| c.get("s0"))
+                    .and_then(|c| c.get("id"))
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|id| !id.is_empty());
             }
         }
 
-        if email_id.is_empty() {
-            warn!("JMAP Email/set succeeded but no email ID returned");
+        if submission_confirmed {
+            // The message WAS accepted for delivery. A later invocation failure
+            // (typically the implicit Email/set filing it into Sent) must not
+            // turn this into a failure: the caller would retry the send over
+            // SMTP and deliver it twice.
+            if let Some((call_id, data)) = method_error {
+                tracing::warn!(
+                    target: "jmap",
+                    call_id = %call_id,
+                    error = %data,
+                    "JMAP submission was accepted but a later invocation failed; the message was sent, its Sent copy may be missing"
+                );
+            }
+            return Ok(email_id);
         }
-
-        Ok(email_id)
+        if let Some((call_id, data)) = method_error {
+            // RFC 8620 §3.6.6 `serverPartialFail`: the server failed partway
+            // through the call, so the submission may have been accepted even
+            // though no confirmation came back. Reporting a plain error would
+            // make `send_email` fall back to SMTP and deliver the message twice.
+            if data.get("type").and_then(|v| v.as_str()) == Some("serverPartialFail") {
+                return Err(anyhow::Error::new(SubmissionUnconfirmed(format!(
+                    "JMAP invocation {call_id} failed partway through: {data}"
+                ))));
+            }
+            return Err(anyhow!("JMAP invocation {call_id} failed: {data}"));
+        }
+        if email_id.is_empty() {
+            // The batch produced no created id and no explicit rejection: the
+            // submission may still have been accepted. A plain error would make
+            // `send_email` fall back to SMTP and deliver the message twice.
+            return Err(anyhow::Error::new(SubmissionUnconfirmed(
+                "JMAP Email/set reported no created email for the submission".to_string(),
+            )));
+        }
+        // The response arrived but carries no confirmation for this submission:
+        // the message may still have been accepted, so the outcome is UNKNOWN.
+        // A typed error keeps the caller from "recovering" over SMTP and
+        // delivering the message a second time.
+        if !saw_submission_response {
+            return Err(anyhow::Error::new(SubmissionUnconfirmed(
+                "JMAP EmailSubmission/set returned no method response".to_string(),
+            )));
+        }
+        Err(anyhow::Error::new(SubmissionUnconfirmed(
+            "JMAP EmailSubmission/set did not confirm the submission".to_string(),
+        )))
     }
 
     /// Get all mailbox IDs for a given JMAP role (e.g., "inbox", "sent").
@@ -4080,6 +5685,193 @@ impl JmapClient {
         ))
     }
 
+    /// Page size for [`Self::query_all_mailboxes`]'s `Mailbox/query` walk.
+    const MAILBOX_QUERY_PAGE: u64 = 500;
+
+    /// Objects per `Email/get` / `Email/import` call on the copy path, kept
+    /// within the RFC 8620 §2 minimum `maxObjectsInGet`/`maxObjectsInSet`.
+    const COPY_BATCH: usize = 500;
+
+    /// Enumerate **every** mailbox of the primary account, paging
+    /// `Mailbox/query` by `position`/`limit` until the full list is drained.
+    ///
+    /// `query_mailboxes` issues a single unpaged `Mailbox/query`; a server may
+    /// clamp `limit` (RFC 8620 §5.5) and return only a prefix, so a caller that
+    /// needs the complete set (the subtree walks behind `RopDeleteFolder` and
+    /// EWS `DeleteFolder` hard delete) must paginate — otherwise a large
+    /// hierarchy leaves descendants unvisited and the parent destroy fails with
+    /// `mailboxHasChild`.
+    pub async fn query_all_mailboxes(
+        &self,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<MailboxListResult> {
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
+        let account_id = session
+            .primary_accounts
+            .get("urn:ietf:params:jmap:mail")
+            .ok_or_else(|| anyhow!("No primary mail account found in JMAP session"))?;
+
+        let mut all: Vec<JmapMailbox> = Vec::new();
+        let mut position: u64 = 0;
+        // RFC 8620 §5.5: a server MAY apply a lower `limit` than requested, and
+        // the back-referenced `Mailbox/get` is subject to `maxObjectsInGet`
+        // (§5.3) — result references become ordinary arguments before method
+        // processing, so a page larger than the get limit is rejected with
+        // `requestTooLarge`. Cap the page at the SMALLER of the query page and
+        // the advertised get limit so neither limit can fail the walk.
+        let page = Self::MAILBOX_QUERY_PAGE.min(session_max_objects_in_get(&session).max(1) as u64);
+        // RFC 8620 §5.5: a cached query result is only valid while its
+        // `queryState` is unchanged. Paging a `Mailbox/query` whose state
+        // changed mid-walk (a concurrent create/destroy) can return a
+        // non-authoritative set — a page at `position` may skip ids that a
+        // deletion shifted, so the caller would treat a PARTIAL list as the
+        // complete inventory (and, in `reconcile_deferred_folder_prunes`, prune a
+        // live folder). Capture the first page's state and refuse to return a
+        // complete inventory when a later page reports a different one.
+        let mut query_state: Option<String> = None;
+        loop {
+            let method_calls = vec![
+                (
+                    "Mailbox/query",
+                    json!({
+                        "accountId": account_id,
+                        "position": position,
+                        "limit": page,
+                        "calculateTotal": true,
+                    }),
+                    "mq0",
+                ),
+                (
+                    "Mailbox/get",
+                    json!({
+                        "accountId": account_id,
+                        "#ids": {
+                            "resultOf": "mq0",
+                            "name": "Mailbox/query",
+                            "path": "/ids",
+                        },
+                        "properties": [
+                            "id", "name", "parentId", "role", "sortOrder",
+                            "totalEmails", "unreadEmails", "totalThreads", "unreadThreads",
+                            "isSubscribed", "shareWith"
+                        ],
+                    }),
+                    "mg0",
+                ),
+            ];
+            let response = self
+                .api_call(
+                    api_url,
+                    &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+                    method_calls,
+                    username,
+                    password,
+                )
+                .await?;
+
+            let mut page_len: u64 = 0;
+            let mut total: Option<u64> = None;
+            let mut saw_get = false;
+            for (method, data, _) in response.method_responses {
+                if method == "error" {
+                    return Err(anyhow!("Mailbox/query returned method error: {}", data));
+                }
+                if method == "Mailbox/query" {
+                    page_len = data
+                        .get("ids")
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.len() as u64)
+                        .unwrap_or(0);
+                    total = data.get("total").and_then(|v| v.as_u64());
+                    // RFC 8620 §5.5: the query state must not change across the
+                    // walk, or the pages are not a single consistent result set.
+                    let page_state = data
+                        .get("queryState")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string);
+                    if let Some(s) = page_state {
+                        match query_state.as_deref() {
+                            None => query_state = Some(s),
+                            Some(first) if first != s.as_str() => {
+                                return Err(anyhow!(
+                                    "Mailbox/query state changed mid-walk; refusing to return a partial inventory"
+                                ));
+                            }
+                            Some(_) => {}
+                        }
+                    }
+                } else if method == "Mailbox/get" {
+                    saw_get = true;
+                    // A `Mailbox/get` whose `list` is missing or cannot be
+                    // deserialized must FAIL the walk, not silently contribute an
+                    // empty page: `reconcile_deferred_folder_prunes` treats the
+                    // returned set as the authoritative live hierarchy and would
+                    // prune (and journal a false deletion for) a live mailbox the
+                    // undecodable page actually contained.
+                    let list_value = data.get("list").ok_or_else(|| {
+                        anyhow!("Mailbox/get response is missing its `list` array")
+                    })?;
+                    let mut list: Vec<JmapMailbox> = serde_json::from_value(list_value.clone())
+                        .map_err(|e| {
+                            anyhow!("Mailbox/get returned an undecodable mailbox list: {e}")
+                        })?;
+                    // Every mailbox must carry a usable id: an id-less object
+                    // cannot be matched against a pending prune, so a live
+                    // mailbox would look absent and be pruned.
+                    if list
+                        .iter()
+                        .any(|m| m.id.as_deref().is_none_or(str::is_empty))
+                    {
+                        return Err(anyhow!(
+                            "Mailbox/get returned a mailbox without a usable id"
+                        ));
+                    }
+                    all.append(&mut list);
+                }
+            }
+            if !saw_get {
+                return Err(anyhow!(
+                    "Unexpected JMAP response structure for Mailbox/get"
+                ));
+            }
+            // A zero-length page means the walk is complete. Otherwise advance
+            // by the page's actual length and stop once the requested `total`
+            // (calculateTotal) is reached. Using the server's own `total` rather
+            // than a "short page" heuristic keeps the walk correct even when the
+            // server clamps `limit` below `MAILBOX_QUERY_PAGE` — a short page
+            // then does NOT mean the mailbox set is exhausted.
+            if page_len == 0 {
+                break;
+            }
+            position += page_len;
+            match total {
+                Some(t) => {
+                    if all.len() as u64 >= t {
+                        break;
+                    }
+                }
+                // The server omitted `total` despite `calculateTotal: true`
+                // (non-conforming). Fall back to the short-page heuristic so the
+                // walk TERMINATES: a server that also ignores `position` would
+                // otherwise return the same page forever and grow `all` without
+                // bound.
+                None => {
+                    if page_len < page {
+                        break;
+                    }
+                }
+            }
+        }
+
+        let total = all.len() as u64;
+        Ok(MailboxListResult {
+            mailboxes: all,
+            total,
+        })
+    }
+
     /// Get the primary mail account ID from the JMAP session.
     pub async fn get_account_id(&self, username: &str, password: &SecretString) -> Result<String> {
         let session = self.get_session(username, password).await?;
@@ -4129,7 +5921,7 @@ impl JmapClient {
         &self,
         username: &str,
         password: &SecretString,
-    ) -> Result<JmapSession> {
+    ) -> Result<Arc<JmapSession>> {
         self.get_session(username, password).await
     }
 
@@ -4200,6 +5992,18 @@ impl JmapClient {
         }
     }
 
+    /// Drop the cached probe outcome for exactly ONE credential.
+    ///
+    /// Used when a verification is superseded by a newer one for the same user:
+    /// the losing probe inserts its outcome into this cache inside
+    /// [`Self::probe_auth`], i.e. BEFORE the verifier's generation check runs,
+    /// so a still-fresh positive here would shadow the newer login even though
+    /// the verifier correctly refused to cache it (AUDIT.md §17).
+    pub fn invalidate_session_auth(&self, username: &str, password: &SecretString) {
+        self.session_auth
+            .invalidate(&Self::session_auth_key(username, password));
+    }
+
     /// Drop every cached session-auth outcome for `username` (all passwords).
     ///
     /// Used by `AuthVerifier::invalidate_user` so an explicit invalidation —
@@ -4265,6 +6069,15 @@ impl JmapClient {
         } else if status == reqwest::StatusCode::UNAUTHORIZED
             || status == reqwest::StatusCode::FORBIDDEN
         {
+            // A 403 is treated as an authoritative rejection of THIS backend so
+            // the verifier can still arbitrate to CalDAV: Stalwart may deny the
+            // JMAP session for an account whose credentials are valid. This
+            // deliberately differs from `CaldavClient::check_credentials`
+            // (where 403 is a backend error) because a CalDAV-only deployment
+            // would otherwise lock a valid user out with a 503. With no CalDAV
+            // configured the outcome is a 401 to the client — Stalwart's own
+            // answer for rejected credentials — and the short-lived negative
+            // cache entry expires on its own.
             CredentialCheck::Invalid
         } else {
             let body = resp.text().await.unwrap_or_default();
@@ -4707,24 +6520,28 @@ impl JmapClient {
         let to_destroy: Vec<String> = [id1, id2].into_iter().flatten().collect();
         if !to_destroy.is_empty() {
             self.probe_destroy_confirmed(
-                session,
-                "CalendarEvent/set",
-                account_id,
-                &to_destroy,
-                username,
-                password,
+                DestroyProbeCtx {
+                    session,
+                    method: "CalendarEvent/set",
+                    account_id,
+                    ids: &to_destroy,
+                    username,
+                    password,
+                },
                 report,
             )
             .await;
         }
         let calendar_leftover = !self
             .probe_destroy_confirmed(
-                session,
-                "Calendar/set",
-                account_id,
-                std::slice::from_ref(&probe_calendar_id),
-                username,
-                password,
+                DestroyProbeCtx {
+                    session,
+                    method: "Calendar/set",
+                    account_id,
+                    ids: std::slice::from_ref(&probe_calendar_id),
+                    username,
+                    password,
+                },
                 report,
             )
             .await;
@@ -4742,17 +6559,19 @@ impl JmapClient {
     /// retrying transient failures. Returns true when every id was
     /// confirmed destroyed; otherwise records a report issue naming the
     /// ids that remain on the server.
-    #[allow(clippy::too_many_arguments)]
     async fn probe_destroy_confirmed(
         &self,
-        session: &JmapSession,
-        method: &str,
-        account_id: &str,
-        ids: &[String],
-        username: &str,
-        password: &SecretString,
+        ctx: DestroyProbeCtx<'_>,
         report: &mut CalendarCapabilityReport,
     ) -> bool {
+        let DestroyProbeCtx {
+            session,
+            method,
+            account_id,
+            ids,
+            username,
+            password,
+        } = ctx;
         let using = ["urn:ietf:params:jmap:core", JMAP_CAL_CAPABILITY];
         let mut remaining: Vec<String> = ids.to_vec();
         let mut last_error = String::new();
@@ -5041,6 +6860,49 @@ impl JmapClient {
             .ok_or_else(|| anyhow!("No calendars found for user"))
     }
 
+    /// Resolve a JMAP calendar id from a stored CalDAV collection href.
+    ///
+    /// A user-created calendar-family EAS folder (Types 13/15/16/17) is backed
+    /// by a CalDAV collection whose href is stored in `folder_map` and used as
+    /// the folder's EAS ServerId; when a client Syncs that folder, its
+    /// `CollectionId` is that href. Stalwart exposes the same collection to JMAP
+    /// as a `Calendar` whose `href` property ends with the collection path, so
+    /// matching on a path-suffix basis scopes `CalendarEvent/query` to exactly
+    /// that collection. Returns `None` when no calendar matches (an
+    /// unknown/foreign href), so the caller can decline to serve rather than
+    /// leak every calendar's events.
+    pub async fn resolve_calendar_id_for_href(
+        &self,
+        username: &str,
+        password: &SecretString,
+        href: &str,
+    ) -> Result<Option<String>> {
+        let wanted = href.trim_end_matches('/');
+        if wanted.is_empty() {
+            return Ok(None);
+        }
+        // Percent-decode both sides before comparing: the stored href may use
+        // raw characters (e.g. `@`, space) while Stalwart reports them
+        // percent-encoded (`%40`, `%20`). Without decoding, `h == wanted`
+        // fails and the sync path cannot resolve the folder.
+        let wanted_decoded = percent_decode_str(wanted).decode_utf8_lossy().into_owned();
+        let result = self.query_calendars(username, password).await?;
+        Ok(result
+            .calendars
+            .into_iter()
+            .find(|c| {
+                c.href
+                    .as_deref()
+                    .map(|h| {
+                        let h = h.trim_end_matches('/');
+                        let h_decoded = percent_decode_str(h).decode_utf8_lossy().into_owned();
+                        h_decoded == wanted_decoded || h_decoded.ends_with(&wanted_decoded)
+                    })
+                    .unwrap_or(false)
+            })
+            .and_then(|c| c.id))
+    }
+
     /// Query calendar events in a time range via CalendarEvent/query
     /// + CalendarEvent/get (draft-ietf-jmap-calendars §5.11, §5.7).
     ///
@@ -5058,13 +6920,7 @@ impl JmapClient {
         let api_url = &session.api_url;
 
         // Build filter per draft-ietf-jmap-calendars §5.11.1
-        let mut filter = json!({
-            "after": params.start,
-            "before": params.end,
-        });
-        if let Some(cal_id) = params.calendar_id {
-            filter["inCalendarIds"] = json!([cal_id]);
-        }
+        let filter = calendar_query_filter(params.start, params.end, params.calendar_id);
 
         let method_calls = vec![
             (
@@ -5109,26 +6965,88 @@ impl JmapClient {
         let mut query_state = String::new();
         let mut state = String::new();
         let mut unparseable = 0usize;
+        let mut saw_query = false;
+        let mut saw_get = false;
 
         for (method, data, _) in response.method_responses {
+            // RFC 8620 §3.3: a failed method is an ["error", {...}, id]
+            // response. Reporting it as an EMPTY successful page would be
+            // indistinguishable from "this calendar has no events", and the
+            // prime path treats an empty snapshot as authoritative — it would
+            // tombstone every stored event on the client. Fail so the caller
+            // falls back to CalDAV (or answers a retryable error).
+            if method == "error" {
+                let err_type = data
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                return Err(anyhow!(
+                    "CalendarEvent/query or CalendarEvent/get returned method error: {}",
+                    err_type
+                ));
+            }
             if method == "CalendarEvent/query" {
-                total = data.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
-                query_state = data
+                // RFC 8620 §5.5: `ids`, `total` and `queryState` are the
+                // authoritative result of a `calculateTotal` query. A missing
+                // one is a malformed response — treating a missing `total` as 0
+                // would report an EMPTY calendar and the prime would tombstone
+                // every stored event.
+                let Some(ids) = data.get("ids").and_then(|v| v.as_array()) else {
+                    return Err(anyhow!(
+                        "CalendarEvent/query returned no usable ids array: {data}"
+                    ));
+                };
+                let Some(reported_total) = data.get("total").and_then(|v| v.as_u64()) else {
+                    return Err(anyhow!(
+                        "CalendarEvent/query returned no usable total: {data}"
+                    ));
+                };
+                let Some(reported_state) = data
                     .get("queryState")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
+                    .filter(|s| !s.is_empty())
+                else {
+                    return Err(anyhow!(
+                        "CalendarEvent/query returned no usable queryState: {data}"
+                    ));
+                };
+                if reported_total == 0 && !ids.is_empty() {
+                    return Err(anyhow!(
+                        "CalendarEvent/query reported total 0 with {} ids: {data}",
+                        ids.len()
+                    ));
+                }
+                saw_query = true;
+                total = reported_total;
+                query_state = reported_state.to_string();
             }
             if method == "CalendarEvent/get" {
+                let Some(list) = data.get("list").and_then(|v| v.as_array()) else {
+                    return Err(anyhow!("CalendarEvent/get returned no usable list: {data}"));
+                };
+                saw_get = true;
                 state = data
                     .get("state")
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
                 let (parsed, skipped) = parse_calendar_event_list(&data);
+                if parsed.len() + skipped != list.len() {
+                    return Err(anyhow!(
+                        "CalendarEvent/get list of {} yielded {} events and {} skips",
+                        list.len(),
+                        parsed.len(),
+                        skipped
+                    ));
+                }
                 events = parsed;
                 unparseable = skipped;
             }
+        }
+        if !saw_query || !saw_get {
+            return Err(anyhow!(
+                "CalendarEvent/query or CalendarEvent/get response missing from the batch"
+            ));
         }
 
         Ok(CalendarEventListResult {
@@ -5138,6 +7056,69 @@ impl JmapClient {
             state,
             unparseable,
         })
+    }
+
+    /// The `queryState` (RFC 8620 §5.5) of the calendar-event QUERY for the same
+    /// filter [`Self::query_calendar_events`] uses, without fetching any event.
+    ///
+    /// A prime takes its id set from `CalendarEvent/query` and its delta
+    /// baseline from the `CalendarEvent/get` `state`. A change committed on the
+    /// server between those two method invocations of the same batch is folded
+    /// into the baseline while its id never reaches the snapshot, so no later
+    /// `CalendarEvent/changes` would ever report it. Re-reading the query state
+    /// after the snapshot proves the result set did not move.
+    pub async fn query_calendar_event_query_state(
+        &self,
+        account_id: &str,
+        calendar_id: Option<&str>,
+        start: &str,
+        end: &str,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<String> {
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
+        let method_calls = vec![(
+            "CalendarEvent/query",
+            json!({
+                "accountId": account_id,
+                "filter": calendar_query_filter(start, end, calendar_id),
+                "sort": [{ "property": "start", "isAscending": true }],
+                "position": 0,
+                "limit": 0,
+                "calculateTotal": false,
+            }),
+            "eq0",
+        )];
+        let response = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", JMAP_CAL_CAPABILITY],
+                method_calls,
+                username,
+                password,
+            )
+            .await?;
+        for (method, data, _) in response.method_responses {
+            if method == "error" {
+                return Err(anyhow!(
+                    "CalendarEvent/query state probe returned method error: {}",
+                    data.get("type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown")
+                ));
+            }
+            if method == "CalendarEvent/query" {
+                return Ok(data
+                    .get("queryState")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string());
+            }
+        }
+        Err(anyhow!(
+            "CalendarEvent/query state probe response missing from the batch"
+        ))
     }
 
     /// Get a single calendar event by ID via CalendarEvent/get
@@ -5219,6 +7200,12 @@ impl JmapClient {
     /// Batch fetch multiple calendar events by IDs via CalendarEvent/get.
     /// Returns a HashMap mapping event ID to (ics, etag).
     ///
+    /// When `calendar_id` is `Some`, only events that belong to that calendar
+    /// (its `calendarIds` map carries the id) are returned. The JMAP
+    /// `CalendarEvent/changes` feed is account-wide, so a scoped EAS calendar
+    /// folder must filter the delta's fetched events by its own calendar id —
+    /// otherwise events from every other calendar are delivered into it.
+    ///
     /// The explicit `ids` array is chunked at the session's `maxObjectsInGet`
     /// (RFC 8620 §2): Stalwart rejects an over-cap explicit id list whole with
     /// `requestTooLarge`, so a large delta (the sync path unions every
@@ -5227,6 +7214,7 @@ impl JmapClient {
         &self,
         account_id: &str,
         event_ids: &[String],
+        calendar_id: Option<&str>,
         username: &str,
         password: &SecretString,
     ) -> Result<HashMap<String, (String, String)>> {
@@ -5276,6 +7264,21 @@ impl JmapClient {
                         if let Some(id) = event.id.clone()
                             && !id.is_empty()
                         {
+                            // A scoped folder receives only its own calendar's
+                            // events: skip a fetched event whose `calendarIds`
+                            // does not carry the requested calendar. A scope
+                            // filter was requested, so an event object that
+                            // carries no `calendarIds` map cannot be proven to
+                            // belong to this calendar — reject it rather than
+                            // admit another calendar's event into the scope.
+                            if let Some(cal_id) = calendar_id
+                                && !event
+                                    .calendar_ids
+                                    .as_ref()
+                                    .is_some_and(|ids| ids.contains_key(cal_id))
+                            {
+                                continue;
+                            }
                             let ics = event.to_ics().ok_or_else(|| {
                                 anyhow!("failed to convert CalendarEvent {id} to iCalendar")
                             })?;
@@ -5322,6 +7325,18 @@ impl JmapClient {
     /// For updates (event_id is Some), the existing event is replaced.
     ///
     /// Returns (jmap_event_id, uid, etag) on success.
+    /// Whether a JMAP method-level `error` for a `CalendarEvent/set` call
+    /// PROVES nothing was applied. Only a valid error type other than
+    /// `serverPartialFail` does: a missing or malformed type, and
+    /// `serverPartialFail` (RFC 8620 §3.6.6), leave the outcome unknown — the
+    /// server may have created the event before failing, so a CalDAV fallback
+    /// would duplicate it.
+    fn is_definitive_set_error(err: &Value) -> bool {
+        err.get("type")
+            .and_then(|v| v.as_str())
+            .is_some_and(|t| !t.is_empty() && t != "serverPartialFail")
+    }
+
     pub async fn set_calendar_event(
         &self,
         params: SetCalendarEventParams<'_>,
@@ -5329,9 +7344,18 @@ impl JmapClient {
         let session = self.get_session(params.username, params.password).await?;
         let api_url = &session.api_url;
 
-        let entry = crate::jscalendar::ics_to_jscalendar_event(params.ics).ok_or_else(|| {
-            anyhow!("failed to convert rendered iCalendar into a JSCalendar event payload")
-        })?;
+        let entry = match crate::jscalendar::ics_to_jscalendar_event(params.ics) {
+            Some(e) => e,
+            None => {
+                tracing::warn!(
+                    "JMAP calendar write: rendered iCalendar could not be converted to JSCalendar"
+                );
+                return Err(anyhow!(
+                    "failed to convert rendered iCalendar into a JSCalendar event payload"
+                )
+                .into());
+            }
+        };
 
         if let Some(existing_id) = params.event_id {
             let payload = crate::jscalendar::jscalendar_write_payload(&entry, true);
@@ -5355,7 +7379,7 @@ impl JmapClient {
                 ),
             ];
 
-            let response = self
+            let response = match self
                 .api_call(
                     api_url,
                     &["urn:ietf:params:jmap:core", JMAP_CAL_CAPABILITY],
@@ -5363,14 +7387,25 @@ impl JmapClient {
                     params.username,
                     params.password,
                 )
-                .await?;
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    return Err(CalendarWriteError::Other(e));
+                }
+            };
 
-            let set_args = response
+            let set_args = match response
                 .method_responses
                 .iter()
                 .find(|(m, _, _)| m == "CalendarEvent/set")
                 .map(|(_, a, _)| a)
-                .ok_or_else(|| anyhow!("CalendarEvent/set returned no response"))?;
+            {
+                Some(args) => args,
+                None => {
+                    return Err(anyhow!("CalendarEvent/set returned no response").into());
+                }
+            };
             if let Some(not_updated) = set_args.get("notUpdated")
                 && !not_updated.is_null()
                 && not_updated.as_object().is_none_or(|o| !o.is_empty())
@@ -5432,7 +7467,7 @@ impl JmapClient {
                 ),
             ];
 
-            let response = self
+            let response = match self
                 .api_call(
                     api_url,
                     &["urn:ietf:params:jmap:core", JMAP_CAL_CAPABILITY],
@@ -5440,45 +7475,108 @@ impl JmapClient {
                     params.username,
                     params.password,
                 )
-                .await?;
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    // The request was sent but no usable reply came back: the
+                    // create may have been applied. Falling back to CalDAV
+                    // could then store a second copy, so the outcome is
+                    // reported as unknown and the caller refuses.
+                    return Err(CalendarWriteError::Ambiguous {
+                        message: format!("CalendarEvent/set create got no usable reply: {e}"),
+                        payload_discarded: false,
+                    });
+                }
+            };
 
-            let set_args = response
+            // RFC 8620 §3.6.2: an invocation that fails produces an `error`
+            // response INSTEAD of the method response, carrying the failed call
+            // id. A DEFINITIVE method error means nothing was created, so the
+            // CalDAV fallback cannot duplicate the event; only `serverPartialFail`
+            // leaves the outcome unknown (the server may have applied part of the
+            // call before failing).
+            let set_method_error = response
+                .method_responses
+                .iter()
+                .find(|(m, _, call_id)| m == "error" && call_id == "es0")
+                .map(|(_, args, _)| args);
+            let set_args = match response
                 .method_responses
                 .iter()
                 .find(|(m, _, _)| m == "CalendarEvent/set")
                 .map(|(_, a, _)| a)
-                .ok_or_else(|| anyhow!("CalendarEvent/set returned no response"))?;
+            {
+                Some(args) => args,
+                // No `CalendarEvent/set` entry: the same "may have applied"
+                // uncertainty as a lost reply (RFC 8620 §3.6.2) — UNLESS the
+                // batch carries a definitive error for this call.
+                None => {
+                    if let Some(err) = set_method_error
+                        && Self::is_definitive_set_error(err)
+                    {
+                        return Err(anyhow!("CalendarEvent/set failed: {}", err).into());
+                    }
+                    return Err(CalendarWriteError::Ambiguous {
+                        message: "CalendarEvent/set returned no response".to_string(),
+                        payload_discarded: false,
+                    });
+                }
+            };
             if let Some(not_created) = set_args.get("notCreated")
                 && !not_created.is_null()
                 && not_created.as_object().is_none_or(|o| !o.is_empty())
             {
+                // An explicit rejection: nothing was created, the fallback is
+                // safe.
                 return Err(anyhow!("CalendarEvent/set create failed: {}", not_created).into());
             }
-            let id = set_args
+            let Some(id) = set_args
                 .get("created")
                 .and_then(|c| c.get("e0"))
                 .and_then(|e| e.get("id"))
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow!("CalendarEvent/set create returned no created event"))?
-                .to_string();
+                .map(str::to_string)
+            else {
+                // A success claim with no created id: ambiguous, unless the batch
+                // also carries a definitive method error for this call.
+                if let Some(err) = set_method_error
+                    && Self::is_definitive_set_error(err)
+                {
+                    return Err(anyhow!("CalendarEvent/set failed: {}", err).into());
+                }
+                return Err(CalendarWriteError::Ambiguous {
+                    message: "CalendarEvent/set create returned no created event".to_string(),
+                    payload_discarded: false,
+                });
+            };
 
             let read_back = match first_calendar_event(&response) {
                 Some(ev) => ev,
                 None => {
                     // The create was accepted but the read-back is missing;
-                    // remove the (contentless) orphan so a retry or the CalDAV
-                    // fallback does not leave a duplicate behind.
-                    let _ = self
+                    // remove the orphan so a retry or the CalDAV fallback does
+                    // not leave a duplicate behind. If it cannot be removed,
+                    // the event is KNOWN to exist and must not be created
+                    // again through CalDAV.
+                    let removed = self
                         .destroy_calendar_events(
                             params.account_id,
                             std::slice::from_ref(&id),
                             params.username,
                             params.password,
                         )
-                        .await;
-                    return Err(CalendarWriteError::Other(anyhow!(
-                        "CalendarEvent/set create could not be verified: read-back returned no event"
-                    )));
+                        .await
+                        .is_ok();
+                    let message = "CalendarEvent/set create could not be verified: read-back returned no event";
+                    return Err(if removed {
+                        CalendarWriteError::Other(anyhow!("{message}"))
+                    } else {
+                        CalendarWriteError::Ambiguous {
+                            message: format!("{message}; the created event could not be removed"),
+                            payload_discarded: false,
+                        }
+                    });
                 }
             };
             if let Err(e) = crate::jscalendar::verify_write_round_trip(&read_back, &entry) {
@@ -5487,22 +7585,37 @@ impl JmapClient {
                 // `{uuid}.ics` resource, so leaving the JMAP event behind would
                 // surface a duplicate to the client. Best-effort cleanup — the
                 // write is already failing.
-                let _ = self
+                let removed = self
                     .destroy_calendar_events(
                         params.account_id,
                         std::slice::from_ref(&id),
                         params.username,
                         params.password,
                     )
-                    .await;
+                    .await
+                    .is_ok();
                 if e.is_discarded() {
-                    return Err(CalendarWriteError::PayloadDiscarded(e.to_string()));
+                    return Err(if removed {
+                        CalendarWriteError::PayloadDiscarded(e.to_string())
+                    } else {
+                        CalendarWriteError::Ambiguous {
+                            message: format!("{e}; the created event could not be removed"),
+                            payload_discarded: true,
+                        }
+                    });
                 }
                 // A content-field mismatch is not proof of a lossy write path
                 // (a backend may normalise a value the gateway cannot
                 // enumerate), so it must not disable JMAP writes — but the
                 // event is still removed and the failure surfaced.
-                return Err(CalendarWriteError::Other(anyhow!("{e}")));
+                return Err(if removed {
+                    CalendarWriteError::Other(anyhow!("{e}"))
+                } else {
+                    CalendarWriteError::Ambiguous {
+                        message: format!("{e}; the created event could not be removed"),
+                        payload_discarded: false,
+                    }
+                });
             }
 
             let uid = entry
@@ -6261,13 +8374,14 @@ impl JmapClient {
                     )
                 })
                 .unwrap_or_default();
-            events_xml.push_str(&format!(
+            let _ = write!(
+                events_xml,
                 "<t:CalendarEvent><t:StartTime>{}</t:StartTime><t:EndTime>{}</t:EndTime><t:BusyType>{}</t:BusyType>{}</t:CalendarEvent>",
                 crate::util::format_ews_datetime(&block_start),
                 crate::util::format_ews_datetime(&block_end),
                 busy_type,
                 details_xml
-            ));
+            );
         }
         if !saw_usable_block {
             return None;
@@ -6321,6 +8435,11 @@ pub fn parse_email_set_outcome(
                 .or_else(|| err.as_str())
                 .unwrap_or("Email/set method rejected")
                 .to_string();
+            out.method_error_type = err
+                .get("type")
+                .and_then(|v| v.as_str())
+                .filter(|t| !t.is_empty())
+                .map(str::to_string);
             out.method_error = Some(desc);
         }
     }
@@ -6356,6 +8475,36 @@ fn build_move_update_patch(
         update.insert(eid.clone(), Value::Object(patch));
     }
     update
+}
+
+/// Build one `Email/import` entry for a copy: the source message's raw
+/// `blobId`, the destination `mailboxIds`, and the source's `keywords` /
+/// `receivedAt` when present (RFC 8621 §4.8 `EmailImport`).
+///
+/// A source row without a usable `blobId` is an error: importing without it
+/// would either create an empty message or be rejected by the server, and
+/// silently returning the SOURCE id instead (the previous membership-edit
+/// behavior) reports a copy the client never received.
+fn copy_import_entry(source: &Value, mailbox_ids: Value) -> Result<Value> {
+    let blob_id = source
+        .get("blobId")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("Email copy source has no blobId"))?;
+    let mut entry = serde_json::Map::new();
+    entry.insert("blobId".to_string(), json!(blob_id));
+    entry.insert("mailboxIds".to_string(), mailbox_ids);
+    if let Some(keywords) = source.get("keywords").and_then(|v| v.as_object())
+        && !keywords.is_empty()
+    {
+        entry.insert("keywords".to_string(), Value::Object(keywords.clone()));
+    }
+    if let Some(received_at) = source.get("receivedAt").and_then(|v| v.as_str())
+        && !received_at.is_empty()
+    {
+        entry.insert("receivedAt".to_string(), json!(received_at));
+    }
+    Ok(Value::Object(entry))
 }
 
 #[cfg(test)]
@@ -7375,6 +9524,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn get_session_returns_cached_arc_without_recloning() {
+        let base = spawn_stub_jmap_server().await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let first = client.get_session("u", &pw).await.unwrap();
+        let second = client.get_session("u", &pw).await.unwrap();
+        assert!(
+            std::sync::Arc::ptr_eq(&first, &second),
+            "cached session must be shared by handle, not deep-cloned"
+        );
+        assert_eq!(first.api_url, base);
+    }
+
+    #[tokio::test]
     async fn download_blob_capped_succeeds_at_exact_cap() {
         let base = spawn_stub_jmap_server().await;
         let client = JmapClient::new(&base).unwrap();
@@ -8075,6 +10238,47 @@ mod tests {
         base
     }
 
+    /// Like [`spawn_stub_jmap_api_server`] but the session advertises the
+    /// calendar capability with a primary calendar account, so calls that read
+    /// `primaryAccounts[urn:ietf:params:jmap:calendars]` (e.g.
+    /// `query_calendars`) work.
+    async fn spawn_stub_calendar_jmap_server(api_response: Value) -> String {
+        use axum::routing::{get, post};
+
+        async fn session(axum::Extension(base): axum::Extension<String>) -> axum::Json<Value> {
+            axum::Json(json!({
+                "apiUrl": base,
+                "downloadUrl": format!("{base}/download/{{accountId}}/{{blobId}}"),
+                "uploadUrl": format!("{base}/upload/{{accountId}}"),
+                "eventSourceUrl": format!("{base}/eventsource"),
+                "state": "s",
+                "username": "u",
+                "accounts": {},
+                "primaryAccounts": { JMAP_CAL_CAPABILITY: "acct-cal" },
+                "capabilities": {
+                    "urn:ietf:params:jmap:core": {},
+                    JMAP_CAL_CAPABILITY: {}
+                }
+            }))
+        }
+        async fn api(axum::Extension(response): axum::Extension<Value>) -> axum::Json<Value> {
+            axum::Json(response)
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(api_response))
+            .layer(axum::Extension(base.clone()));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        base
+    }
+
     #[tokio::test]
     async fn query_calendar_events_counts_unparseable_objects() {
         let response = json!({
@@ -8107,6 +10311,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resolve_calendar_id_for_href_matches_by_path_suffix() {
+        // A user-created calendar folder's CollectionId is the stored CalDAV
+        // collection href; Stalwart reports the same collection to JMAP with a
+        // path-suffixed `href`. Resolution must map the href to the calendar id
+        // (scoping the Sync query) and must NOT resolve an unknown href to an
+        // arbitrary calendar.
+        let response = json!({
+            "methodResponses": [
+                ["Calendar/get", { "list": [
+                    { "id": "cal-default", "name": "Default", "href": "/dav/cal/u%40example.com/default/" },
+                    { "id": "cal-projects", "name": "Projects", "href": "/dav/cal/u%40example.com/Projects/" }
+                ] }, "cg0"]
+            ]
+        });
+        let base = spawn_stub_calendar_jmap_server(response).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let hit = client
+            .resolve_calendar_id_for_href("u", &pw, "/dav/cal/u%40example.com/Projects/")
+            .await
+            .expect("query ok");
+        assert_eq!(hit.as_deref(), Some("cal-projects"));
+        let miss = client
+            .resolve_calendar_id_for_href("u", &pw, "/dav/cal/u%40example.com/Ghost/")
+            .await
+            .expect("query ok");
+        assert_eq!(miss, None, "an unknown href must not resolve to a calendar");
+    }
+
+    #[tokio::test]
     async fn get_calendar_event_errors_when_conversion_fails() {
         // An event the server returns with no event data at all cannot be
         // converted; the single-event getter must surface that as an error so
@@ -8134,7 +10368,9 @@ mod tests {
         let client = JmapClient::new(&base).unwrap();
         let pw = SecretString::from("pw");
         let ids = vec!["e1".to_string()];
-        let result = client.get_calendar_events("acct", &ids, "u", &pw).await;
+        let result = client
+            .get_calendar_events("acct", &ids, None, "u", &pw)
+            .await;
         assert!(result.is_err(), "unconvertible batch event must be Err");
     }
 
@@ -8225,6 +10461,39 @@ mod tests {
          DTSTAMP:20260301T000000Z\r\nDTSTART:20260401T090000Z\r\nDTEND:20260401T100000Z\r\n\
          SUMMARY:Kept\r\nDESCRIPTION:body\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
             .to_string()
+    }
+
+    /// A create whose read-back is missing AND whose orphan cannot be removed
+    /// is an UNKNOWN outcome: the event may exist, so the caller must refuse
+    /// the CalDAV fallback (a second create would duplicate it) rather than
+    /// treat the failure as "not committed".
+    #[tokio::test]
+    async fn set_calendar_event_unverifiable_and_unremovable_is_ambiguous() {
+        let set_without_read_back = json!({ "methodResponses": [
+            ["CalendarEvent/set", { "created": { "e0": { "id": "e1" } } }, "es0"]
+        ]});
+        let destroy_fails = json!({ "methodResponses": [
+            ["error", { "type": "serverFail" }, "es1"]
+        ]});
+        let (base, recorded) =
+            spawn_recording_stub(vec![set_without_read_back, destroy_fails]).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let err = client
+            .set_calendar_event(SetCalendarEventParams {
+                account_id: "acct",
+                calendar_id: Some("cal"),
+                event_id: None,
+                ics: &ics_with_description(),
+                username: "u",
+                password: &pw,
+            })
+            .await
+            .expect_err("an unremovable orphan must not read as 'not committed'");
+        assert!(err.may_be_committed(), "{err:?}");
+        assert!(!err.is_payload_discarded(), "{err:?}");
+        // The compensation WAS attempted (a second CalendarEvent/set).
+        assert_eq!(recorded.lock().unwrap().len(), 2);
     }
 
     /// A read-back whose title is empty proves the backend discarded the
@@ -8727,7 +10996,7 @@ mod tests {
         let pw = SecretString::from("pw");
         let ids: Vec<String> = (0..5).map(|i| format!("e{i}")).collect();
         let map = client
-            .get_calendar_events("acct", &ids, "u", &pw)
+            .get_calendar_events("acct", &ids, None, "u", &pw)
             .await
             .expect("chunked calendar get must succeed");
         assert_eq!(map.len(), 5, "every event must be delivered");
@@ -8748,7 +11017,9 @@ mod tests {
         let client = JmapClient::new(&base).unwrap();
         let pw = SecretString::from("pw");
         let ids: Vec<String> = (0..5).map(|i| format!("e{i}")).collect();
-        let result = client.get_calendar_events("acct", &ids, "u", &pw).await;
+        let result = client
+            .get_calendar_events("acct", &ids, None, "u", &pw)
+            .await;
         assert!(
             result.is_err(),
             "a method-level error on any chunk must surface as Err"
@@ -8931,6 +11202,76 @@ mod tests {
         );
     }
 
+    /// A Stalwart `Email/queryChanges` method error is a SEPARATE `error`
+    /// response (RFC 8620 §3.6.2), not a field on the method's own response.
+    /// An unresumable `sinceQueryState` comes back as `invalidArguments`; it
+    /// must downcast to `CannotCalculateChanges` so the EAS/EWS delta re-primes
+    /// from a full snapshot instead of freezing the feed.
+    #[tokio::test]
+    async fn query_email_changes_invalid_arguments_surfaces_cannot_calculate() {
+        let err_page = json!({ "methodResponses": [
+            ["error", { "type": "invalidArguments", "description": "invalid JMAP State" }, "qc0"]
+        ]});
+        let (base, _rec) = spawn_recording_stub(vec![err_page]).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let err = client
+            .query_email_changes("acct", "mbx", "stale", "u", &pw, None)
+            .await
+            .expect_err("invalidArguments must surface as Err");
+        assert!(
+            err.downcast_ref::<CannotCalculateChanges>().is_some(),
+            "must be typed CannotCalculateChanges: {err:?}"
+        );
+    }
+
+    /// A `cannotCalculateChanges` method error maps the same way.
+    #[tokio::test]
+    async fn query_email_changes_cannot_calculate_surfaces_typed_error() {
+        let err_page = json!({ "methodResponses": [
+            ["error", { "type": "cannotCalculateChanges", "description": "too old" }, "qc0"]
+        ]});
+        let (base, _rec) = spawn_recording_stub(vec![err_page]).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let err = client
+            .query_email_changes("acct", "mbx", "stale", "u", &pw, None)
+            .await
+            .expect_err("cannotCalculateChanges must surface as Err");
+        assert!(
+            err.downcast_ref::<CannotCalculateChanges>().is_some(),
+            "must be typed CannotCalculateChanges: {err:?}"
+        );
+    }
+
+    /// A successful mailbox-scoped page: `added` → created, `removed` →
+    /// destroyed, and the wire call carries the `inMailbox` filter and the
+    /// caller's `maxChanges`.
+    #[tokio::test]
+    async fn query_email_changes_scopes_to_mailbox_and_classifies() {
+        let page = json!({ "methodResponses": [
+            ["Email/queryChanges", {
+                "accountId": "acct", "oldQueryState": "s0", "newQueryState": "s1",
+                "added": [{"id": "m1", "index": 0}], "removed": ["m2"]
+            }, "qc0"]
+        ]});
+        let (base, rec) = spawn_recording_stub(vec![page]).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let result = client
+            .query_email_changes("acct", "mbx-inbox", "s0", "u", &pw, Some(25))
+            .await
+            .expect("queryChanges must succeed");
+        assert_eq!(result.created, vec!["m1"]);
+        assert_eq!(result.destroyed, vec!["m2"]);
+        assert_eq!(result.new_state, "s1");
+        let sent = rec.lock().unwrap();
+        let args = &sent[0]["methodCalls"][0][1];
+        assert_eq!(args["filter"]["inMailbox"], "mbx-inbox");
+        assert_eq!(args["sinceQueryState"], "s0");
+        assert_eq!(args["maxChanges"], 25);
+    }
+
     /// The initial prime captures the `CalendarEvent/get` data-type `state` —
     /// the token `CalendarEvent/changes` accepts — rather than the query's
     /// `queryState` (finding #7).
@@ -8963,5 +11304,876 @@ mod tests {
             .expect("query must succeed");
         assert_eq!(result.state, "get-9", "the data-type state, not queryState");
         assert_eq!(result.query_state, "query-7");
+    }
+
+    /// A query that returned ids whose messages ALL vanished before the
+    /// back-referenced `Email/get` (an empty `list`) is NOT an empty mailbox:
+    /// returning an empty success would let an initial sync store the
+    /// pre-removal query state as the delta base and permanently skip the
+    /// undelivered tail behind it. The call must FAIL so the caller retries.
+    #[tokio::test]
+    async fn query_emails_fails_when_query_ids_vanish_before_get() {
+        let response = json!({
+            "methodResponses": [
+                ["Email/query", { "ids": ["m1", "m2"], "total": 3, "queryState": "q-1", "position": 0 }, "q0"],
+                ["Email/get", { "state": "s1", "list": [] }, "g0"]
+            ]
+        });
+        let base = spawn_stub_jmap_api_server(response).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let err = client
+            .query_emails(QueryEmailsParams {
+                account_id: "a",
+                filter: Some(json!({"inMailbox": "mbx-inbox"})),
+                sort: None,
+                position: 0,
+                limit: 100,
+                anchor: None,
+                anchor_offset: 0,
+                username: "u",
+                password: &pw,
+            })
+            .await
+            .expect_err(
+                "a query whose ids all vanished before Email/get must fail, not answer empty",
+            );
+        assert!(
+            err.to_string().contains("did not account for queried id"),
+            "{err}"
+        );
+    }
+
+    /// A query that genuinely returns NO ids (an empty mailbox) is a legitimate
+    /// empty result and must NOT be treated as the vanished-ids failure.
+    #[tokio::test]
+    async fn query_emails_allows_genuinely_empty_query() {
+        let response = json!({
+            "methodResponses": [
+                ["Email/query", { "ids": [], "total": 0, "queryState": "q-0", "position": 0 }, "q0"],
+                ["Email/get", { "state": "s0", "list": [] }, "g0"]
+            ]
+        });
+        let base = spawn_stub_jmap_api_server(response).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let result = client
+            .query_emails(QueryEmailsParams {
+                account_id: "a",
+                filter: Some(json!({"inMailbox": "mbx-inbox"})),
+                sort: None,
+                position: 0,
+                limit: 100,
+                anchor: None,
+                anchor_offset: 0,
+                username: "u",
+                password: &pw,
+            })
+            .await
+            .expect("an empty query is a legitimate empty result");
+        assert!(result.emails.is_empty());
+    }
+
+    /// Spawn a stub JMAP server whose `Mailbox/set` `destroy` reply is the
+    /// supplied scripted `methodResponses` entry, so the `destroy_mailbox`
+    /// outcome mapping can be driven directly.
+    async fn spawn_mailbox_set_stub(api_response: Value) -> String {
+        spawn_stub_jmap_api_server(api_response).await
+    }
+
+    #[tokio::test]
+    async fn destroy_mailbox_reports_destroyed() {
+        let response = json!({
+            "methodResponses": [
+                ["Mailbox/set", { "accountId": "a", "destroyed": ["mb-1"] }, "ms2"]
+            ]
+        });
+        let base = spawn_mailbox_set_stub(response).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let outcome = client
+            .destroy_mailbox("a", "mb-1", true, "u", &pw)
+            .await
+            .unwrap();
+        assert_eq!(outcome, MailboxDestroyOutcome::Destroyed);
+    }
+
+    #[tokio::test]
+    async fn destroy_mailbox_maps_notfound_to_already_gone() {
+        // RFC 8620 §5.3: a destroy of an id that cannot be found is rejected
+        // with the `notFound` SetError. That is the desired end state, so the
+        // outcome is `AlreadyGone`, not an error and not a refusal.
+        let response = json!({
+            "methodResponses": [
+                ["Mailbox/set", {
+                    "accountId": "a",
+                    "notDestroyed": { "mb-1": { "type": "notFound" } }
+                }, "ms2"]
+            ]
+        });
+        let base = spawn_mailbox_set_stub(response).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let outcome = client
+            .destroy_mailbox("a", "mb-1", true, "u", &pw)
+            .await
+            .unwrap();
+        assert_eq!(outcome, MailboxDestroyOutcome::AlreadyGone);
+    }
+
+    #[tokio::test]
+    async fn destroy_mailbox_maps_mailbox_has_email_to_refused() {
+        // RFC 8621 §2.5: a non-empty mailbox without `onDestroyRemoveEmails`
+        // is rejected with `mailboxHasEmail`. That is a refusal — the mailbox
+        // still exists — and must not be mistaken for a completed delete.
+        let response = json!({
+            "methodResponses": [
+                ["Mailbox/set", {
+                    "accountId": "a",
+                    "notDestroyed": { "mb-1": { "type": "mailboxHasEmail" } }
+                }, "ms2"]
+            ]
+        });
+        let base = spawn_mailbox_set_stub(response).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let outcome = client
+            .destroy_mailbox("a", "mb-1", false, "u", &pw)
+            .await
+            .unwrap();
+        assert_eq!(outcome, MailboxDestroyOutcome::Refused);
+    }
+
+    #[tokio::test]
+    async fn destroy_mailbox_errors_on_method_error() {
+        // RFC 8620 §3.6.2: a method-level error is a separate `error` response.
+        // It must be a hard error, never `Ok(false)`.
+        let response = json!({
+            "methodResponses": [
+                ["error", { "type": "serverFail", "description": "boom" }, "ms2"]
+            ]
+        });
+        let base = spawn_mailbox_set_stub(response).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let err = client
+            .destroy_mailbox("a", "mb-1", true, "u", &pw)
+            .await
+            .expect_err("a method-level error must be a hard error");
+        assert!(err.to_string().contains("method error"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn destroy_mailbox_errors_when_destroyed_missing() {
+        // A `Mailbox/set` result without a `destroyed` array is malformed and
+        // must be a hard error rather than silently reported as not-destroyed.
+        let response = json!({
+            "methodResponses": [
+                ["Mailbox/set", { "accountId": "a" }, "ms2"]
+            ]
+        });
+        let base = spawn_mailbox_set_stub(response).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let err = client
+            .destroy_mailbox("a", "mb-1", true, "u", &pw)
+            .await
+            .expect_err("a missing `destroyed` must be a hard error");
+        assert!(err.to_string().contains("missing `destroyed`"), "{err}");
+    }
+
+    /// Spawn a stub JMAP server whose `Mailbox/query` honours `position`/`limit`
+    /// over a fixed id list (clamped to `page_cap`) so `query_all_mailboxes`
+    /// pagination can be exercised, and whose `Mailbox/get` echoes the queried
+    /// ids with a `parentId` derived from the id suffix. `get_cap` advertises
+    /// the session's `maxObjectsInGet`; the stub REJECTS a `Mailbox/get` whose
+    /// id list exceeds it (RFC 8620 §5.3 `requestTooLarge`), so a page bounded
+    /// only by the query cap would fail the walk.
+    async fn spawn_paged_mailbox_stub(
+        total: usize,
+        page_cap: usize,
+    ) -> (String, std::sync::Arc<tokio::sync::Mutex<Vec<u64>>>) {
+        spawn_paged_mailbox_stub_with_get_cap(total, page_cap, DEFAULT_MAX_OBJECTS_IN_GET).await
+    }
+
+    async fn spawn_paged_mailbox_stub_with_get_cap(
+        total: usize,
+        page_cap: usize,
+        get_cap: usize,
+    ) -> (String, std::sync::Arc<tokio::sync::Mutex<Vec<u64>>>) {
+        use axum::routing::{get, post};
+
+        #[derive(Clone)]
+        struct PagedCtl {
+            base: String,
+            total: usize,
+            page_cap: usize,
+            get_cap: usize,
+            queries: std::sync::Arc<tokio::sync::Mutex<Vec<u64>>>,
+        }
+
+        async fn session(axum::Extension(ctl): axum::Extension<PagedCtl>) -> axum::Json<Value> {
+            let mut s = session_json(&ctl.base);
+            s["primaryAccounts"] = json!({ "urn:ietf:params:jmap:mail": "a" });
+            s["capabilities"] = json!({
+                JMAP_CORE_CAPABILITY: { "maxObjectsInGet": ctl.get_cap }
+            });
+            axum::Json(s)
+        }
+
+        async fn api(
+            axum::Extension(ctl): axum::Extension<PagedCtl>,
+            body: String,
+        ) -> axum::Json<Value> {
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let mut responses = Vec::new();
+            let mut last_query_ids: Vec<String> = Vec::new();
+            for call in req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let args = call.get(1).cloned().unwrap_or(Value::Null);
+                let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                let result = match name {
+                    "Mailbox/query" => {
+                        let position =
+                            args.get("position").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                        let limit =
+                            args.get("limit").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                        ctl.queries.lock().await.push(position as u64);
+                        // The server clamps the requested limit to its own cap.
+                        let eff = limit.min(ctl.page_cap).max(1);
+                        let end = (position + eff).min(ctl.total);
+                        last_query_ids = (position..end).map(|i| format!("mb-{i}")).collect();
+                        json!({
+                            "accountId": "a",
+                            "ids": last_query_ids,
+                            "total": ctl.total,
+                            "position": position,
+                        })
+                    }
+                    "Mailbox/get" => {
+                        // RFC 8620 §5.3: the back-referenced id list is an
+                        // ordinary argument, so a page larger than
+                        // `maxObjectsInGet` is rejected whole with a method-level
+                        // error.
+                        if last_query_ids.len() > ctl.get_cap {
+                            responses.push(json!([
+                                "error",
+                                {"type": "requestTooLarge"},
+                                cid
+                            ]));
+                            continue;
+                        }
+                        let list: Vec<Value> = last_query_ids
+                            .iter()
+                            .map(|id| json!({ "id": id, "name": id, "parentId": Value::Null }))
+                            .collect();
+                        json!({ "accountId": "a", "list": list })
+                    }
+                    _ => json!({ "accountId": "a" }),
+                };
+                responses.push(json!([name, result, cid]));
+            }
+            axum::Json(json!({ "methodResponses": responses, "sessionState": "s" }))
+        }
+
+        let queries = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let ctl = PagedCtl {
+            base: base.clone(),
+            total,
+            page_cap,
+            get_cap,
+            queries: queries.clone(),
+        };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (base, queries)
+    }
+
+    #[tokio::test]
+    async fn query_all_mailboxes_pages_until_exhausted() {
+        // 1200 mailboxes with a server page cap of 500: the walk must issue
+        // three pages (0, 500, 1000) and return every mailbox.
+        let (base, queries) = spawn_paged_mailbox_stub(1200, 500).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let result = client
+            .query_all_mailboxes("u", &pw)
+            .await
+            .expect("paged walk must succeed");
+        assert_eq!(result.mailboxes.len(), 1200);
+        assert_eq!(result.total, 1200);
+        assert_eq!(
+            *queries.lock().await,
+            vec![0, 500, 1000],
+            "the walk must page at the server's effective limit"
+        );
+    }
+
+    #[tokio::test]
+    async fn query_all_mailboxes_single_page_when_under_cap() {
+        let (base, queries) = spawn_paged_mailbox_stub(10, 500).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let result = client
+            .query_all_mailboxes("u", &pw)
+            .await
+            .expect("single-page walk must succeed");
+        assert_eq!(result.mailboxes.len(), 10);
+        assert_eq!(*queries.lock().await, vec![0], "one page suffices");
+    }
+
+    #[tokio::test]
+    async fn query_all_mailboxes_pages_when_server_clamps_limit() {
+        // The server clamps every page to 200 (< the requested 500). A "short
+        // page means done" heuristic would stop after one page; the walk must
+        // instead use the requested `total` and page until it is reached.
+        let (base, queries) = spawn_paged_mailbox_stub(1200, 200).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let result = client
+            .query_all_mailboxes("u", &pw)
+            .await
+            .expect("clamped walk must succeed");
+        assert_eq!(result.mailboxes.len(), 1200);
+        assert_eq!(
+            *queries.lock().await,
+            vec![0, 200, 400, 600, 800, 1000],
+            "the walk must not stop at the first short page"
+        );
+    }
+
+    /// RFC 8620 §5.3/§5.5: a page bounded only by the query page size would
+    /// exceed a smaller advertised `maxObjectsInGet` on the back-referenced
+    /// `Mailbox/get`, which the server rejects whole (`requestTooLarge`),
+    /// failing the walk. The page must be the SMALLER of the two limits.
+    #[tokio::test]
+    async fn query_all_mailboxes_bounds_page_by_max_objects_in_get() {
+        // Query cap 500 but a get cap of 256: each page must be <= 256, else the
+        // stub rejects the get and the walk errors.
+        let (base, queries) = spawn_paged_mailbox_stub_with_get_cap(600, 500, 256).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let result = client
+            .query_all_mailboxes("u", &pw)
+            .await
+            .expect("the walk must page within maxObjectsInGet");
+        assert_eq!(result.mailboxes.len(), 600);
+        assert_eq!(
+            *queries.lock().await,
+            vec![0, 256, 512],
+            "each page must be bounded by the advertised get limit"
+        );
+    }
+
+    /// RFC 8620 §5.5: a `Mailbox/query` whose `queryState` changes between
+    /// pages is NOT a single consistent result set — the walk must fail rather
+    /// than return a partial inventory a caller could mistake for complete
+    /// (which would prune a live folder's mapping in
+    /// `reconcile_deferred_folder_prunes`).
+    #[tokio::test]
+    async fn query_all_mailboxes_rejects_query_state_change_mid_walk() {
+        use axum::routing::{get, post};
+
+        #[derive(Clone)]
+        struct Ctl {
+            base: String,
+        }
+        async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
+            let mut s = session_json(&ctl.base);
+            s["primaryAccounts"] = json!({ "urn:ietf:params:jmap:mail": "a" });
+            axum::Json(s)
+        }
+        async fn api(body: String) -> axum::Json<Value> {
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let mut responses = Vec::new();
+            let mut last_ids: Vec<String> = Vec::new();
+            for call in req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let args = call.get(1).cloned().unwrap_or(Value::Null);
+                let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                let result = match name {
+                    "Mailbox/query" => {
+                        let position = args.get("position").and_then(|v| v.as_u64()).unwrap_or(0);
+                        // A DIFFERENT queryState per page — the walk must abort.
+                        let state = format!("state-{position}");
+                        let end = position + 2;
+                        last_ids = (position..end).map(|i| format!("mb-{i}")).collect();
+                        json!({
+                            "accountId": "a",
+                            "ids": last_ids,
+                            "total": 6,
+                            "position": position,
+                            "queryState": state,
+                        })
+                    }
+                    "Mailbox/get" => {
+                        let list: Vec<Value> = last_ids
+                            .iter()
+                            .map(|id| json!({ "id": id, "name": id, "parentId": Value::Null }))
+                            .collect();
+                        json!({ "accountId": "a", "list": list })
+                    }
+                    _ => json!({ "accountId": "a" }),
+                };
+                responses.push(json!([name, result, cid]));
+            }
+            axum::Json(json!({ "methodResponses": responses, "sessionState": "s" }))
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let ctl = Ctl { base: base.clone() };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let err = client
+            .query_all_mailboxes("u", &pw)
+            .await
+            .expect_err("a mid-walk queryState change must fail the walk");
+        assert!(err.to_string().contains("state changed"), "{err}");
+    }
+
+    /// A `Mailbox/get` whose `list` cannot be deserialized must FAIL the walk
+    /// rather than contribute an empty page: `reconcile_deferred_folder_prunes`
+    /// treats the returned set as the authoritative live hierarchy, so a
+    /// silently-dropped page would prune (and journal a false deletion for) a
+    /// live mailbox it actually contained.
+    #[tokio::test]
+    async fn query_all_mailboxes_rejects_undecodable_list() {
+        let err = query_all_mailboxes_with_get(json!({
+            "accountId": "a",
+            "list": [{ "id": 5, "name": "bad" }],
+        }))
+        .await
+        .expect_err("an undecodable mailbox list must fail the walk");
+        assert!(
+            err.to_string().contains("undecodable mailbox list"),
+            "{err}"
+        );
+    }
+
+    /// A `Mailbox/get` with no `list` array at all must FAIL the walk, not be
+    /// read as an empty page.
+    #[tokio::test]
+    async fn query_all_mailboxes_rejects_missing_list() {
+        let err = query_all_mailboxes_with_get(json!({ "accountId": "a" }))
+            .await
+            .expect_err("a missing mailbox list must fail the walk");
+        assert!(err.to_string().contains("missing its `list`"), "{err}");
+    }
+
+    /// A `Mailbox/get` entry without a usable id cannot be matched against a
+    /// pending prune, so a live mailbox would look absent and be pruned. Reject
+    /// the whole walk.
+    #[tokio::test]
+    async fn query_all_mailboxes_rejects_mailbox_without_id() {
+        let err = query_all_mailboxes_with_get(json!({
+            "accountId": "a",
+            "list": [{ "name": "no-id" }],
+        }))
+        .await
+        .expect_err("an id-less mailbox must fail the walk");
+        assert!(err.to_string().contains("without a usable id"), "{err}");
+    }
+
+    /// Drive `query_all_mailboxes` against a stub whose `Mailbox/get` returns
+    /// exactly `get_result`, so the inventory-validation branches can be pinned.
+    async fn query_all_mailboxes_with_get(get_result: Value) -> anyhow::Result<MailboxListResult> {
+        use axum::routing::{get, post};
+
+        #[derive(Clone)]
+        struct Ctl {
+            base: String,
+            get_result: Value,
+        }
+        async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
+            let mut s = session_json(&ctl.base);
+            s["primaryAccounts"] = json!({ "urn:ietf:params:jmap:mail": "a" });
+            axum::Json(s)
+        }
+        async fn api(
+            axum::Extension(ctl): axum::Extension<Ctl>,
+            body: String,
+        ) -> axum::Json<Value> {
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let mut responses = Vec::new();
+            for call in req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                let result = match name {
+                    // One live mailbox A, so the walk issues a `Mailbox/get`.
+                    "Mailbox/query" => json!({
+                        "accountId": "a",
+                        "ids": ["mb-a"],
+                        "total": 1,
+                        "position": 0,
+                        "queryState": "q",
+                    }),
+                    "Mailbox/get" => ctl.get_result.clone(),
+                    _ => json!({ "accountId": "a" }),
+                };
+                responses.push(json!([name, result, cid]));
+            }
+            axum::Json(json!({ "methodResponses": responses, "sessionState": "s" }))
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let ctl = Ctl {
+            base: base.clone(),
+            get_result,
+        };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        client.query_all_mailboxes("u", &pw).await
+    }
+
+    // --- submit_email: a send is confirmed only by `created.s0` ---
+    //
+    // RFC 8621 §7.5: `EmailSubmission/set` reports acceptance through
+    // `created`. SendItem deletes the source draft on success, so an
+    // UNCONFIRMED submission reported as success loses the message outright.
+
+    /// Spawn a JMAP stub answering the submission batch. `mode` selects the
+    /// `EmailSubmission/set` outcome: "confirmed" (`created.s0`), "empty"
+    /// (`created: {}`), or "absent" (no `EmailSubmission/set` response at all).
+    async fn spawn_submit_stub(mode: &'static str) -> String {
+        use axum::routing::{get, post};
+        use serde_json::{Value, json};
+
+        async fn session(axum::Extension(base): axum::Extension<String>) -> axum::Json<Value> {
+            axum::Json(json!({
+                "apiUrl": base,
+                "downloadUrl": format!("{base}/download/{{accountId}}/{{blobId}}"),
+                "uploadUrl": format!("{base}/upload/{{accountId}}"),
+                "eventSourceUrl": format!("{base}/eventsource"),
+                "state": "s",
+                "username": "u",
+                "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                "capabilities": {"urn:ietf:params:jmap:core": {"maxObjectsInGet": 500}}
+            }))
+        }
+
+        async fn api(mode: &'static str, body: String) -> axum::response::Response {
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let mut responses = Vec::new();
+            for call in req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let args = call.get(1).cloned().unwrap_or(Value::Null);
+                let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                let result = match name {
+                    "Mailbox/query" => {
+                        let role = args
+                            .get("filter")
+                            .and_then(|f| f.get("role"))
+                            .and_then(|r| r.as_str())
+                            .unwrap_or("");
+                        let ids = match role {
+                            "drafts" => json!(["mb-drafts"]),
+                            "sent" => json!(["mb-sent"]),
+                            _ => json!([]),
+                        };
+                        json!({"accountId": "a", "ids": ids})
+                    }
+                    "Email/set" => json!({
+                        "accountId": "a",
+                        "created": {"e0": {"id": "email-1"}},
+                    }),
+                    "EmailSubmission/set" => {
+                        if mode == "absent" {
+                            continue;
+                        }
+                        let created = if mode.starts_with("confirmed") {
+                            json!({"s0": {"id": "sub-1"}})
+                        } else {
+                            json!({})
+                        };
+                        json!({"accountId": "a", "created": created})
+                    }
+                    _ => json!({"accountId": "a"}),
+                };
+                responses.push(json!([name, result, cid]));
+            }
+            // RFC 8620 §3.6.2 / RFC 8621 §7.5: the implicit `Email/set` that
+            // files the submitted message into Sent reports under the SAME call
+            // id, and its failure arrives as a method-level `error` entry. The
+            // gateway must not treat that as "the send failed".
+            if mode == "confirmed_implicit_error" {
+                responses.push(json!([
+                    "error",
+                    {"type": "serverFail", "description": "Sent copy failed"},
+                    "ess0"
+                ]));
+            } else if mode == "rejected_error" {
+                responses
+                    .retain(|r| r.get(0).and_then(|v| v.as_str()) != Some("EmailSubmission/set"));
+                responses.push(json!([
+                    "error",
+                    {"type": "forbiddenToSend", "description": "no sending rights"},
+                    "ess0"
+                ]));
+            }
+            let resp = json!({"methodResponses": responses, "sessionState": "s"});
+            axum::response::Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                .unwrap()
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(move |body: String| api(mode, body)))
+            .layer(axum::Extension(base.clone()));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        base
+    }
+
+    /// A method-level error arriving AFTER the submission was accepted (the
+    /// implicit Sent-filing `Email/set`) must NOT fail the send: `send_email`
+    /// would fall back to SMTP and deliver the message twice. An error with no
+    /// confirmed submission is still a failure.
+    #[tokio::test]
+    async fn submit_email_confirmed_submission_survives_later_method_error() {
+        let pw = SecretString::from("pw");
+        let to = vec!["to@example.com".to_string()];
+        let run = |base: String, pw: &'static SecretString, to: &'static [String]| async move {
+            let client = JmapClient::new(&base).unwrap();
+            client
+                .submit_email(SubmitEmailParams {
+                    account_id: "a",
+                    from: "u@example.com",
+                    to,
+                    cc: &[],
+                    bcc: &[],
+                    subject: "s",
+                    text_body: "t",
+                    html_body: None,
+                    in_reply_to: None,
+                    references: None,
+                    username: "u",
+                    password: pw,
+                })
+                .await
+        };
+        let to: &'static [String] = Box::leak(to.into_boxed_slice());
+        let pw: &'static SecretString = Box::leak(Box::new(pw));
+
+        let base = spawn_submit_stub("confirmed_implicit_error").await;
+        let id = run(base, pw, to)
+            .await
+            .expect("an accepted submission must not be re-sent");
+        assert_eq!(id, "email-1");
+
+        // No `created.s0` and an error entry: nothing was sent, so the caller
+        // must fail (and may safely retry).
+        let base = spawn_submit_stub("rejected_error").await;
+        let err = run(base, pw, to)
+            .await
+            .expect_err("rejected send must fail");
+        assert!(
+            err.to_string().contains("forbiddenToSend"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn submit_email_requires_created_submission() {
+        let pw = SecretString::from("pw");
+        let to = vec!["to@example.com".to_string()];
+        async fn run(base: String, pw: &SecretString, to: &[String]) -> anyhow::Result<String> {
+            let client = JmapClient::new(&base).unwrap();
+            client
+                .submit_email(SubmitEmailParams {
+                    account_id: "a",
+                    from: "u@example.com",
+                    to,
+                    cc: &[],
+                    bcc: &[],
+                    subject: "s",
+                    text_body: "t",
+                    html_body: None,
+                    in_reply_to: None,
+                    references: None,
+                    username: "u",
+                    password: pw,
+                })
+                .await
+        }
+
+        let base = spawn_submit_stub("confirmed").await;
+        let id = run(base, &pw, &to).await.expect("confirmed send");
+        assert_eq!(id, "email-1");
+
+        // `created: {}` — nothing was accepted, so nothing may be reported as
+        // sent (SendItem would delete the draft and lose the message).
+        let base = spawn_submit_stub("empty").await;
+        let err = run(base, &pw, &to)
+            .await
+            .expect_err("empty created must fail");
+        assert!(
+            err.to_string().contains("did not confirm the submission"),
+            "unexpected error: {err}"
+        );
+
+        // No `EmailSubmission/set` response at all is a malformed batch, not a
+        // send (RFC 8620 §3.6.2).
+        let base = spawn_submit_stub("absent").await;
+        let err = run(base, &pw, &to)
+            .await
+            .expect_err("missing response must fail");
+        assert!(
+            err.to_string().contains("no method response"),
+            "unexpected error: {err}"
+        );
+    }
+
+    // --- copy_import_entry: RFC 8621 §4.8 EmailImport payload ---
+
+    #[test]
+    fn copy_import_entry_requires_blob_id() {
+        use serde_json::json;
+        // A source row without a usable `blobId` cannot be imported: falling
+        // back to the source id (the old membership-edit behavior) would report
+        // a copy the client never received.
+        for source in [json!({"id": "e1"}), json!({"id": "e1", "blobId": ""})] {
+            let err = super::copy_import_entry(&source, json!({"mb": true}))
+                .expect_err("a source without blobId must not import");
+            assert!(err.to_string().contains("no blobId"), "got: {err}");
+        }
+    }
+
+    #[test]
+    fn copy_import_entry_carries_keywords_and_received_at() {
+        use serde_json::json;
+        let source = json!({
+            "id": "e1",
+            "blobId": "b1",
+            "keywords": {"$seen": true},
+            "receivedAt": "2026-02-03T04:05:06Z",
+            "threadId": "t1",
+        });
+        let entry = super::copy_import_entry(&source, json!({"mb": true}))
+            .expect("a well-formed source imports");
+        assert_eq!(entry["blobId"], json!("b1"));
+        assert_eq!(entry["mailboxIds"], json!({"mb": true}));
+        assert_eq!(entry["keywords"], json!({"$seen": true}));
+        assert_eq!(entry["receivedAt"], json!("2026-02-03T04:05:06Z"));
+        // JMAP-only properties are not EmailImport arguments.
+        assert!(entry.get("id").is_none());
+        assert!(entry.get("threadId").is_none());
+
+        // Absent keywords/receivedAt are omitted rather than sent as null.
+        let bare = super::copy_import_entry(&json!({"blobId": "b2"}), json!({"mb": true}))
+            .expect("minimal source imports");
+        assert!(bare.get("keywords").is_none());
+        assert!(bare.get("receivedAt").is_none());
+    }
+
+    /// RFC 8621 §4.1.3 types `messageId` as `String[]|null`. A server that
+    /// follows the contract (Stalwart does) must not make the whole `Email/get`
+    /// page unparseable — which the previous `Option<String>` did, silently
+    /// yielding an empty email list.
+    #[test]
+    fn email_message_id_accepts_the_rfc_array_form_and_a_scalar() {
+        let arr: JmapEmail = serde_json::from_value(json!({
+            "id": "m1",
+            "messageId": ["<abc@example.com>"],
+        }))
+        .expect("an RFC 8621 messageId array parses");
+        assert_eq!(arr.message_id.as_deref(), Some("<abc@example.com>"));
+
+        let scalar: JmapEmail = serde_json::from_value(json!({
+            "id": "m1",
+            "messageId": "<abc@example.com>",
+        }))
+        .expect("a scalar messageId still parses");
+        assert_eq!(scalar.message_id.as_deref(), Some("<abc@example.com>"));
+
+        let empty: JmapEmail = serde_json::from_value(json!({
+            "id": "m1",
+            "messageId": [],
+        }))
+        .expect("an empty array parses");
+        assert_eq!(empty.message_id, None);
+
+        let null: JmapEmail = serde_json::from_value(json!({
+            "id": "m1",
+            "messageId": null,
+        }))
+        .expect("null parses");
+        assert_eq!(null.message_id, None);
+
+        let absent: JmapEmail =
+            serde_json::from_value(json!({"id": "m1"})).expect("an absent messageId parses");
+        assert_eq!(absent.message_id, None);
+
+        // A page mixing both wire forms must decode as a whole: one message
+        // with an array messageId may not empty the batch.
+        let page: Vec<JmapEmail> = serde_json::from_value(json!([
+            {"id": "m1", "messageId": ["<a@example.com>"]},
+            {"id": "m2", "messageId": "<b@example.com>"},
+            {"id": "m3"}
+        ]))
+        .expect("a mixed page parses");
+        assert_eq!(page.len(), 3);
+        assert_eq!(page[0].message_id.as_deref(), Some("<a@example.com>"));
+        assert_eq!(page[1].message_id.as_deref(), Some("<b@example.com>"));
+
+        // A structurally wrong value is an ERROR, never a silently emptied page.
+        assert!(
+            serde_json::from_value::<JmapEmail>(json!({"id": "m1", "messageId": 7})).is_err(),
+            "a non-string messageId must fail loudly"
+        );
     }
 }

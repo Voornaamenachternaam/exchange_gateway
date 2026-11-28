@@ -36,6 +36,7 @@
 use crate::mapi::data::{PropertyTag, PropertyType, PropertyValue, TaggedPropertyValue};
 use crate::mapi::restrict::SRestriction;
 use crate::mapi::rops::{Buf, DecodeError};
+use std::fmt::Write as _;
 
 // ---- rule property tags (MS-OXORULE §2.2.1.3.1) ---------------------------
 
@@ -60,7 +61,11 @@ pub const RULE_ROW_ADD: u8 = 0x01;
 pub const RULE_ROW_MODIFY: u8 = 0x02;
 pub const RULE_ROW_REMOVE: u8 = 0x04;
 
-const BLOCK_BEGIN: &str = "# MAPI-RULES-BEGIN v1";
+/// Start marker of the gateway-managed rules block. `pub(crate)` because the
+/// OOF manager must stop its vacation-window scan at this boundary: a rule NAME
+/// is rendered inside the block as a comment and may itself contain a
+/// `currentdate :value …` clause.
+pub(crate) const BLOCK_BEGIN: &str = "# MAPI-RULES-BEGIN v1";
 const BLOCK_GENERATED: &str = "# MAPI-RULES-GENERATED";
 const BLOCK_END: &str = "# MAPI-RULES-END";
 
@@ -388,7 +393,7 @@ pub fn render_script(
             requires.sort_unstable();
             requires.dedup();
             let quoted: Vec<String> = requires.iter().map(|c| format!("\"{c}\"")).collect();
-            out.push_str(&format!("require [{}];\n", quoted.join(",")));
+            let _ = writeln!(out, "require [{}];", quoted.join(","));
         }
         for line in &body {
             out.push_str(line);

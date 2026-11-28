@@ -15,6 +15,103 @@ pub struct CaldavClient {
     client: reqwest::Client,
 }
 
+/// Whether `body`'s document element is `DAV:multistatus`.
+///
+/// Both the LOCAL name and the RESOLVED namespace are checked: a foreign
+/// namespace that happens to use the local name `multistatus` is not a WebDAV
+/// report, and accepting it would let a non-CalDAV document drive the
+/// collection inventory. The prefix is irrelevant (`D:`, `d:`, or a default
+/// declaration all resolve to `DAV:`).
+fn body_has_multistatus_root(body: &str) -> bool {
+    use quick_xml::name::{Namespace, ResolveResult};
+    const DAV: ResolveResult<'_> = ResolveResult::Bound(Namespace("DAV:"));
+    let mut reader = quick_xml::NsReader::from_str(body);
+    let mut buf = Vec::new();
+    let mut depth = 0usize;
+    let mut root_seen = false;
+    // The root has been opened AND closed. Only whitespace may follow it: a
+    // body whose document element closed before EOF is TRUNCATED (or carries a
+    // second document), so treating it as a complete snapshot would let a
+    // cut-off inventory drive a caller's deletion sweep.
+    let mut root_closed = false;
+    loop {
+        match reader.read_resolved_event_into(&mut buf) {
+            Ok((ns, quick_xml::events::Event::Start(ref e))) => {
+                if root_closed {
+                    return false;
+                }
+                if !root_seen {
+                    if e.local_name().as_ref() != "multistatus" || ns != DAV {
+                        return false;
+                    }
+                    root_seen = true;
+                }
+                depth += 1;
+            }
+            // `<multistatus/>` is a CLOSED, empty root.
+            Ok((ns, quick_xml::events::Event::Empty(ref e))) => {
+                if root_closed {
+                    return false;
+                }
+                if !root_seen {
+                    if e.local_name().as_ref() != "multistatus" || ns != DAV {
+                        return false;
+                    }
+                    root_seen = true;
+                    root_closed = true;
+                }
+            }
+            Ok((_, quick_xml::events::Event::End(_))) => {
+                if root_closed {
+                    return false;
+                }
+                if root_seen {
+                    depth = depth.saturating_sub(1);
+                    // Only a CLOSED root is a complete snapshot: a truncated
+                    // body would otherwise parse as a partial one and the
+                    // caller's deletion sweep would tombstone the cut-off
+                    // events. Reading continues to EOF to prove completeness.
+                    if depth == 0 {
+                        root_closed = true;
+                    }
+                }
+            }
+            Ok((_, quick_xml::events::Event::Text(ref t))) => {
+                if root_closed && !t.as_ref().trim().is_empty() {
+                    return false;
+                }
+            }
+            // Character data (or an entity reference) outside the document
+            // element is not a well-formed XML document.
+            Ok((_, quick_xml::events::Event::CData(_)))
+            | Ok((_, quick_xml::events::Event::GeneralRef(_))) => {
+                if root_closed || !root_seen {
+                    return false;
+                }
+            }
+            Ok((_, quick_xml::events::Event::Eof)) => return root_closed,
+            Ok(_) => {}
+            Err(_) => return false,
+        }
+        buf.clear();
+    }
+}
+
+/// The properties of a single CalDAV collection read with a `Depth: 0`
+/// PROPFIND — see [`CaldavClient::get_calendar_collection`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CalendarCollectionProps {
+    /// Whether `DAV:resourcetype` identifies a `calendar` collection.
+    pub is_calendar: bool,
+    /// `DAV:displayname` as stored on the server, when it returned one.
+    pub display_name: Option<String>,
+    /// Whether `DAV:displayname` was returned by a SUCCESSFUL propstat. RFC 4918
+    /// §9.1 reports property failures separately from the response status, so a
+    /// missing name may mean "the server could not read it" (inconclusive)
+    /// rather than "the collection has no name" (a real difference).
+    pub display_name_verified: bool,
+}
+
 impl CaldavClient {
     pub fn new(cfg: &Config) -> Result<Self> {
         let client = reqwest::Client::builder()
@@ -152,6 +249,24 @@ impl CaldavClient {
     }
 
     pub async fn find_user_calendars(&self, username: &str, password: &str) -> Result<Vec<String>> {
+        let (confirmed, _) = self
+            .find_user_calendars_with_ambiguity(username, password)
+            .await?;
+        Ok(confirmed)
+    }
+
+    /// Like `find_user_calendars`, but also returns every href seen in the
+    /// multistatus regardless of whether its resourcetype was confirmed.
+    ///
+    /// Callers that need to establish *absence* (e.g. deferred folder pruning)
+    /// must treat an href present in `all_seen` but absent from `confirmed` as
+    /// confirmed absent, and an href absent from *both* as ambiguous — retain
+    /// the intent rather than pruning.
+    pub async fn find_user_calendars_with_ambiguity(
+        &self,
+        username: &str,
+        password: &str,
+    ) -> Result<(Vec<String>, Vec<String>)> {
         let home_url = format!("{}/cal/{}/", self.base.trim_end_matches('/'), username);
 
         let propfind_body = r#"<?xml version="1.0" encoding="utf-8"?>
@@ -211,8 +326,9 @@ impl CaldavClient {
             }
         };
 
-        let hrefs = parse_calendar_collection_hrefs(&body, &home_url);
-        if hrefs.is_empty() {
+        let (confirmed, all_seen) = parse_calendar_collection_hrefs(&body, &home_url);
+
+        if confirmed.is_empty() {
             tracing::error!(
                 "caldav: PROPFIND on {} returned no calendar collections. Check Stalwart configuration and user permissions.",
                 home_url
@@ -221,11 +337,11 @@ impl CaldavClient {
         }
 
         tracing::debug!(
-            "caldav: discovered {} calendar collection(s) for {}",
-            hrefs.len(),
+            "caldav: discovered {} confirmed calendar collection(s) for {}",
+            confirmed.len(),
             username
         );
-        Ok(hrefs)
+        Ok((confirmed, all_seen))
     }
 
     /// Create (or confirm the existence of) a calendar collection below the
@@ -237,9 +353,11 @@ impl CaldavClient {
     /// declared to hold (e.g. `["VTODO"]`, `["VJOURNAL"]`). The request body
     /// carries the component-set so task/note objects are legal members.
     ///
-    /// Returns `Ok(())` when the collection exists afterwards (created now,
-    /// already present — 405 per RFC 4791 §6.3 when the resource exists — or
-    /// an opaque error whose subsequent REPORT still succeeds).
+    /// Returns `Ok(())` when the collection exists afterwards: created now,
+    /// already present (405 per RFC 4791 §6.3 when the resource exists), or an
+    /// opaque MKCALENDAR refusal that a verifying Depth:0 PROPFIND confirms was
+    /// against a live calendar collection. A creation error is returned when the
+    /// collection is verifiably absent (or cannot be verified).
     pub async fn ensure_calendar_collection(
         &self,
         username: &str,
@@ -248,6 +366,64 @@ impl CaldavClient {
         components: &[&str],
         displayname: &str,
     ) -> Result<()> {
+        // 405 (already exists) is tolerated: Tasks/Notes reuse a fixed
+        // collection name and a re-run must be idempotent.
+        match self
+            .create_calendar_collection(
+                username,
+                password,
+                collection_name,
+                components,
+                displayname,
+            )
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(creation_err) => {
+                // MKCALENDAR failed. For a FIXED-NAME collection (Tasks/Notes)
+                // that can still be perfectly usable (some servers answer a
+                // re-create with 207, 403, or another refusal while the
+                // collection exists), failing the whole Tasks/Notes sync would
+                // strand every object. Verify the collection is present and IS a
+                // calendar with a Depth:0 PROPFIND; only then is the error
+                // tolerated. A verified absence — or a verification failure —
+                // keeps the creation error, which is what callers that need to
+                // know the collection was NOT created rely on.
+                let url = format!(
+                    "{}/cal/{}/{}/",
+                    self.base.trim_end_matches('/'),
+                    username,
+                    collection_name.trim_end_matches('/')
+                );
+                match self.get_calendar_collection(&url, username, password).await {
+                    Ok(Some(props)) if props.is_calendar => Ok(()),
+                    Ok(_) => Err(creation_err),
+                    Err(verify_err) => Err(creation_err.context(format!(
+                        "and verifying the existing collection failed: {verify_err}"
+                    ))),
+                }
+            }
+        }
+    }
+
+    /// Create a calendar collection, reporting whether it was newly created.
+    /// Returns `Ok(true)` on 200/201 (created) and `Ok(false)` on 405 (the
+    /// collection already existed). A 207 is an ERROR: RFC 4791 §5.3.1.1
+    /// defines MKCALENDAR 207 as "the calendar collection resource was NOT
+    /// created since one or more DAV:set instructions ... could not be
+    /// processed successfully" — reporting it as success would persist a
+    /// `folder_map` row for a collection that does not exist. The EAS
+    /// `FolderCreate` path uses the `Ok(true)`/`Ok(false)` distinction to reject
+    /// a name that would adopt a pre-existing collection, whereas the
+    /// fixed-name Tasks/Notes path treats both as success.
+    pub async fn create_calendar_collection(
+        &self,
+        username: &str,
+        password: &str,
+        collection_name: &str,
+        components: &[&str],
+        displayname: &str,
+    ) -> Result<bool> {
         let home = format!("{}/cal/{}/", self.base.trim_end_matches('/'), username);
         // Trailing slash so MKCALENDAR targets the same collection URI that
         // tasks/notes_collection_href and the follow-up REPORTs/mutations use;
@@ -282,12 +458,28 @@ impl CaldavClient {
             .await?;
         let status = resp.status().as_u16();
         match status {
-            // 201 Created, or a 200/207 from servers answering MKCALENDAR with
-            // a multistatus propstat, mean the collection was created.
-            200 | 201 | 207 => Ok(()),
+            // 201 Created, or a 200 from a server answering MKCALENDAR with a
+            // plain success, mean the collection was created.
+            200 | 201 => Ok(true),
             // 405: the collection already exists (or is not a collection — the
             // follow-up calendar-query decides which).
-            405 => Ok(()),
+            405 => Ok(false),
+            // 207 Multi-Status is a FAILED creation (RFC 4791 §5.3.1.1): one or
+            // more DAV:set instructions could not be applied, so the collection
+            // was NOT created. Reporting success would map a nonexistent
+            // collection into `folder_map`.
+            207 => {
+                let body_preview = resp.text().await.unwrap_or_default();
+                Err(anyhow!(
+                    "MKCALENDAR {} returned 207 Multi-Status (creation rejected): {}",
+                    url,
+                    if body_preview.len() > 300 {
+                        "response truncated"
+                    } else {
+                        &body_preview
+                    }
+                ))
+            }
             // 301/302 redirects: resolve like a browser would be wrong; treat
             // as an error unless the later query succeeds.
             _ => {
@@ -428,6 +620,74 @@ impl CaldavClient {
         )
     }
 
+    /// Delete a calendar collection (RFC 4791 §5.3.3). Used by the EAS
+    /// `FolderDelete` path for a user-created calendar-family folder.
+    pub async fn delete_collection(
+        &self,
+        collection_href: &str,
+        username: &str,
+        password: &str,
+    ) -> Result<()> {
+        // A collection is a calendar resource; reuse the tolerant DELETE
+        // (404 = already gone) so the logic lives in one place.
+        self.delete_calendar_resource_if_absent(collection_href, username, password)
+            .await
+            .map(|_| ())
+    }
+
+    /// Set a calendar collection's `<D:displayname>` via PROPPATCH
+    /// (RFC 4918 §9.2). Used by the EAS `FolderUpdate` rename path.
+    pub async fn set_collection_displayname(
+        &self,
+        collection_href: &str,
+        displayname: &str,
+        username: &str,
+        password: &str,
+    ) -> Result<()> {
+        let url = self.absolute_url(collection_href)?;
+        let body = format!(
+            r#"<?xml version="1.0" encoding="utf-8" ?>
+<D:propertyupdate xmlns:D="DAV:">
+  <D:set>
+    <D:prop><D:displayname>{}</D:displayname></D:prop>
+  </D:set>
+</D:propertyupdate>"#,
+            xml_escape_text(displayname).as_ref()
+        );
+        let resp = self
+            .client
+            .request(reqwest::Method::from_bytes(b"PROPPATCH")?, &url)
+            .basic_auth(username, Some(password))
+            .header("Content-Type", "application/xml; charset=utf-8")
+            .body(body)
+            .send()
+            .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(anyhow!("PROPPATCH displayname returned {}", status));
+        }
+        // RFC 4918 §9.2: a PROPPATCH reports 207 Multi-Status even when it
+        // rejected the property, so the per-property outcome must be read from
+        // the body's `<D:propstat>`. A rejected displayname is a failure, not a
+        // silent success.
+        if status.as_u16() == 207 {
+            let body = resp.text().await.map_err(|e| {
+                anyhow!("PROPPATCH displayname response body could not be read: {e}")
+            })?;
+            if !multistatus_displayname_ok(&body) {
+                return Err(anyhow!(
+                    "PROPPATCH displayname rejected: {}",
+                    if body.len() > 300 {
+                        "response truncated"
+                    } else {
+                        &body
+                    }
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// GET a calendar object resource, distinguishing "not found" (Ok(None))
     /// from transport/server failures (Err) so callers can treat a vanished
     /// VTODO/VJOURNAL as a delete rather than an outage.
@@ -469,6 +729,86 @@ impl CaldavClient {
         Ok(Some((resp.text().await?, etag)))
     }
 
+    /// Verify a calendar COLLECTION at `collection_href` with a `Depth: 0`
+    /// PROPFIND (RFC 4918 §9.1) requesting `DAV:resourcetype` and
+    /// `DAV:displayname`.
+    ///
+    /// A `GET` on a collection is NOT a substitute: it returns whatever body the
+    /// server chooses for a collection (often an empty 200), which says nothing
+    /// about whether the resource is a calendar or what display name it carries
+    /// — so it can neither confirm nor refute the collection identity a
+    /// lost-response replay needs. `Ok(None)` means 404 (the collection is
+    /// absent); a non-404 error status or an unparseable/empty multistatus is an
+    /// `Err`, so a caller never mistakes a transient read failure for absence.
+    pub async fn get_calendar_collection(
+        &self,
+        collection_href: &str,
+        username: &str,
+        password: &str,
+    ) -> Result<Option<CalendarCollectionProps>> {
+        let url = self.absolute_url(collection_href)?;
+        let propfind_body = r#"<?xml version="1.0" encoding="utf-8"?>
+<D:propfind xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <D:prop>
+    <D:resourcetype/>
+    <D:displayname/>
+  </D:prop>
+</D:propfind>"#;
+        let resp = self
+            .client
+            .request(reqwest::Method::from_bytes(b"PROPFIND")?, &url)
+            .basic_auth(username, Some(password))
+            .header("Depth", "0")
+            .header("Content-Type", "application/xml; charset=utf-8")
+            .body(propfind_body)
+            .send()
+            .await?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        let status = resp.status();
+        if !status.is_success() && status != reqwest::StatusCode::MULTI_STATUS {
+            let body_preview = resp.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "PROPFIND {} returned {}: {}",
+                url,
+                status,
+                if body_preview.len() > 300 {
+                    "response truncated"
+                } else {
+                    &body_preview
+                }
+            ));
+        }
+        let body = resp.text().await?;
+        let multistatus: Multistatus = quick_xml::de::from_str(&body).map_err(|e| {
+            anyhow!(
+                "PROPFIND {} returned an unparseable multistatus: {}",
+                url,
+                e
+            )
+        })?;
+        let Some(response) = multistatus.responses.first() else {
+            return Err(anyhow!(
+                "PROPFIND {} returned a multistatus with no response element",
+                url
+            ));
+        };
+        Ok(Some(CalendarCollectionProps {
+            is_calendar: response.propstats.iter().any(|ps| {
+                ps.prop.resourcetype.calendar.is_some() && ps.prop.resourcetype.collection.is_some()
+            }),
+            display_name: response
+                .propstats
+                .iter()
+                .find_map(|ps| ps.prop.displayname.clone()),
+            display_name_verified: response
+                .propstats
+                .iter()
+                .any(|ps| ps.is_success() && ps.prop.displayname.is_some()),
+        }))
+    }
+
     /// DELETE a calendar object resource, tolerating "not found" (Ok(false)):
     /// an already-absent resource is as deleted as the caller wants it to be
     /// (RFC 4918 §9.6.1 allows 404 on DELETE of a vanished resource). Any
@@ -501,6 +841,30 @@ impl CaldavClient {
                     &body_preview
                 }
             ));
+        }
+        // RFC 4918 §9.6.1: a collection DELETE MAY answer 207 Multi-Status when
+        // one or more descendants could not be removed (e.g. a locked child).
+        // That is NOT completion — the collection remains — so require the body
+        // to confirm every sub-response succeeded (2xx) or was already gone
+        // (404). An unreadable/malformed body, no status line, or any other
+        // status fails closed so the caller does not drop the mapping or journal
+        // a delete for a collection that is still present.
+        if resp.status().as_u16() == 207 {
+            let body = resp
+                .text()
+                .await
+                .map_err(|e| anyhow!("DELETE {} 207 body could not be read: {}", url, e))?;
+            if !multistatus_delete_confirmed(&body) {
+                return Err(anyhow!(
+                    "DELETE {} returned 207 without confirming deletion: {}",
+                    url,
+                    if body.len() > 300 {
+                        "response truncated"
+                    } else {
+                        &body
+                    }
+                ));
+            }
         }
         Ok(true)
     }
@@ -551,7 +915,11 @@ impl CaldavClient {
         };
 
         let status = resp.status();
-        if !status.is_success() && status != reqwest::StatusCode::MULTI_STATUS {
+        // RFC 4791 §7.8: a successful `calendar-query` REPORT answers
+        // 207 Multi-Status. A 200 (a proxy's error page, a captive portal) is
+        // NOT a snapshot: returning its body would parse as "no events" and the
+        // caller's deletion sweep would tombstone every event it holds.
+        if status != reqwest::StatusCode::MULTI_STATUS {
             let body_preview = resp.text().await.unwrap_or_default();
             tracing::error!(
                 "caldav: REPORT on {} returned status {}: {}",
@@ -564,7 +932,7 @@ impl CaldavClient {
                 }
             );
             return Err(anyhow::anyhow!(
-                "CalDAV server returned {}: {}",
+                "CalDAV REPORT returned {} (expected 207 Multi-Status): {}",
                 status,
                 if body_preview.len() > 200 {
                     "response truncated"
@@ -585,6 +953,18 @@ impl CaldavClient {
                 return Err(anyhow::anyhow!("Failed to read CalDAV response: {}", e));
             }
         };
+
+        // The body must BE a DAV multistatus (RFC 4918 §13). An empty or
+        // non-DAV 207 is not an authoritative empty snapshot.
+        if !body_has_multistatus_root(&body) {
+            tracing::error!(
+                "caldav: REPORT on {} returned a body that is not a DAV multistatus",
+                collection_href
+            );
+            return Err(anyhow::anyhow!(
+                "CalDAV REPORT on {collection_href} did not return a DAV multistatus"
+            ));
+        }
 
         Ok(body)
     }
@@ -858,7 +1238,7 @@ impl CaldavClient {
         Ok(())
     }
 
-    fn absolute_url(&self, href: &str) -> Result<String> {
+    pub(crate) fn absolute_url(&self, href: &str) -> Result<String> {
         if href.starts_with("http://") || href.starts_with("https://") {
             return Ok(href.to_string());
         }
@@ -957,12 +1337,19 @@ use serde::Deserialize;
 struct ResourceType {
     #[serde(rename = "calendar", default)]
     calendar: Option<()>,
+    /// A calendar must ALSO be a `DAV:collection` (RFC 4791 §4.2): the
+    /// `calendar` element alone is a malformed resourcetype and must not be
+    /// accepted as a calendar collection identity.
+    #[serde(rename = "collection", default)]
+    collection: Option<()>,
 }
 
 #[derive(Deserialize, Debug)]
 struct Prop {
     #[serde(rename = "resourcetype", default)]
     resourcetype: ResourceType,
+    #[serde(rename = "displayname", default)]
+    displayname: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -981,14 +1368,43 @@ struct DavResponse {
 #[derive(Deserialize, Debug)]
 struct Propstat {
     prop: Prop,
+    /// RFC 4918 §14.22: the status of the enclosed properties. Absent on a
+    /// server that omits it; a present non-2xx status marks a property failure.
+    #[serde(default)]
+    status: Option<String>,
 }
 
-fn parse_calendar_collection_hrefs(xml_body: &str, home_url: &str) -> Vec<String> {
+impl Propstat {
+    /// Whether this propstat's properties were returned successfully. A missing
+    /// status line is treated as success (lenient: RFC 4918 requires it, but the
+    /// caller only needs to detect an EXPLICIT per-property failure).
+    fn is_success(&self) -> bool {
+        match self.status.as_deref().map(str::trim) {
+            None | Some("") => true,
+            // Accepts both `HTTP/1.1 200 OK` and a bare `200`; anything that is
+            // not a parseable 2xx — including a malformed status line — is NOT
+            // authoritative evidence, so the href cannot become `confirmed`.
+            Some(line) => dav_status_code(line).is_some_and(|code| (200..300).contains(&code)),
+        }
+    }
+}
+
+/// Returns `(confirmed_calendars, all_seen_hrefs)`.
+///
+/// `confirmed_calendars` are hrefs with authoritative evidence they are
+/// calendar collections (a propstat with `resourcetype/calendar` and a
+/// successful status). `all_seen_hrefs` includes every href returned by the
+/// multistatus, even those whose resourcetype could not be determined due to
+/// per-property failures. Callers that need to establish absence (e.g.
+/// deferred folder pruning) must treat an href present in `all_seen_hrefs` but
+/// absent from `confirmed_calendars` as *confirmed absent*, and an href absent
+/// from *both* as *ambiguous* (retain the intent).
+fn parse_calendar_collection_hrefs(xml_body: &str, home_url: &str) -> (Vec<String>, Vec<String>) {
     let multistatus: Multistatus = match quick_xml::de::from_str(xml_body) {
         Ok(m) => m,
         Err(e) => {
             tracing::warn!("caldav: XML parse error: {}", e);
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         }
     };
 
@@ -1004,29 +1420,40 @@ fn parse_calendar_collection_hrefs(xml_body: &str, home_url: &str) -> Vec<String
         .map(|u| u.path().trim_end_matches('/').to_string())
         .unwrap_or_else(|| home_url.trim_end_matches('/').to_string());
 
-    multistatus
-        .responses
-        .into_iter()
-        .filter(|r| {
-            r.propstats
-                .iter()
-                .any(|ps| ps.prop.resourcetype.calendar.is_some())
-        })
-        .map(|r| {
-            home_url_parsed
-                .as_ref()
-                .and_then(|u| u.join(&r.href).ok())
-                .map(|u| u.to_string())
-                .unwrap_or(r.href)
-        })
-        .filter(|href| {
-            let path = reqwest::Url::parse(href)
-                .ok()
-                .map(|u| u.path().trim_end_matches('/').to_string())
-                .unwrap_or_else(|| href.trim_end_matches('/').to_string());
-            path != home_path
-        })
-        .collect()
+    let mut confirmed: Vec<String> = Vec::new();
+    let mut all_seen: Vec<String> = Vec::new();
+
+    for r in multistatus.responses {
+        let href = home_url_parsed
+            .as_ref()
+            .and_then(|u| u.join(&r.href).ok())
+            .map(|u| u.to_string())
+            .unwrap_or(r.href);
+
+        let path = reqwest::Url::parse(&href)
+            .ok()
+            .map(|u| u.path().trim_end_matches('/').to_string())
+            .unwrap_or_else(|| href.trim_end_matches('/').to_string());
+        if path == home_path {
+            continue;
+        }
+
+        all_seen.push(href.clone());
+
+        // RFC 4791 §4.2: a calendar collection's `resourcetype` carries BOTH
+        // `collection` and `calendar`, and only a SUCCESSFUL propstat is
+        // authoritative evidence (a per-property failure in a 207 is not).
+        let is_calendar = r.propstats.iter().any(|ps| {
+            ps.is_success()
+                && ps.prop.resourcetype.calendar.is_some()
+                && ps.prop.resourcetype.collection.is_some()
+        });
+        if is_calendar {
+            confirmed.push(href);
+        }
+    }
+
+    (confirmed, all_seen)
 }
 
 /// Parse the D:getetag value from a WebDAV PROPFIND multistatus response.
@@ -1076,6 +1503,159 @@ fn parse_etag_from_multistatus(xml_body: &str) -> Option<String> {
         buf.clear();
     }
     None
+}
+
+/// Parse the numeric HTTP status code from a DAV `<D:status>` line. RFC 4918
+/// §14.24 / RFC 7230 §3.1.2: the element carries a full status LINE such as
+/// `HTTP/1.1 200 OK`, not a bare code — so the code must be read from the
+/// second whitespace-delimited token, never by a `starts_with('2')` test on
+/// the whole string (which would reject every real line beginning `HTTP/…`).
+/// A leading `HTTP/x.y` token is skipped when present; a bare `200` is still
+/// accepted for servers that omit the prefix.
+fn dav_status_code(status_line: &str) -> Option<u16> {
+    let mut tokens = status_line.split_whitespace();
+    let first = tokens.next()?;
+    // A boundary-safe prefix test: `first[..5]` panics when byte 5 falls inside
+    // a multi-byte UTF-8 character (e.g. `abcdé`), so use `get(..5)` which
+    // returns `None` off-boundary and then treats the whole token as the code.
+    let code_token = match first.get(..5) {
+        Some(prefix) if prefix.eq_ignore_ascii_case("HTTP/") => tokens.next()?,
+        _ => first,
+    };
+    // The token must be exactly three digits (a status code, not `HTTP/1.1`).
+    if code_token.len() == 3 && code_token.bytes().all(|b| b.is_ascii_digit()) {
+        code_token.parse::<u16>().ok()
+    } else {
+        None
+    }
+}
+
+/// Whether a collection DELETE 207 Multi-Status confirms the deletion.
+/// RFC 4918 §9.6.1: a 207 here means one or more descendants could not be
+/// removed, so the collection is NOT gone unless every `<D:response>` reports a
+/// 2xx (removed) or 404 (already absent) `<D:status>`. A body with no status
+/// line, or any other status, is treated as NOT confirmed (fail closed).
+fn multistatus_delete_confirmed(xml_body: &str) -> bool {
+    let mut reader = quick_xml::Reader::from_str(xml_body);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    let mut in_status = false;
+    let mut status_text = String::new();
+    let mut saw_status = false;
+    let mut all_ok = true;
+    let mut saw_multistatus_end = false;
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(quick_xml::events::Event::Start(ref e)) => {
+                if e.name().local_name().as_ref() == "status" {
+                    in_status = true;
+                    status_text.clear();
+                }
+            }
+            Ok(quick_xml::events::Event::Text(ref t)) if in_status => {
+                status_text.push_str(t.as_ref());
+            }
+            Ok(quick_xml::events::Event::End(ref e)) => match e.name().local_name().as_ref() {
+                "status" => {
+                    in_status = false;
+                    saw_status = true;
+                    let ok = dav_status_code(&status_text)
+                        .is_some_and(|c| (200..300).contains(&c) || c == 404);
+                    all_ok &= ok;
+                }
+                "multistatus" => saw_multistatus_end = true,
+                _ => {}
+            },
+            // The document ended before the multistatus element closed — treat as
+            // incomplete, not success, so a truncated body can never be mistaken
+            // for an authoritative response.
+            Ok(quick_xml::events::Event::Eof) => break,
+            Err(_) => return false,
+            _ => {}
+        }
+        buf.clear();
+    }
+    if !saw_multistatus_end {
+        return false;
+    }
+    saw_status && all_ok
+}
+
+/// Whether a PROPPATCH 207 Multi-Status reports the `displayname` property as
+/// applied. RFC 4918 §9.2 mandates a `propstat` multistatus for PROPPATCH, so
+/// success requires an explicit `<D:propstat>` naming `displayname` with a 2xx
+/// `<D:status>`. Anything else — a body with no `propstat`, a `propstat` that
+/// does not name `displayname`, or malformed XML — is fail-closed (rejected):
+/// acknowledging a rename the server did not apply would desynchronize the
+/// stored DisplayName from the backend collection name.
+fn multistatus_displayname_ok(xml_body: &str) -> bool {
+    let mut reader = quick_xml::Reader::from_str(xml_body);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    // Per-propstat state: does the current propstat mention displayname, and
+    // what status did it carry?
+    let mut in_propstat = false;
+    let mut propstat_has_displayname = false;
+    let mut propstat_status = String::new();
+    let mut in_status = false;
+    let mut any_ok = false;
+    let mut saw_multistatus_end = false;
+
+    macro_rules! flush {
+        () => {
+            if propstat_has_displayname
+                && dav_status_code(&propstat_status).is_some_and(|c| (200..300).contains(&c))
+            {
+                any_ok = true;
+            }
+            propstat_has_displayname = false;
+            propstat_status.clear();
+        };
+    }
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(quick_xml::events::Event::Start(ref e)) => match e.name().local_name().as_ref() {
+                "propstat" => {
+                    in_propstat = true;
+                    propstat_has_displayname = false;
+                    propstat_status.clear();
+                }
+                "displayname" if in_propstat => propstat_has_displayname = true,
+                "status" if in_propstat => in_status = true,
+                _ => {}
+            },
+            Ok(quick_xml::events::Event::Empty(ref e)) => {
+                if e.name().local_name().as_ref() == "displayname" && in_propstat {
+                    propstat_has_displayname = true;
+                }
+            }
+            Ok(quick_xml::events::Event::Text(ref t)) if in_status => {
+                propstat_status.push_str(t.as_ref());
+            }
+            Ok(quick_xml::events::Event::End(ref e)) => match e.name().local_name().as_ref() {
+                "status" => in_status = false,
+                "propstat" => {
+                    flush!();
+                    in_propstat = false;
+                }
+                "multistatus" => saw_multistatus_end = true,
+                _ => {}
+            },
+            // The document ended before the multistatus element closed — treat as
+            // incomplete, not success.
+            Ok(quick_xml::events::Event::Eof) => break,
+            // A malformed body leaves the outcome unknown: fail closed.
+            Err(_) => return false,
+            _ => {}
+        }
+        buf.clear();
+    }
+    if !saw_multistatus_end {
+        return false;
+    }
+    // Success ONLY when an explicit 2xx displayname propstat was seen.
+    any_ok
 }
 
 /// Normalize an etag string to its internal (unquoted) representation.
@@ -1559,6 +2139,71 @@ END:VCALENDAR
         base
     }
 
+    /// A stub that answers EVERY path with `status` (so MKCALENDAR targets at
+    /// `{base}/cal/{user}/{name}/` are matched, not 404'd).
+    async fn spawn_any_status_stub(status: axum::http::StatusCode) -> String {
+        use axum::response::Response;
+        use axum::routing::any;
+
+        let handler = move || async move {
+            Response::builder()
+                .status(status)
+                .body(axum::body::Body::empty())
+                .unwrap()
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let app = axum::Router::new().fallback(any(handler));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        base
+    }
+
+    /// RFC 4791 §5.3.1.1: a MKCALENDAR 207 means the collection was NOT created
+    /// (one or more DAV:set instructions could not be applied). Reporting it as
+    /// success would persist a `folder_map` row for a nonexistent collection.
+    #[tokio::test]
+    async fn mkcalendar_207_is_a_creation_failure() {
+        use axum::http::StatusCode;
+
+        let client =
+            CaldavClient::new_from_base(&spawn_any_status_stub(StatusCode::MULTI_STATUS).await)
+                .unwrap();
+        let result = client
+            .create_calendar_collection("u", "pw", "Foo", &["VEVENT"], "Foo")
+            .await;
+        assert!(
+            result.is_err(),
+            "a 207 MKCALENDAR must be an error, not Ok(true)"
+        );
+
+        // 201 is a real creation.
+        let created =
+            CaldavClient::new_from_base(&spawn_any_status_stub(StatusCode::CREATED).await).unwrap();
+        assert!(
+            created
+                .create_calendar_collection("u", "pw", "Foo", &["VEVENT"], "Foo")
+                .await
+                .unwrap(),
+            "a 201 MKCALENDAR must be a creation"
+        );
+
+        // 405 means it already existed.
+        let existing = CaldavClient::new_from_base(
+            &spawn_any_status_stub(StatusCode::METHOD_NOT_ALLOWED).await,
+        )
+        .unwrap();
+        assert!(
+            !existing
+                .create_calendar_collection("u", "pw", "Foo", &["VEVENT"], "Foo")
+                .await
+                .unwrap(),
+            "a 405 MKCALENDAR means the collection already existed"
+        );
+    }
+
     #[tokio::test]
     async fn check_credentials_classification_matrix() {
         use axum::http::StatusCode;
@@ -1603,5 +2248,172 @@ END:VCALENDAR
             outage.check_credentials("u", "pw").await,
             CredentialCheck::BackendError(_)
         ));
+    }
+
+    #[test]
+    fn test_dav_status_code_parses_full_status_line() {
+        // RFC 4918 §14.24: the `<D:status>` element carries a complete HTTP
+        // status line, not a bare code. A `starts_with('2')` test would reject
+        // every real line.
+        assert_eq!(dav_status_code("HTTP/1.1 200 OK"), Some(200));
+        assert_eq!(dav_status_code("HTTP/1.1 404 Not Found"), Some(404));
+        assert_eq!(
+            dav_status_code("HTTP/1.1 507 Insufficient Storage"),
+            Some(507)
+        );
+        // A bare code (server omitting the prefix) is still accepted.
+        assert_eq!(dav_status_code("200"), Some(200));
+        // Malformed / non-numeric tokens are rejected.
+        assert_eq!(dav_status_code("HTTP/1.1"), None);
+        assert_eq!(dav_status_code("not a status"), None);
+        assert_eq!(dav_status_code(""), None);
+        // A multi-byte character whose 5th byte is not a UTF-8 boundary must be
+        // rejected WITHOUT panicking (a `first[..5]` slice would panic here).
+        assert_eq!(dav_status_code("abcdé"), None);
+        assert_eq!(dav_status_code("ééé"), None);
+    }
+
+    #[test]
+    fn test_multistatus_displayname_ok_accepts_real_207() {
+        // A real Stalwart PROPPATCH 207: displayname applied, status carries a
+        // full HTTP status line.
+        let body = r#"<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+  <D:response>
+    <D:href>/dav/cal/user/default/</D:href>
+    <D:propstat>
+      <D:prop><D:displayname>Renamed</D:displayname></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>
+</D:multistatus>"#;
+        assert!(multistatus_displayname_ok(body));
+    }
+
+    #[test]
+    fn test_multistatus_displayname_ok_fails_closed() {
+        // A rejected displayname (403) is not success.
+        let rejected = r#"<D:multistatus xmlns:D="DAV:"><D:response>
+          <D:propstat><D:prop><D:displayname>x</D:displayname></D:prop>
+          <D:status>HTTP/1.1 403 Forbidden</D:status></D:propstat>
+        </D:response></D:multistatus>"#;
+        assert!(!multistatus_displayname_ok(rejected));
+
+        // A body with no propstat at all is not success.
+        assert!(!multistatus_displayname_ok(
+            r#"<D:multistatus xmlns:D="DAV:"></D:multistatus>"#
+        ));
+        // A propstat that does not name displayname is not success.
+        let other = r#"<D:multistatus xmlns:D="DAV:"><D:response>
+          <D:propstat><D:prop><D:getetag>"1"</D:getetag></D:prop>
+          <D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+        </D:response></D:multistatus>"#;
+        assert!(!multistatus_displayname_ok(other));
+        // Malformed XML and an empty body fail closed.
+        assert!(!multistatus_displayname_ok("<D:multistatus"));
+        assert!(!multistatus_displayname_ok(""));
+    }
+
+    #[test]
+    fn test_body_has_multistatus_root_requires_a_closed_root() {
+        assert!(body_has_multistatus_root(
+            r#"<?xml version="1.0"?><D:multistatus xmlns:D="DAV:"></D:multistatus>"#
+        ));
+        assert!(
+            body_has_multistatus_root(r#"<D:multistatus xmlns:D="DAV:"/>"#),
+            "a closed, empty root is a complete (empty) snapshot"
+        );
+        // TRUNCATED body: the root never closes, so it is not a snapshot. A
+        // caller's deletion sweep must not treat the cut-off events as gone.
+        assert!(!body_has_multistatus_root(
+            r#"<D:multistatus xmlns:D="DAV:"><D:response><D:href>/a.ics</D:href>"#
+        ));
+        // A root that CLOSES before EOF is not a complete document either: a
+        // truncated body can leave an empty root followed by the cut-off
+        // remainder, which must never be read as an authoritative empty
+        // snapshot.
+        assert!(!body_has_multistatus_root(
+            r#"<D:multistatus xmlns:D="DAV:"/><D:response><D:href>/a.ics"#
+        ));
+        assert!(!body_has_multistatus_root(
+            r#"<D:multistatus xmlns:D="DAV:"></D:multistatus><D:response"#
+        ));
+        assert!(!body_has_multistatus_root(
+            r#"<D:multistatus xmlns:D="DAV:"></D:multistatus><html></html>"#
+        ));
+        assert!(!body_has_multistatus_root(
+            r#"<D:multistatus xmlns:D="DAV:"></D:multistatus>trailing"#
+        ));
+        // Trailing whitespace and comments after a closed root stay accepted.
+        assert!(body_has_multistatus_root(
+            "<D:multistatus xmlns:D=\"DAV:\"></D:multistatus>\n  <!-- tail -->\n"
+        ));
+        assert!(!body_has_multistatus_root(
+            "<html><body>proxy error</body></html>"
+        ));
+        assert!(!body_has_multistatus_root(""));
+    }
+
+    #[test]
+    fn test_calendar_discovery_requires_both_resourcetype_markers() {
+        let body = r#"<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <D:response>
+    <D:href>/dav/cal/user/real/</D:href>
+    <D:propstat>
+      <D:prop><D:resourcetype><D:collection/><C:calendar/></D:resourcetype></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>/dav/cal/user/calendar-only/</D:href>
+    <D:propstat>
+      <D:prop><D:resourcetype><C:calendar/></D:resourcetype></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>/dav/cal/user/failed-propstat/</D:href>
+    <D:propstat>
+      <D:prop><D:resourcetype><D:collection/><C:calendar/></D:resourcetype></D:prop>
+      <D:status>HTTP/1.1 403 Forbidden</D:status>
+    </D:propstat>
+  </D:response>
+</D:multistatus>"#;
+        let (confirmed, all_seen) =
+            parse_calendar_collection_hrefs(body, "https://dav.example.com/dav/cal/user/");
+        assert_eq!(
+            confirmed,
+            vec!["https://dav.example.com/dav/cal/user/real/".to_string()],
+            "only a successful propstat carrying BOTH collection and calendar is a calendar"
+        );
+        assert_eq!(
+            all_seen.len(),
+            3,
+            "every listed href stays visible to absence checks"
+        );
+    }
+
+    #[test]
+    fn test_multistatus_delete_confirmed_matrix() {
+        // Every sub-response 2xx (or already-gone 404) confirms the collection
+        // deletion.
+        let ok = r#"<D:multistatus xmlns:D="DAV:"><D:response>
+          <D:href>/dav/cal/user/c/x.ics</D:href>
+          <D:status>HTTP/1.1 200 OK</D:status></D:response></D:multistatus>"#;
+        assert!(multistatus_delete_confirmed(ok));
+
+        // A locked child (423) means the collection is NOT gone: fail closed.
+        let locked = r#"<D:multistatus xmlns:D="DAV:"><D:response>
+          <D:href>/dav/cal/user/c/x.ics</D:href>
+          <D:status>HTTP/1.1 423 Locked</D:status></D:response></D:multistatus>"#;
+        assert!(!multistatus_delete_confirmed(locked));
+
+        // No status line at all, and malformed/empty bodies, fail closed.
+        assert!(!multistatus_delete_confirmed(
+            r#"<D:multistatus xmlns:D="DAV:"></D:multistatus>"#
+        ));
+        assert!(!multistatus_delete_confirmed("<D:multistatus"));
+        assert!(!multistatus_delete_confirmed(""));
     }
 }

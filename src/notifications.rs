@@ -854,6 +854,17 @@ impl SubscriptionManager {
         let _ = self.sender.send(event);
     }
 
+    /// Number of live receivers on the notification feed
+    /// (observability/tests). It counts EVERY active receiver — EWS
+    /// `subscribe`/`subscribe_push` subscriptions and raw `subscribe_raw`
+    /// receivers alike — without identifying any specific subscriber. An EAS
+    /// Ping subscribes through [`Self::subscribe_raw`] before it starts
+    /// waiting, so a test can wait for a nonzero count instead of sleeping a
+    /// fixed interval and hoping the Ping has reached its wait loop.
+    pub fn receiver_count(&self) -> usize {
+        self.sender.receiver_count()
+    }
+
     /// Obtain a raw `broadcast::Receiver` on the shared notification feed
     /// WITHOUT creating an EWS `Subscription` (no uuid, no deadline, no reaper
     /// entry, no watermark). Used by the MAPI/HTTP `RopRegisterNotification`

@@ -97,9 +97,9 @@ pub async fn check_rate_limit(
     req: Request<Body>,
     next: Next,
 ) -> Result<Response, Infallible> {
-    // Skip rate limiting for health and metrics endpoints
-    let path = req.uri().path().to_string();
-    if is_unmetered_path(&path) {
+    // Skip rate limiting for health and metrics endpoints (borrowed: the
+    // comparison needs no owned copy of the path).
+    if is_unmetered_path(req.uri().path()) {
         return Ok(next.run(req).await);
     }
 

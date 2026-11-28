@@ -10,6 +10,7 @@ use crate::jmap::{JMAP_SIEVE_CAPABILITY, JmapClient};
 use serde_json::json;
 
 use serde::{Deserialize, Serialize};
+use std::fmt::Write as _;
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -34,6 +35,9 @@ pub struct OofSettings {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub enum ExternalAudience {
+    /// No external OOF replies at all ([MS-OXWOOF] §2.2.5.1 `None`, EAS
+    /// `OofMessage` with every external audience disabled).
+    None,
     /// Only external senders
     External,
     /// Known external senders (contacts)
@@ -166,37 +170,58 @@ pub fn build_sieve_script(
     match external_audience {
         ExternalAudience::All => {
             if !internal_escaped.is_empty() {
-                rule_blocks.push_str(&format!(
+                let _ = write!(
+                    rule_blocks,
                     "if allof ({}) {{\n  {}\n}}\n",
                     audience_cond(true),
                     vacation_cmd(&internal_escaped)
-                ));
+                );
             }
             if !external_escaped.is_empty() {
-                rule_blocks.push_str(&format!(
+                let _ = write!(
+                    rule_blocks,
                     "if allof ({}) {{\n  {}\n}}\n",
                     audience_cond(false),
                     vacation_cmd(&external_escaped)
-                ));
+                );
+            }
+        }
+        // No external audience: only the internal rule (if any) applies.
+        ExternalAudience::None => {
+            if !internal_escaped.is_empty() {
+                let _ = write!(
+                    rule_blocks,
+                    "if allof ({}) {{\n  {}\n}}\n",
+                    audience_cond(true),
+                    vacation_cmd(&internal_escaped)
+                );
             }
         }
         ExternalAudience::External => {
             if !external_escaped.is_empty() {
-                rule_blocks.push_str(&format!(
+                let _ = write!(
+                    rule_blocks,
                     "if allof ({}) {{\n  {}\n}}\n",
                     audience_cond(false),
                     vacation_cmd(&external_escaped)
-                ));
+                );
             }
         }
         ExternalAudience::KnownExternal => {
-            // Treat KnownExternal same as External for now.
+            // Sieve cannot consult the owner's contacts, so "known senders"
+            // cannot be distinguished from arbitrary external senders; replies
+            // therefore go to every external sender (the same as `All`). The
+            // alternative — refusing the setting — would make the client's
+            // "known contacts only" choice fail outright, and suppressing
+            // external replies entirely would silently ignore a configured
+            // absence message.
             if !external_escaped.is_empty() {
-                rule_blocks.push_str(&format!(
+                let _ = write!(
+                    rule_blocks,
                     "if allof ({}) {{\n  {}\n}}\n",
                     audience_cond(false),
                     vacation_cmd(&external_escaped)
-                ));
+                );
             }
         }
     }
@@ -212,11 +237,20 @@ pub fn build_sieve_script(
     // If date range is provided, wrap the rule blocks in an outer `currentdate`
     // condition (RFC 5260): the test applies to the current date/time and needs
     // the `date` + `relational` capabilities and the `iso8601` date-part. The
-    // timestamps are formatted as ISO 8601 (`YYYY-MM-DDTHH:MM:SS±ZZZZ`).
+    // bounds are UTC with a trailing `Z` (RFC 3339 §5.6 null offset), which every
+    // `iso8601` parser reads as UTC; a bare `+0000` offset is only unambiguous in
+    // ISO 8601, and without `:zone` a parser that ignores it would compare the
+    // server's LOCAL wall time against these bounds.
     if date_required {
         if let (Some(start), Some(end)) = (start_time, end_time) {
-            let start_str = start.format("%Y-%m-%dT%H:%M:%S%z").to_string();
-            let end_str = end.format("%Y-%m-%dT%H:%M:%S%z").to_string();
+            let start_str = start
+                .with_timezone(&Utc)
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string();
+            let end_str = end
+                .with_timezone(&Utc)
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string();
             let wrapped = format!(
                 "if allof (currentdate :value \"ge\" \"iso8601\" \"{}\", currentdate :value \"le\" \"iso8601\" \"{}\") {{\n{}\n}}\n",
                 start_str, end_str, rule_blocks
@@ -263,6 +297,51 @@ fn parse_vacation_replies(script: &str) -> (Option<String>, Option<String>) {
         }
     }
     (internal, external)
+}
+
+/// Recover the scheduled-OOF window from the `currentdate` wrapper that
+/// [`build_sieve_script`] emits (RFC 5260):
+///
+/// ```text
+/// if allof (currentdate :value "ge" "iso8601" "2026-01-01T00:00:00Z",
+///           currentdate :value "le" "iso8601" "2026-01-05T00:00:00Z") { ... }
+///
+/// Scripts stored before the `Z` form carry an explicit `+0000` offset; both
+/// are read, because Stalwart keeps the script that was stored.
+/// ```
+///
+/// Returns `(None, None)` when the script carries no window.
+pub fn parse_vacation_window(
+    script: &str,
+) -> (Option<chrono::DateTime<Utc>>, Option<chrono::DateTime<Utc>>) {
+    // Search ONLY the OOF section, which ends at the gateway-managed MAPI rules
+    // block. Rule names are rendered there as `# rule <id>: <name>` comments and
+    // a name may itself contain a `currentdate :value "ge" "iso8601" "<ts>"`
+    // clause; scanning the whole script would then report a forged scheduled
+    // window through `get_oof_settings` (delivery is unaffected — the text is a
+    // Sieve comment — but the reported OofState/times would be wrong). The
+    // gateway always appends the rules block AFTER the vacation script, so a
+    // genuine window still parses.
+    let oof_section: String = match script
+        .lines()
+        .position(|l| l.trim_end() == crate::mapi::rules::BLOCK_BEGIN)
+    {
+        Some(idx) => script.lines().take(idx).collect::<Vec<_>>().join("\n"),
+        None => script.to_string(),
+    };
+    let script = oof_section.as_str();
+    let date_after = |op: &str| -> Option<chrono::DateTime<Utc>> {
+        let marker = format!("currentdate :value \"{op}\" \"iso8601\" \"");
+        let rest = &script[script.find(&marker)? + marker.len()..];
+        let value = &rest[..rest.find('"')?];
+        // Current builds emit `...Z`; scripts stored before that carry an
+        // explicit `+0000` offset, so both forms are read.
+        chrono::DateTime::parse_from_rfc3339(value)
+            .or_else(|_| chrono::DateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%z"))
+            .ok()
+            .map(|d| d.with_timezone(&Utc))
+    };
+    (date_after("ge"), date_after("le"))
 }
 
 /// Locate every real `vacation` command in a Sieve script, in document order,
@@ -378,6 +457,9 @@ fn last_string_literal_before_terminator(script: &str, start: usize) -> Option<S
 /// JMAP‑based OOF manager using Stalwart's JMAP Sieve extension.
 /// Stores vacation scripts via the `SieveScript` JMAP methods.
 pub struct JmapOofManager {
+    /// Built once, in [`JmapOofManager::create`] (called from `AppState::new`),
+    /// and reused for every call: `JmapClient` clones share their connection
+    /// pool and caches, so a call never constructs a client.
     jmap_client: JmapClient,
     username: String,
     password: SecretString,
@@ -486,13 +568,20 @@ impl OofManager for JmapOofManager {
             .as_deref()
             .map(parse_vacation_replies)
             .unwrap_or((None, None));
+        // Recover a `Scheduled` window from the emitted `currentdate` wrapper so
+        // GetUserOofSettings can report `Scheduled` with its real Duration
+        // instead of collapsing every scheduled OOF into a plain `Enabled`.
+        let (start_time, end_time) = script_opt
+            .as_deref()
+            .map(parse_vacation_window)
+            .unwrap_or((None, None));
         Ok(OofSettings {
             enabled,
             external_audience: ExternalAudience::All,
             internal_reply,
             external_reply,
-            start_time: None,
-            end_time: None,
+            start_time,
+            end_time,
         })
     }
 
@@ -627,7 +716,7 @@ pub fn create_oof_manager(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Duration;
+    use chrono::{Duration, Timelike};
 
     #[test]
     fn test_null_oof_manager() {
@@ -723,6 +812,100 @@ mod tests {
         );
         // Timestamps must be ISO 8601 (`T` separator), not a space-separated form.
         assert!(script.contains('T'));
+    }
+
+    /// A rule NAME rendered inside the MAPI rules block can contain a
+    /// `currentdate :value …` clause. The window parser must stop at the block
+    /// boundary, so a rule name can never fabricate a scheduled absence.
+    #[test]
+    fn test_parse_vacation_window_ignores_rule_names_in_the_rules_block() {
+        let script = format!(
+            "require [\"vacation\"];\n\
+             vacation :days 1 :subject \"Away\" \"body\";\n\
+             {begin}\n\
+             # rule 1: currentdate :value \"ge\" \"iso8601\" \"2026-01-01T00:00:00+0000\" currentdate :value \"le\" \"iso8601\" \"2026-01-05T00:00:00+0000\"\n\
+             {end}\n",
+            begin = crate::mapi::rules::BLOCK_BEGIN,
+            end = "# MAPI-RULES-END",
+        );
+        assert_eq!(
+            parse_vacation_window(&script),
+            (None, None),
+            "a rule name must never be reported as a scheduled OOF window"
+        );
+    }
+
+    /// A genuine scheduled window in the OOF section still parses when the rules
+    /// block is appended after it.
+    #[test]
+    fn test_parse_vacation_window_still_parses_before_the_rules_block() {
+        // The script carries whole seconds, so a sub-second `now()` would not
+        // round-trip.
+        let start = Utc::now()
+            .with_nanosecond(0)
+            .expect("nanosecond truncation");
+        let end = start + Duration::days(2);
+        let mut script = build_sieve_script(
+            "example.com",
+            Some("Internal"),
+            Some("External"),
+            ExternalAudience::All,
+            Some(start),
+            Some(end),
+        )
+        .unwrap();
+        script.push('\n');
+        script.push_str(crate::mapi::rules::BLOCK_BEGIN);
+        script.push_str(
+            "\n# rule 1: currentdate :value \"ge\" \"iso8601\" \"2001-01-01T00:00:00+0000\"\n",
+        );
+        script.push_str("# MAPI-RULES-END\n");
+        let (parsed_start, parsed_end) = parse_vacation_window(&script);
+        assert_eq!(
+            parsed_start.map(|d| d.timestamp()),
+            Some(start.timestamp()),
+            "the OOF section's lower bound must still parse"
+        );
+        assert_eq!(
+            parsed_end.map(|d| d.timestamp()),
+            Some(end.timestamp()),
+            "the OOF section's upper bound must still parse"
+        );
+    }
+
+    /// The emitted bounds are UTC with a trailing `Z` (unambiguous for both
+    /// RFC 3339 and ISO 8601 parsers), and a script stored in the older
+    /// `+0000` form still parses to the same instant.
+    #[test]
+    fn test_vacation_window_bounds_are_utc_and_legacy_offsets_still_parse() {
+        let start = chrono::DateTime::parse_from_rfc3339("2026-03-01T08:30:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let end = chrono::DateTime::parse_from_rfc3339("2026-03-03T17:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let script = build_sieve_script(
+            "example.com",
+            Some("Internal"),
+            None,
+            ExternalAudience::None,
+            Some(start),
+            Some(end),
+        )
+        .unwrap();
+        assert!(
+            script.contains("\"2026-03-01T08:30:00Z\"")
+                && script.contains("\"2026-03-03T17:00:00Z\""),
+            "bounds must be Z-suffixed UTC: {script}"
+        );
+        assert_eq!(parse_vacation_window(&script), (Some(start), Some(end)));
+
+        let legacy = "if allof (currentdate :value \"ge\" \"iso8601\" \"2026-03-01T08:30:00+0000\",                       currentdate :value \"le\" \"iso8601\" \"2026-03-03T17:00:00+0000\") {\n}\n";
+        assert_eq!(
+            parse_vacation_window(legacy),
+            (Some(start), Some(end)),
+            "a previously stored +0000 window still parses"
+        );
     }
 
     #[test]

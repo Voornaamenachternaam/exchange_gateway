@@ -1,167 +1,245 @@
-// tests/protocol_fixtures.rs
+//! # Recorded-client contract tests
+//!
+//! These tests replace the shallow string-containment fixtures. They drive the
+//! **real production handlers** through `build_router` against wiremock
+//! backends emulating Stalwart, asserting the full EAS/EWS/Autodiscover/MAPI
+//! wire shapes that New Outlook for Windows and Outlook Android actually send.
+//!
+//! The heavyweight HTTP-backed tests live in `src/recorded_client_contract.rs`.
+//! This file retains only compile-time shape assertions that document the
+//! expected wire formats without spinning up servers.
+
+use exchange_gateway::protocol_fixtures::{
+    autodiscover_response, eas_folder_sync_response, eas_provision_response, eas_sync_response,
+    ews_error_response, ews_soap_response,
+};
+
 #[test]
-fn outlook_finditem_fixture_has_required_fields() {
-    let body = "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body><m:FindItem xmlns:m=\"http://schemas.microsoft.com/exchange/services/2006/messages\"><m:ItemShape/><m:ParentFolderIds/><m:IndexedPageItemView MaxEntriesReturned=\"10\" BasePoint=\"Beginning\"/></m:FindItem></s:Body></s:Envelope>";
-    assert!(body.contains("FindItem"));
-    assert!(body.contains("ParentFolderIds"));
-    assert!(body.contains("MaxEntriesReturned"));
+fn eas_sync_response_has_required_fields() {
+    let resp = eas_sync_response("new-key", "2", "1");
+    assert!(resp.contains("<SyncKey>new-key</SyncKey>"));
+    assert!(resp.contains("<CollectionId>2</CollectionId>"));
+    assert!(resp.contains("<Status>1</Status>"));
+    assert!(resp.contains("AirSync:"));
 }
 
 #[test]
-fn outlook_syncfolderitems_invalid_state_fixture_exists() {
-    let invalid_sync_state = "offset:1";
-    assert!(invalid_sync_state.starts_with("offset:"));
+fn eas_invalid_sync_key_returns_status_3() {
+    let resp = eas_sync_response("0", "2", "3");
+    assert!(resp.contains("<SyncKey>0</SyncKey>"));
+    assert!(resp.contains("<Status>3</Status>"));
 }
 
 #[test]
-fn eas_sync_fixture_contains_namespace_and_required_tags() {
-    let body = r#"<Sync xmlns=\"AirSync:\"><Collections><Collection><CollectionId>1</CollectionId><SyncKey>0</SyncKey><Class>Calendar</Class></Collection></Collections></Sync>"#;
-    assert!(body.contains("AirSync:"));
-    assert!(body.contains("CollectionId"));
-    assert!(body.contains("SyncKey"));
+fn eas_folder_sync_response_structure() {
+    let resp = eas_folder_sync_response("sync-key", "1");
+    assert!(resp.contains("FolderSync"));
+    assert!(resp.contains("<ServerId>1</ServerId>"));
+    assert!(resp.contains("<DisplayName>Calendar</DisplayName>"));
+    assert!(resp.contains("<Type>8</Type>"));
 }
 
 #[test]
-fn eas_negative_fixture_missing_namespace() {
-    let body = r#"<Sync><Collections><Collection><CollectionId>1</CollectionId><SyncKey>0</SyncKey></Collection></Collections></Sync>"#;
-    assert!(!body.contains("AirSync:"));
+fn eas_provision_response_has_policy_key() {
+    let resp = eas_provision_response("1234567890", "1");
+    assert!(resp.contains("<PolicyKey>1234567890</PolicyKey>"));
+    assert!(resp.contains("MS-EAS-Provisioning-WBXML"));
+    assert!(resp.contains("<Status>1</Status>"));
 }
 
 #[test]
-fn ews_getitem_fixture_contains_itemid() {
-    let body = r#"<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body><m:GetItem xmlns:m=\"http://schemas.microsoft.com/exchange/services/2006/messages\"><m:ItemShape/><m:ItemIds><t:ItemId xmlns:t=\"http://schemas.microsoft.com/exchange/services/2006/types\" Id=\"abc\"/></m:ItemIds></m:GetItem></s:Body></s:Envelope>"#;
-    assert!(body.contains("GetItem"));
-    assert!(body.contains("ItemId"));
+fn ews_soap_response_wraps_inner() {
+    // The fragment declares the EWS messages namespace it uses, so the
+    // document below is well-formed XML rather than relying on the assertion
+    // only matching text.
+    let inner = "<m:GetFolderResponse xmlns:m=\"http://schemas.microsoft.com/exchange/services/2006/messages\">\
+                 <m:ResponseMessages /></m:GetFolderResponse>";
+    let resp = ews_soap_response(inner);
+    assert!(resp.contains("Envelope"));
+    assert!(resp.contains("ServerVersionInfo"));
+    assert!(resp.contains(inner));
+    // Parsing rejects an undeclared prefix, so this also proves the envelope
+    // binds every prefix the fragment uses.
+    let mut reader = quick_xml::Reader::from_str(&resp);
+    loop {
+        match reader.read_event() {
+            Ok(quick_xml::events::Event::Eof) => break,
+            Ok(_) => {}
+            Err(e) => panic!("EWS SOAP envelope is not well-formed XML: {e}"),
+        }
+    }
 }
 
 #[test]
-fn ews_createitem_fixture_contains_saved_folder_and_items() {
-    let body = r#"<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body><m:CreateItem xmlns:m=\"http://schemas.microsoft.com/exchange/services/2006/messages\"><m:SavedItemFolderId/><m:Items><t:CalendarItem xmlns:t=\"http://schemas.microsoft.com/exchange/services/2006/types\"><t:Subject>Meeting</t:Subject></t:CalendarItem></m:Items></m:CreateItem></s:Body></s:Envelope>"#;
-    assert!(body.contains("CreateItem"));
-    assert!(body.contains("SavedItemFolderId"));
-    assert!(body.contains("Items"));
+fn ews_error_response_has_fault_structure() {
+    // The fault must be a well-formed SOAP 1.1 envelope carrying
+    // `<faultcode>`/`<faultstring>` children ([MS-OXWCONFIG] §3.1.4.1.2.1) —
+    // parsing the WRAPPED document is what proves both the envelope and the
+    // child ordering, which a substring check cannot.
+    let resp = ews_soap_response(&ews_error_response("ErrorItemNotFound", "Item not found"));
+    assert!(resp.contains("ErrorItemNotFound"));
+    assert!(resp.contains("Item not found"));
+
+    let mut reader = quick_xml::Reader::from_str(&resp);
+    let mut buf = Vec::new();
+    // Depth relative to `<Fault>`: only DIRECT children are recorded, so the
+    // `<m:ResponseCode>` nested inside `<detail>` cannot distort the order.
+    let mut fault_depth: Option<usize> = None;
+    let mut depth = 0usize;
+    let mut fault_children: Vec<String> = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(quick_xml::events::Event::Start(e)) => {
+                depth += 1;
+                let name = e.local_name().as_ref().to_string();
+                match fault_depth {
+                    None if name == "Fault" => fault_depth = Some(depth),
+                    // A DIRECT child of `<Fault>` opens at fault_depth + 1.
+                    Some(fd) if depth == fd + 1 => fault_children.push(name),
+                    _ => {}
+                }
+            }
+            Ok(quick_xml::events::Event::Empty(e)) => {
+                if fault_depth == Some(depth) {
+                    fault_children.push(e.local_name().as_ref().to_string());
+                }
+            }
+            Ok(quick_xml::events::Event::End(e)) => {
+                if e.local_name().as_ref() == "Fault" {
+                    fault_depth = None;
+                }
+                depth = depth.saturating_sub(1);
+            }
+            Ok(quick_xml::events::Event::Eof) => break,
+            Ok(_) => {}
+            Err(e) => panic!("EWS SOAP fault is not well-formed XML: {e}"),
+        }
+        buf.clear();
+    }
+    assert_eq!(
+        fault_children,
+        vec![
+            "faultcode".to_string(),
+            "faultstring".to_string(),
+            "detail".to_string()
+        ],
+        "a SOAP 1.1 fault carries faultcode/faultstring children in that order"
+    );
 }
 
 #[test]
-fn ews_deleteitem_fixture_contains_itemids() {
-    let body = r#"<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body><m:DeleteItem xmlns:m=\"http://schemas.microsoft.com/exchange/services/2006/messages\"><m:ItemIds><t:ItemId xmlns:t=\"http://schemas.microsoft.com/exchange/services/2006/types\" Id=\"abc\"/></m:ItemIds></m:DeleteItem></s:Body></s:Envelope>"#;
-    assert!(body.contains("DeleteItem"));
-    assert!(body.contains("ItemIds"));
+fn autodiscover_response_contains_urls() {
+    let resp = autodiscover_response("mail.example.com", "user@example.com");
+    assert!(resp.contains("EwsUrl"));
+    assert!(resp.contains("ASUrl"));
+    assert!(resp.contains("mail.example.com"));
+    assert!(resp.contains("user@example.com"));
 }
 
 #[test]
-fn ews_updateitem_fixture_has_required_structure() {
-    let body = r#"<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body><m:UpdateItem xmlns:m=\"http://schemas.microsoft.com/exchange/services/2006/messages\"><m:ItemChanges><t:ItemChange><t:ItemId Id=\"test\" ChangeKey=\"01\"/><t:Updates><t:SetItemField><t:FieldURI FieldURI=\"item:Subject\"/><t:CalendarItem><t:Subject>Updated</t:Subject></t:CalendarItem></t:SetItemField></t:Updates></t:ItemChange></m:ItemChanges></m:UpdateItem></s:Body></s:Envelope>"#;
-    assert!(body.contains("UpdateItem"));
-    assert!(body.contains("ItemChanges"));
-    assert!(body.contains("SetItemField"));
+fn eas_sync_document_declares_airsync_namespace() {
+    // A Sync document rooted on code page 0 (AirSync) expands unqualified
+    // tags; the namespace declaration must be present for WBXML encode.
+    let body = r#"<Sync xmlns="AirSync:"><Collections><Collection><CollectionId>2</CollectionId><SyncKey>0</SyncKey><Class>Email</Class></Collection></Collections></Sync>"#;
+    assert!(body.contains("xmlns=\"AirSync:\""));
+    assert!(body.contains("<Class>Email</Class>"));
 }
 
 #[test]
-fn ews_getfolder_fixture_has_distinguished_folder() {
-    let body = r#"<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body><m:GetFolder xmlns:m=\"http://schemas.microsoft.com/exchange/services/2006/messages\"><m:FolderShape><t:BaseShape>Default</t:BaseShape></m:FolderShape><m:FolderIds><t:DistinguishedFolderId Id=\"calendar\"/></m:FolderIds></m:GetFolder></s:Body></s:Envelope>"#;
-    assert!(body.contains("GetFolder"));
-    assert!(body.contains("DistinguishedFolderId"));
-    assert!(body.contains("calendar"));
+fn eas_itemoperations_fetch_declares_namespaces() {
+    // An ItemOperations document rooted on code page 20 must declare
+    // xmlns:AirSync and xmlns:Search for its prefixed tags to encode. The
+    // REQUEST `<Fetch>` ([MS-ASCMD] §2.2.3.69.1) carries the `Store` (with its
+    // `Name`/`Mailbox`), the collection/server ids and `Options`/`Range`;
+    // `Class`, `Status`, `Part`, `Total` and `Properties` are RESPONSE-only
+    // elements and must not appear in a request.
+    let body = r#"<ItemOperations xmlns="ItemOperations:" xmlns:AirSync="AirSync:" xmlns:Search="Search:"><Fetch><Store><Name>Mailbox</Name><Mailbox>user@example.com</Mailbox></Store><AirSync:CollectionId>2</AirSync:CollectionId><AirSync:ServerId>msg-1</AirSync:ServerId></Fetch></ItemOperations>"#;
+    assert!(body.contains("xmlns:AirSync=\"AirSync:\""));
+    assert!(body.contains("xmlns:Search=\"Search:\""));
+    assert!(body.contains("<Store><Name>Mailbox</Name>"));
+    assert!(body.contains("<AirSync:CollectionId>2</AirSync:CollectionId>"));
+    assert!(body.contains("<AirSync:ServerId>msg-1</AirSync:ServerId>"));
+    assert!(!body.contains("AirSync:Class"));
+    assert!(!body.contains("<Properties"));
 }
 
 #[test]
-fn ews_findfolder_fixture_has_shape() {
-    let body = r#"<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body><m:FindFolder xmlns:m=\"http://schemas.microsoft.com/exchange/services/2006/messages\"><m:FolderShape><t:BaseShape>Default</t:BaseShape></m:FolderShape><m:ParentFolderIds><t:DistinguishedFolderId Id=\"root\"/></m:ParentFolderIds></m:FindFolder></s:Body></s:Envelope>"#;
-    assert!(body.contains("FindFolder"));
-    assert!(body.contains("FolderShape"));
+fn eas_foldercreate_type_13_is_calendar() {
+    // Type 13 = Calendar folder per [MS-ASCMD] §2.2.3.186.2
+    let body = r#"<FolderCreate xmlns="FolderHierarchy:"><SyncKey>0</SyncKey><Folder><ServerId>new-cal-1</ServerId><ParentId>0</ParentId><DisplayName>My Calendar</DisplayName><Type>13</Type></Folder></FolderCreate>"#;
+    assert!(body.contains("<Type>13</Type>"));
+    assert!(body.contains("<DisplayName>My Calendar</DisplayName>"));
 }
 
 #[test]
-fn eas_foldersync_fixture_has_synckey() {
-    let body = r#"<FolderSync xmlns=\"FolderHierarchy:\"><SyncKey>0</SyncKey></FolderSync>"#;
-    assert!(body.contains("FolderSync"));
-    assert!(body.contains("SyncKey"));
+fn eas_meetingresponse_root_is_page_8() {
+    // MeetingResponse root is code page 8. A `<Request>` ([MS-ASCMD]
+    // §2.2.3.91.2) carries the containing `CollectionId` when it addresses the
+    // item by ServerId (`search:LongId` is the alternative), so the request is
+    // invalid without it.
+    let body = r#"<MeetingResponse xmlns="MeetingResponse:"><Request><CollectionId>1</CollectionId><RequestId>req-1</RequestId><UserResponse>1</UserResponse></Request></MeetingResponse>"#;
+    assert!(body.contains("xmlns=\"MeetingResponse:\""));
+    assert!(body.contains("<CollectionId>1</CollectionId>"));
+    assert!(body.contains("<RequestId>req-1</RequestId>"));
 }
 
 #[test]
-fn eas_provision_fixture_has_policy_type() {
-    let body = r#"<Provision xmlns=\"Provision:\"><Policies><Policy><PolicyType>MS-EAS-Provisioning-WBXML</PolicyType></Policy></Policies></Provision>"#;
-    assert!(body.contains("Provision"));
-    assert!(body.contains("PolicyType"));
-    assert!(body.contains("MS-EAS-Provisioning-WBXML"));
+fn eas_getitemestimate_email_class() {
+    // [MS-ASWBXML] §2.1.2.1.7 note 1: for protocol versions 14.0 and later the
+    // `Class` tag lives in code page 0 (AirSync), not the GetItemEstimate
+    // page, and `SyncKey` is an AirSync-page tag too — both must be prefixed.
+    let body = r#"<GetItemEstimate xmlns="GetItemEstimate:" xmlns:AirSync="AirSync:"><Collections><Collection><AirSync:Class>Email</AirSync:Class><CollectionId>2</CollectionId><AirSync:SyncKey>0</AirSync:SyncKey></Collection></Collections></GetItemEstimate>"#;
+    assert!(body.contains("<AirSync:Class>Email</AirSync:Class>"));
+    assert!(body.contains("<CollectionId>2</CollectionId>"));
+    assert!(body.contains("<AirSync:SyncKey>0</AirSync:SyncKey>"));
 }
 
 #[test]
-fn eas_ping_fixture_has_folders() {
-    let body = r#"<Ping xmlns=\"Ping:\"><HeartbeatInterval>300</HeartbeatInterval><Folders><Folder><Id>1</Id><Class>Calendar</Class></Folder></Folders></Ping>"#;
-    assert!(body.contains("Ping"));
-    assert!(body.contains("HeartbeatInterval"));
-    assert!(body.contains("Folders"));
-}
-
-#[test]
-fn eas_itemoperations_fixture_has_fetch() {
-    let body = r#"<ItemOperations xmlns=\"ItemOperations:\"><Fetch><Store>Mailbox</Store><CollectionId>1</CollectionId><ServerId>abc123</ServerId></Fetch></ItemOperations>"#;
-    assert!(body.contains("ItemOperations"));
-    assert!(body.contains("Fetch"));
-    assert!(body.contains("ServerId"));
-}
-
-#[test]
-fn eas_search_fixture_has_store() {
-    let body = r#"<Search xmlns=\"Search:\"><Store><Name>Mailbox</Name><Query><And><FreeText>test</FreeText></And></Query><Options><Range>0-99</Range></Options></Store></Search>"#;
-    assert!(body.contains("Search"));
-    assert!(body.contains("Store"));
-    assert!(body.contains("Query"));
-}
-
-#[test]
-fn eas_meetingresponse_fixture_has_request_id() {
-    let body = r#"<MeetingResponse xmlns=\"MeetingResponse:\"><Request><RequestId>abc123</RequestId><UserResponse>1</UserResponse></Request></MeetingResponse>"#;
-    assert!(body.contains("MeetingResponse"));
-    assert!(body.contains("RequestId"));
-    assert!(body.contains("UserResponse"));
-}
-
-#[test]
-fn eas_getitemestimate_fixture_has_collection() {
-    let body = r#"<GetItemEstimate xmlns=\"GetItemEstimate:\"><Collections><Collection><Class>Calendar</Class><CollectionId>1</CollectionId><SyncKey>0</SyncKey></Collection></Collections></GetItemEstimate>"#;
-    assert!(body.contains("GetItemEstimate"));
-    assert!(body.contains("Collection"));
-    assert!(body.contains("CollectionId"));
-}
-
-#[test]
-fn autodiscover_xml_fixture_has_email() {
-    let body = r#"<?xml version="1.0"?><Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/outlook/requestschema/2006"><Request><EMailAddress>user@example.com</EMailAddress><AcceptableResponseSchema>http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a</AcceptableResponseSchema></Request></Autodiscover>"#;
-    assert!(body.contains("Autodiscover"));
+fn autodiscover_xml_request_schema() {
+    let body = r#"<?xml version="1.0" encoding="utf-8"?>
+<Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/outlook/requestschema/2006">
+  <Request>
+    <EMailAddress>user@example.com</EMailAddress>
+    <AcceptableResponseSchema>http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a</AcceptableResponseSchema>
+  </Request>
+</Autodiscover>"#;
+    assert!(body.contains("requestschema/2006"));
+    assert!(body.contains("responseschema/2006a"));
     assert!(body.contains("EMailAddress"));
 }
 
 #[test]
-fn autodiscover_soap_fixture_has_users() {
-    let body = r#"<?xml version="1.0"?><s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:a="http://schemas.microsoft.com/exchange/2010/Autodiscover"><s:Body><a:GetUserSettingsRequestMessage><a:Request><a:Users><a:User><a:Mailbox>user@example.com</a:Mailbox></a:User></a:Users><a:RequestedSettings><a:Setting>ExternalEwsUrl</a:Setting></a:RequestedSettings></a:Request></a:GetUserSettingsRequestMessage></s:Body></s:Envelope>"#;
+fn autodiscover_soap_request_schema() {
+    let body = r#"<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:a="http://schemas.microsoft.com/exchange/2010/Autodiscover">
+  <s:Body>
+    <a:GetUserSettingsRequestMessage>
+      <a:Request>
+        <a:Users><a:User><a:Mailbox>user@example.com</a:Mailbox></a:User></a:Users>
+        <a:RequestedSettings><a:Setting>ExternalEwsUrl</a:Setting></a:RequestedSettings>
+      </a:Request>
+    </a:GetUserSettingsRequestMessage>
+  </s:Body>
+</s:Envelope>"#;
     assert!(body.contains("GetUserSettingsRequestMessage"));
     assert!(body.contains("Mailbox"));
     assert!(body.contains("ExternalEwsUrl"));
 }
 
 #[test]
-fn ews_getuseravailability_fixture_has_mailbox_data() {
-    let body = r#"<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><m:GetUserAvailabilityRequest xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"><m:MailboxDataArray><t:MailboxData><t:Email><t:Address>user@example.com</t:Address></t:Email><t:AttendeeType>Required</t:AttendeeType></t:MailboxData></m:MailboxDataArray><t:FreeBusyViewOptions><t:TimeWindow><t:StartTime>2026-01-01T00:00:00Z</t:StartTime><t:EndTime>2026-01-31T00:00:00Z</t:EndTime></t:TimeWindow></t:FreeBusyViewOptions></m:GetUserAvailabilityRequest></s:Body></s:Envelope>"#;
-    assert!(body.contains("GetUserAvailabilityRequest"));
-    assert!(body.contains("MailboxDataArray"));
-    assert!(body.contains("FreeBusyViewOptions"));
-}
-
-#[test]
-fn ews_syncfolderitems_fixture_has_sync_state() {
-    let body = r#"<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><m:SyncFolderItems xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"><m:ItemShape><t:BaseShape>Default</t:BaseShape></m:ItemShape><m:SyncFolderId><t:DistinguishedFolderId Id="calendar"/></m:SyncFolderId><m:SyncState>AQAAAAA=</m:SyncState><m:MaxChangesReturned>100</m:MaxChangesReturned></m:SyncFolderItems></s:Body></s:Envelope>"#;
+fn ews_syncfolderitems_uses_sync_state() {
+    let body = r#"<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+  <s:Body>
+    <m:SyncFolderItems>
+      <m:ItemShape><t:BaseShape>Default</t:BaseShape></m:ItemShape>
+      <m:SyncFolderId><t:DistinguishedFolderId Id="calendar"/></m:SyncFolderId>
+      <m:SyncState>AQAAAAA=</m:SyncState>
+      <m:MaxChangesReturned>100</m:MaxChangesReturned>
+    </m:SyncFolderItems>
+  </s:Body>
+</s:Envelope>"#;
     assert!(body.contains("SyncFolderItems"));
     assert!(body.contains("SyncState"));
     assert!(body.contains("MaxChangesReturned"));
-}
-
-#[test]
-fn ews_subscribe_fixture_has_event_types() {
-    let body = r#"<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><m:Subscribe xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"><m:PullSubscriptionRequest><t:FolderIds><t:DistinguishedFolderId Id="calendar"/></t:DistinguishedFolderId><t:EventTypes><t:EventType>CreatedEvent</t:EventType><t:EventType>ModifiedEvent</t:EventType><t:EventType>DeletedEvent</t:EventType></t:EventTypes></m:PullSubscriptionRequest></m:Subscribe></s:Body></s:Envelope>"#;
-    assert!(body.contains("Subscribe"));
-    assert!(body.contains("PullSubscriptionRequest"));
-    assert!(body.contains("EventTypes"));
 }

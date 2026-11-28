@@ -21,8 +21,10 @@ use crate::util::resolve_xml_reference;
 use crate::vcard::{self, Adr, Email, Name, Parameter, Property, Tel, Vcard};
 use anyhow::{Context as _, anyhow};
 use base64::Engine as _;
+use futures_util::StreamExt as _;
 use reqwest::StatusCode;
 use std::collections::HashSet;
+use std::fmt::Write as _;
 use uuid::Uuid;
 
 // --------------------------------------------------------------------------
@@ -252,37 +254,40 @@ pub fn render_eas_contact(_server_id: &str, carddav_contact: &CarddavContact) ->
     {
         let escaped = xml_escape_str(note);
         xml.push_str("<AirSyncBase:Body><AirSyncBase:Type>1</AirSyncBase:Type>");
-        xml.push_str(&format!("<AirSyncBase:Data>{escaped}</AirSyncBase:Data>"));
-        xml.push_str(&format!(
+        let _ = write!(xml, "<AirSyncBase:Data>{escaped}</AirSyncBase:Data>");
+        let _ = write!(
+            xml,
             "<AirSyncBase:EstimatedDataSize>{}</AirSyncBase:EstimatedDataSize>",
             note.len(),
-        ));
+        );
         xml.push_str("<AirSyncBase:Truncated>0</AirSyncBase:Truncated></AirSyncBase:Body>");
     }
 
     // Picture (base64 image payload).
     if let Some(p) = vcard.photo().and_then(extract_photo_base64) {
-        xml.push_str(&format!("<Contacts:Picture>{}</Contacts:Picture>", p));
+        let _ = write!(xml, "<Contacts:Picture>{}</Contacts:Picture>", p);
     }
 
     // Misc simple fields.
     eas_field(&mut xml, "WebPage", vcard.url().unwrap_or_default());
     eas_field(&mut xml, "Spouse", vcard.spouse().unwrap_or_default());
     if let Some(nick) = vcard.nicknames().first() {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<Contacts2:NickName>{}</Contacts2:NickName>",
             xml_escape_str(nick)
-        ));
+        );
     }
     let children = vcard.children();
     if !children.is_empty() {
         xml.push_str("<Contacts:Children>");
         for child in children {
             if !child.is_empty() {
-                xml.push_str(&format!(
+                let _ = write!(
+                    xml,
                     "<Contacts:Child>{}</Contacts:Child>",
                     xml_escape_str(child)
-                ));
+                );
             }
         }
         xml.push_str("</Contacts:Children>");
@@ -298,10 +303,11 @@ fn xml_escape_str(s: &str) -> String {
 /// Append a non-empty `Contacts:` field.
 fn eas_field(xml: &mut String, tag: &str, val: &str) {
     if !val.is_empty() {
-        xml.push_str(&format!(
+        let _ = write!(
+            xml,
             "<Contacts:{tag}>{}</Contacts:{tag}>",
             xml_escape_str(val)
-        ));
+        );
     }
 }
 
@@ -1017,16 +1023,17 @@ fn track_appdata_text(out: &mut String, stack: &[String], text: &str) {
         return;
     };
     for p in parents {
-        out.push_str(&format!("<{}>", p));
+        let _ = write!(out, "<{}>", p);
     }
-    out.push_str(&format!(
+    let _ = write!(
+        out,
         "<{}>{}</{}>",
         leaf,
         crate::util::escape_xml_text(text),
         leaf
-    ));
+    );
     for p in parents.iter().rev() {
-        out.push_str(&format!("</{}>", p));
+        let _ = write!(out, "</{}>", p);
     }
 }
 
@@ -1251,10 +1258,11 @@ async fn diff_contacts(
         // Remove the row only once the delete is delivered; an undelivered
         // delete keeps its row and re-diffs next Sync.
         state.storage.delete_contact(username, &server_id).await?;
-        response.push_str(&format!(
+        let _ = write!(
+            response,
             r#"<Delete><ServerId>{}</ServerId></Delete>"#,
             xml_escape(&server_id)
-        ));
+        );
         delivered += 1;
     }
 
@@ -1327,6 +1335,12 @@ async fn collect_jmap_contacts(
     list_contacts_jmap(jmap, username, password).await
 }
 
+/// Photo blobs downloaded concurrently while listing contacts. Each download
+/// is an independent round trip through the shared pooled HTTP client, so a
+/// small bound keeps a large address book's listing latency divided by ~8
+/// without flooding the backend.
+const CONTACT_PHOTO_DOWNLOAD_CONCURRENCY: usize = 8;
+
 /// List all contacts from the JMAP Contacts backend as `CarddavContact`
 /// values, downloading photo blobs so rendering stays self-contained.
 ///
@@ -1343,13 +1357,27 @@ pub async fn list_contacts_jmap(
     let account_id = jmap.get_contacts_account_id(username, &secret).await?;
     let (cards, state_token) = jmap.list_contact_cards(username, &secret).await?;
 
-    let mut out = Vec::with_capacity(cards.len());
-    for card in cards {
+    // Photo blobs are downloaded CONCURRENTLY (bounded), because each is a
+    // separate round trip and a large address book paid them serially. The
+    // photo stays INSIDE the vCard — deferring it to render time would change
+    // `sha256(vcard)`, which IS the contact `ChangeKey` (Stalwart exposes no
+    // `@etag`), and make the next `SyncFolderItems` report the whole address
+    // book as modified.
+    //
+    // Order is preserved by the captured index: callers build full snapshots
+    // and derive ChangeKeys positionally in the EAS diff, so the returned Vec
+    // must match the input order exactly.
+    let mut rendered: Vec<(usize, CarddavContact)> = futures_util::stream::iter(
+        cards.into_iter().enumerate(),
+    )
+    .map(|(index, card)| {
+        let account_id = &account_id;
+        let secret = &secret;
+        async move {
         let mut v = jscard_to_vcard(&card.card, &card.id);
-        // Download the photo blob so the EAS Picture element carries data.
         if let Some(blob) = photo_blob_id(&card.card) {
             match jmap
-                .download_blob(&account_id, &blob, username, &secret)
+                .download_blob(account_id, &blob, username, secret)
                 .await
             {
                 Ok(bytes) => {
@@ -1363,12 +1391,21 @@ pub async fn list_contacts_jmap(
             }
         }
         let etag = jmap_contact_etag(&card.card, card.etag.as_deref());
-        out.push(CarddavContact {
-            href: format!("jmap://contacts/{}", card.id),
-            etag,
-            vcard: v.to_string(),
-        });
-    }
+        (
+            index,
+            CarddavContact {
+                href: format!("jmap://contacts/{}", card.id),
+                etag,
+                vcard: v.to_string(),
+            },
+        )
+        }
+    })
+    .buffer_unordered(CONTACT_PHOTO_DOWNLOAD_CONCURRENCY)
+    .collect()
+    .await;
+    rendered.sort_by_key(|(index, _)| *index);
+    let out: Vec<CarddavContact> = rendered.into_iter().map(|(_, c)| c).collect();
     // Touch the state token so future delta syncs can use it; keep full-diff
     // parity for now (Stalwart does not return partial ranges for contacts).
     let _ = state_token;
@@ -1959,25 +1996,28 @@ pub fn render_contacts_mutation_responses(results: &[ContactsMutationResult]) ->
     for res in results {
         match res.op_kind {
             ContactsOpKind::Add => {
-                xml.push_str(&format!(
+                let _ = write!(
+                    xml,
                     r#"<Add><ServerId>{}</ServerId><Status>{}</Status></Add>"#,
                     xml_escape(&res.server_id),
                     xml_escape(res.status)
-                ));
+                );
             }
             ContactsOpKind::Change => {
-                xml.push_str(&format!(
+                let _ = write!(
+                    xml,
                     r#"<Change><ServerId>{}</ServerId><Status>{}</Status></Change>"#,
                     xml_escape(&res.server_id),
                     xml_escape(res.status)
-                ));
+                );
             }
             ContactsOpKind::Delete => {
-                xml.push_str(&format!(
+                let _ = write!(
+                    xml,
                     r#"<Delete><ServerId>{}</ServerId><Status>{}</Status></Delete>"#,
                     xml_escape(&res.server_id),
                     xml_escape(res.status)
-                ));
+                );
             }
         }
     }
@@ -2664,5 +2704,149 @@ pub(crate) mod contact_test_support {
         let ck_create = contact_change_key(&server_id, row.etag.as_deref(), "");
         let ck_list = contact_change_key(&server_id, card.etag.as_deref(), &card.vcard);
         assert_eq!(ck_create, ck_list, "ChangeKey stable across create→list");
+    }
+
+    /// C4: contact photos are downloaded CONCURRENTLY, and the returned list
+    /// keeps the backend's card order.
+    ///
+    /// The stub makes each blob finish in REVERSE card order (c0 slowest), so a
+    /// serial implementation would return them reversed; it also records the
+    /// peak number of simultaneous downloads. The PHOTO must still be inside the
+    /// vCard (it is hashed into the contact `ChangeKey`), and a failed download
+    /// must still omit PHOTO without dropping the contact.
+    #[tokio::test]
+    async fn list_contacts_jmap_downloads_photos_concurrently_in_input_order() {
+        use axum::response::Response;
+        use std::sync::Arc as StdArc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        const CARDS: usize = 8;
+        const FAILING: usize = 7;
+
+        let in_flight = StdArc::new(AtomicUsize::new(0));
+        let peak = StdArc::new(AtomicUsize::new(0));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let session_base = base.clone();
+        let route_in_flight = in_flight.clone();
+        let route_peak = peak.clone();
+        let app = axum::Router::new()
+            .route(
+                "/session",
+                axum::routing::get(move || {
+                    let base = session_base.clone();
+                    async move {
+                        axum::Json(serde_json::json!({
+                            // The client normalises `apiUrl` to its origin and
+                            // POSTs to `/` (see `JmapClient::get_session`).
+                            "apiUrl": base.clone(),
+                            "downloadUrl": format!("{base}/download/{{accountId}}/{{blobId}}"),
+                            "uploadUrl": format!("{base}/upload/{{accountId}}"),
+                            "eventSourceUrl": format!("{base}/eventsource"),
+                            "state": "s",
+                            "username": "u",
+                            "accounts": {},
+                            "primaryAccounts": { crate::jmap::JMAP_CONTACTS_CAPABILITY: "acct" },
+                            "capabilities": { crate::jmap::JMAP_CONTACTS_CAPABILITY: {} }
+                        }))
+                    }
+                }),
+            )
+            .route(
+                "/",
+                axum::routing::post(move || async move {
+                    {
+                        let cards: Vec<serde_json::Value> = (0..CARDS)
+                            .map(|i| {
+                                serde_json::json!({
+                                    "id": format!("c{i}"),
+                                    "fullName": format!("Card {i}"),
+                                    "media": { "p": { "kind": "photo", "blobId": format!("b{i}") } }
+                                })
+                            })
+                            .collect();
+                        axum::Json(serde_json::json!({
+                            "methodResponses": [["ContactCard/get", {
+                                "accountId": "acct",
+                                "state": "s",
+                                "list": cards,
+                                "notFound": []
+                            }, "cg0"]],
+                            "sessionState": "s"
+                        }))
+                    }
+                }),
+            )
+            .route(
+                "/download/{account}/{blob}",
+                axum::routing::get(
+                    move |axum::extract::Path((_account, blob)): axum::extract::Path<(
+                        String,
+                        String,
+                    )>| {
+                        let in_flight = route_in_flight.clone();
+                        let peak = route_peak.clone();
+                        async move {
+                            let index: usize = blob
+                                .trim_start_matches('b')
+                                .parse()
+                                .expect("blob id is b<index>");
+                            let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                            peak.fetch_max(now, Ordering::SeqCst);
+                            // Reverse latency: c0 finishes LAST.
+                            let delay = (CARDS - index) as u64 * 20;
+                            tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                            in_flight.fetch_sub(1, Ordering::SeqCst);
+                            if index == FAILING {
+                                return Response::builder()
+                                    .status(500)
+                                    .body(axum::body::Body::from("boom"))
+                                    .unwrap();
+                            }
+                            Response::builder()
+                                .status(200)
+                                .body(axum::body::Body::from(format!("photo-{index}")))
+                                .unwrap()
+                        }
+                    },
+                ),
+            );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let state = state_for(&base).await;
+        let client = state.jmap_client.as_ref().unwrap();
+        let contacts = list_contacts_jmap(client, "u", "pw").await.expect("list");
+
+        assert_eq!(contacts.len(), CARDS);
+        for (i, contact) in contacts.iter().enumerate() {
+            assert_eq!(
+                contact.href,
+                format!("jmap://contacts/c{i}"),
+                "the returned order must be the backend's card order"
+            );
+        }
+        assert!(
+            peak.load(Ordering::SeqCst) >= 4,
+            "photo downloads must run concurrently (peak in flight = {})",
+            peak.load(Ordering::SeqCst)
+        );
+        for (i, contact) in contacts.iter().enumerate() {
+            if i == FAILING {
+                assert!(
+                    !contact.vcard.contains("PHOTO"),
+                    "a failed download must omit PHOTO, not fabricate one"
+                );
+            } else {
+                let b64 = base64::engine::general_purpose::STANDARD.encode(format!("photo-{i}"));
+                assert!(
+                    contact.vcard.contains(&b64),
+                    "card {i} must carry ITS OWN photo bytes: {}",
+                    contact.vcard
+                );
+            }
+        }
     }
 }
